@@ -1,0 +1,11 @@
+enum Role {
+  CUSTOMER
+  STAFF
+  BRANCH_MANAGER
+  BRAND_OWNER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
