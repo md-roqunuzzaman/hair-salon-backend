@@ -1,0 +1,64 @@
+model Branch {
+  id             String                @id @default(uuid())
+  name           String
+  address        String
+  phone          String?
+  description    String?
+  imageObjectKey String?
+  status         BranchStatus          @default(ACTIVE)
+  bookingPolicy  BranchBookingPolicy?
+  businessHours  BranchBusinessHour[]
+  services       ServiceBranch[]
+  packages       PackageBranch[]
+  staff          StaffBranch[]
+  managers       BranchManagerBranch[]
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+}
+
+model BranchBusinessHour {
+  id       String    @id @default(uuid())
+  branchId String
+  day      DayOfWeek
+
+  isClosed  Boolean @default(false)
+  openTime  String?
+  closeTime String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, day])
+}
+
+model BranchBookingPolicy {
+  id       String @id @default(uuid())
+  branchId String @unique
+
+  slotIntervalMinutes         Int               @default(30)
+  minimumBookingNoticeMinutes Int               @default(120)
+  maximumAdvanceBookingDays   Int               @default(30)
+  cancellationCutoffHours     Int               @default(12)
+  rescheduleCutoffHours       Int               @default(12)
+  reserveExpiryRule           ReserveExpiryRule @default(APPOINTMENT_TIME)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+}
+
+model BranchManagerBranch {
+  userId   String
+  branchId String
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([userId, branchId])
+  @@index([branchId])
+}

@@ -106,7 +106,10 @@ const changePassword = async (
   );
 
   if (isSamePassword) {
-    throw new AppError("New password must be different from current password", 400);
+    throw new AppError(
+      "New password must be different from current password",
+      400,
+    );
   }
 
   const hashedPassword = await bcrypt.hash(
@@ -120,6 +123,7 @@ const changePassword = async (
     },
     data: {
       passwordHash: hashedPassword,
+      mustChangePassword: false,
     },
   });
 

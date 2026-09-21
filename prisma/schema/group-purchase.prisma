@@ -1,0 +1,25 @@
+model GroupPurchase {
+  id         String @id @default(uuid())
+  customerId String
+  packageId  String
+
+  quantity  Int
+  unitPrice Decimal @db.Decimal(10, 2)
+  amount    Decimal @db.Decimal(10, 2)
+
+  paymentStatus PaymentStatus @default(PENDING)
+
+  reservationExpiresAt DateTime?
+  purchasedAt          DateTime?
+
+  customer User    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  package  Package @relation(fields: [packageId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([packageId])
+  @@index([paymentStatus])
+  @@index([reservationExpiresAt])
+}

@@ -9,3 +9,56 @@ enum UserStatus {
   ACTIVE
   INACTIVE
 }
+
+enum BranchStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum ReserveExpiryRule {
+  APPOINTMENT_TIME
+}
+
+enum ServiceStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum PackageType {
+  STANDARD_SERVICE_PACKAGE
+  GROUP_PURCHASE_PACKAGE
+}
+
+enum PackageStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ListingStatus {
+  LISTED
+  DELISTED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum StaffStatus {
+  ACTIVE
+  INACTIVE
+}

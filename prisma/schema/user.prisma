@@ -5,9 +5,13 @@ model User {
   phone        String? @unique
   passwordHash String
 
-  role   Role       @default(CUSTOMER)
-  status UserStatus @default(ACTIVE)
+  role               Role            @default(CUSTOMER)
+  status             UserStatus      @default(ACTIVE)
+  groupPurchases     GroupPurchase[]
+  mustChangePassword Boolean         @default(false)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  staffProfile    Staff?
+  managedBranches BranchManagerBranch[]
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
 }

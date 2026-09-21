@@ -14,4 +14,13 @@ export default {
   smtp_user: env.SMTP_USER,
   smtp_password: env.SMTP_PASSWORD,
   email_sender: env.EMAIL_SENDER,
+  brand_owner_name: process.env.BRAND_OWNER_NAME,
+  brand_owner_email: process.env.BRAND_OWNER_EMAIL,
+  brand_owner_password: process.env.BRAND_OWNER_PASSWORD,
+  brand_owner_phone: process.env.BRAND_OWNER_PHONE,
+
+  brand_name: process.env.BRAND_NAME,
+  brand_description: process.env.BRAND_DESCRIPTION,
+  brand_phone: process.env.BRAND_PHONE,
+  brand_email: process.env.BRAND_EMAIL,
 };

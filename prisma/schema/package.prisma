@@ -1,0 +1,72 @@
+model Package {
+  id          String      @id @default(uuid())
+  type        PackageType
+  name        String
+  description String?
+
+  regularPrice    Decimal @db.Decimal(10, 2)
+  packagePrice    Decimal @db.Decimal(10, 2)
+  durationMinutes Int
+
+  status        PackageStatus @default(ACTIVE)
+  listingStatus ListingStatus @default(LISTED)
+
+  capacity                 Int?
+  soldQuantity             Int       @default(0)
+  reservedQuantity         Int       @default(0)
+  purchaseLimitPerCustomer Int?
+  salesStartAt             DateTime?
+  salesEndAt               DateTime?
+
+  groupPurchases GroupPurchase[]
+  staff          StaffPackage[]
+
+  services PackageService[]
+  branches PackageBranch[]
+  images   PackageImage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PackageService {
+  packageId String
+  serviceId String
+
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  @@id([packageId, serviceId])
+  @@index([serviceId])
+}
+
+model PackageBranch {
+  packageId String
+  branchId  String
+
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([packageId, branchId])
+  @@index([branchId])
+}
+
+model PackageImage {
+  id        String @id @default(uuid())
+  packageId String
+  objectKey String
+
+  isPrimary Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([packageId])
+}

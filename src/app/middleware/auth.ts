@@ -23,9 +23,10 @@ declare global {
 export const auth = (...requiredRoles: Role[]) => {
   return catchAsync(async (req: Request, res: Response, next: NextFunction) => {
     const authorization = req.headers.authorization;
-    const token = authorization?.startsWith("Bearer ")
-      ? authorization.slice(7)
-      : req.cookies?.accessToken;
+    const token = req.cookies?.accessToken ??
+      (authorization?.startsWith("Bearer ")
+        ? authorization.slice(7)
+        : undefined);
 
     if (!token) {
       throw new AppError(

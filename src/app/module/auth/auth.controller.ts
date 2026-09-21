@@ -51,14 +51,12 @@ const loginUser = catchAsync(async (req: Request, res: Response) => {
     message: "User logged in successfully",
     data: {
       user: result.user,
-      accessToken,
-      refreshToken,
     },
   });
 });
 
 const refreshToken = catchAsync(async (req: Request, res: Response) => {
-  const token = req.body?.refreshToken || req.cookies?.refreshToken;
+  const token = req.cookies?.refreshToken;
 
   if (!token) {
     throw new AppError("Refresh token is required", 401);
@@ -74,10 +72,7 @@ const refreshToken = catchAsync(async (req: Request, res: Response) => {
     statusCode: httpStatus.OK,
     success: true,
     message: "New tokens generated successfully",
-    data: {
-      accessToken,
-      refreshToken: newRefreshToken,
-    },
+    data: null,
   });
 });
 

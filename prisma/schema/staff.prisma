@@ -1,0 +1,62 @@
+model Staff {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  name            String
+  email           String  @unique
+  phone           String?
+  roleTitle       String
+  specialization  String?
+  description     String?
+  avatarObjectKey String?
+
+  status StaffStatus @default(ACTIVE)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  branches StaffBranch[]
+  services StaffService[]
+  packages StaffPackage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model StaffBranch {
+  staffId  String
+  branchId String
+
+  staff  Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([staffId, branchId])
+  @@index([branchId])
+}
+
+model StaffService {
+  staffId   String
+  serviceId String
+
+  staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([staffId, serviceId])
+  @@index([serviceId])
+}
+
+model StaffPackage {
+  staffId   String
+  packageId String
+
+  staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([staffId, packageId])
+  @@index([packageId])
+}

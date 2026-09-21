@@ -7,6 +7,12 @@ import { globalErrorHandler } from "./app/middleware/globalErrorHandler.js";
 import { notFound } from "./app/middleware/notFound.js";
 import { authRoutes } from "./app/module/auth/auth.route.js";
 import { UserRoutes } from "./app/module/user/user.route.js";
+import { BrandRoutes } from "./app/module/brand/brand.route.js";
+import { BranchRoutes } from "./app/module/branch/branch.route.js";
+import { ServiceRoutes } from "./app/module/service/service.route.js";
+import { PackageRoutes } from "./app/module/package/package.route.js";
+import { GroupPurchaseRoutes } from "./app/module/group-purchase/group-purchase.route.js";
+import { StaffRoutes } from "./app/module/staff/staff.route.js";
 
 const app: Application = express();
 
@@ -26,7 +32,12 @@ app.use(cookieParser());
 
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", UserRoutes);
-
+app.use("/api/v1/brand", BrandRoutes);
+app.use("/api/v1/branches", BranchRoutes);
+app.use("/api/v1/services", ServiceRoutes);
+app.use("/api/v1/packages", PackageRoutes);
+app.use("/api/v1/group-purchases", GroupPurchaseRoutes);
+app.use("/api/v1/staff", StaffRoutes);
 // Basic route
 app.get("/", async (req: Request, res: Response) => {
   res.status(httpStatus.OK).json({
