@@ -14,9 +14,12 @@ model Staff {
 
   user User @relation(fields: [userId], references: [id], onDelete: Restrict)
 
-  branches StaffBranch[]
-  services StaffService[]
-  packages StaffPackage[]
+  branches       StaffBranch[]
+  services       StaffService[]
+  packages       StaffPackage[]
+  schedule       StaffSchedule[]
+  unavailability StaffUnavailability[]
+  appointments   Appointment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -59,4 +62,42 @@ model StaffPackage {
 
   @@id([staffId, packageId])
   @@index([packageId])
+}
+
+model StaffSchedule {
+  id        String    @id @default(uuid())
+  staffId   String
+  branchId  String
+  day       DayOfWeek
+  startTime String
+  endTime   String
+
+  staff  Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([staffId, branchId, day])
+  @@index([staffId])
+  @@index([branchId])
+}
+
+model StaffUnavailability {
+  id        String                  @id @default(uuid())
+  staffId   String
+  type      StaffUnavailabilityType
+  date      DateTime
+  startTime String
+  endTime   String
+  reason    String?
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([date])
+  @@index([staffId, date])
 }

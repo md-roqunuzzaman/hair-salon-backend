@@ -3,6 +3,8 @@ import crypto from "crypto";
 
 import {
   BranchStatus,
+  DayOfWeek,
+  ListingStatus,
   PackageStatus,
   Prisma,
   Role,
@@ -19,8 +21,11 @@ import {
   IAssignStaffPackagesPayload,
   IAssignStaffServicesPayload,
   ICreateStaffPayload,
+  ICreateStaffUnavailabilityPayload,
   IUpdateStaffPayload,
+  IUpdateStaffSchedulePayload,
   IUpdateStaffStatusPayload,
+  IUpdateStaffUnavailabilityPayload,
 } from "./staff.interface.js";
 
 const generateTemporaryPassword = () => {
@@ -1574,6 +1579,1037 @@ const getEligibleStaffForService = async (
     })),
   };
 };
+
+const getEligibleStaffForPackage = async (
+  branchId: string,
+  packageId: string,
+) => {
+  const branch = await prisma.branch.findUnique({
+    where: {
+      id: branchId,
+    },
+    select: {
+      id: true,
+      status: true,
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  if (branch.status !== BranchStatus.ACTIVE) {
+    throw new AppError("Branch is not active", 400);
+  }
+
+  const packageData = await prisma.package.findUnique({
+    where: {
+      id: packageId,
+    },
+
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      listingStatus: true,
+
+      branches: {
+        where: {
+          branchId,
+        },
+        select: {
+          branchId: true,
+        },
+      },
+
+      services: {
+        select: {
+          serviceId: true,
+        },
+      },
+    },
+  });
+
+  if (!packageData) {
+    throw new AppError("Package not found", 404);
+  }
+
+  if (packageData.status !== PackageStatus.ACTIVE) {
+    throw new AppError("Package is not active", 400);
+  }
+
+  if (packageData.listingStatus !== ListingStatus.LISTED) {
+    throw new AppError("Package is not listed", 400);
+  }
+
+  if (packageData.branches.length === 0) {
+    throw new AppError("Package is not available in this branch", 400);
+  }
+
+  const requiredServiceIds = packageData.services.map((item) => item.serviceId);
+
+  const staffList = await prisma.staff.findMany({
+    where: {
+      status: StaffStatus.ACTIVE,
+
+      branches: {
+        some: {
+          branchId,
+        },
+      },
+
+      packages: {
+        some: {
+          packageId,
+        },
+      },
+    },
+
+    include: {
+      services: {
+        select: {
+          serviceId: true,
+        },
+      },
+    },
+
+    orderBy: {
+      name: "asc",
+    },
+  });
+
+  const eligibleStaff = staffList.filter((staff) => {
+    const staffServiceIds = new Set(
+      staff.services.map((item) => item.serviceId),
+    );
+
+    return requiredServiceIds.every((serviceId) =>
+      staffServiceIds.has(serviceId),
+    );
+  });
+
+  return {
+    items: eligibleStaff.map((staff) => ({
+      id: staff.id,
+      name: staff.name,
+      roleTitle: staff.roleTitle,
+      specialization: staff.specialization,
+      avatarObjectKey: staff.avatarObjectKey,
+    })),
+  };
+};
+
+const timeToMinutes = (time: string) => {
+  const [hour, minute] = time.split(":").map(Number);
+
+  return hour * 60 + minute;
+};
+
+const updateStaffSchedule = async (
+  staffId: string,
+  payload: IUpdateStaffSchedulePayload,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  const staff = await prisma.staff.findUnique({
+    where: {
+      id: staffId,
+    },
+
+    include: {
+      branches: {
+        select: {
+          branchId: true,
+        },
+      },
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  const staffBranchIds = new Set(staff.branches.map((item) => item.branchId));
+
+  // Branch Manager scope
+  let managerBranchIds: Set<string> | null = null;
+
+  if (requester.role === Role.BRANCH_MANAGER) {
+    const managerBranches = await prisma.branchManagerBranch.findMany({
+      where: {
+        userId: requester.userId,
+      },
+
+      select: {
+        branchId: true,
+      },
+    });
+
+    managerBranchIds = new Set(managerBranches.map((item) => item.branchId));
+
+    const hasAccessToStaff = staff.branches.some((item) =>
+      managerBranchIds!.has(item.branchId),
+    );
+
+    if (!hasAccessToStaff) {
+      throw new AppError(
+        "You are not allowed to manage this staff member",
+        403,
+      );
+    }
+  }
+
+  // Prevent duplicate branch + day rows
+  const scheduleKeys = new Set<string>();
+
+  for (const item of payload.schedule) {
+    const key = `${item.branchId}:${item.day}`;
+
+    if (scheduleKeys.has(key)) {
+      throw new AppError(
+        "Duplicate schedule entry for the same branch and day is not allowed",
+        400,
+      );
+    }
+
+    scheduleKeys.add(key);
+  }
+
+  // All branch IDs in request
+  const scheduleBranchIds = [
+    ...new Set(payload.schedule.map((item) => item.branchId)),
+  ];
+
+  // Validate all requested branches
+  const branches = await prisma.branch.findMany({
+    where: {
+      id: {
+        in: scheduleBranchIds,
+      },
+    },
+
+    select: {
+      id: true,
+      name: true,
+      status: true,
+
+      businessHours: {
+        select: {
+          day: true,
+          isClosed: true,
+          openTime: true,
+          closeTime: true,
+        },
+      },
+    },
+  });
+
+  if (branches.length !== scheduleBranchIds.length) {
+    throw new AppError("One or more branches do not exist", 404);
+  }
+
+  const branchMap = new Map(branches.map((branch) => [branch.id, branch]));
+
+  for (const item of payload.schedule) {
+    // Staff must belong to branch
+    if (!staffBranchIds.has(item.branchId)) {
+      throw new AppError(
+        "Staff cannot be scheduled in an unassigned branch",
+        400,
+      );
+    }
+
+    // Branch Manager scope
+    if (
+      requester.role === Role.BRANCH_MANAGER &&
+      managerBranchIds &&
+      !managerBranchIds.has(item.branchId)
+    ) {
+      throw new AppError(
+        "You cannot manage staff schedule outside your branch scope",
+        403,
+      );
+    }
+
+    const branch = branchMap.get(item.branchId)!;
+
+    if (branch.status !== BranchStatus.ACTIVE) {
+      throw new AppError(
+        `Cannot schedule staff in inactive branch "${branch.name}"`,
+        400,
+      );
+    }
+
+    const startMinutes = timeToMinutes(item.startTime);
+
+    const endMinutes = timeToMinutes(item.endTime);
+
+    if (startMinutes >= endMinutes) {
+      throw new AppError(
+        "Schedule startTime must be earlier than endTime",
+        400,
+      );
+    }
+
+    const businessHour = branch.businessHours.find(
+      (hour) => hour.day === item.day,
+    );
+
+    if (!businessHour) {
+      throw new AppError(
+        `Business hours are not configured for ${item.day} at branch "${branch.name}"`,
+        400,
+      );
+    }
+
+    if (businessHour.isClosed) {
+      throw new AppError(
+        `Branch "${branch.name}" is closed on ${item.day}`,
+        400,
+      );
+    }
+
+    if (!businessHour.openTime || !businessHour.closeTime) {
+      throw new AppError(
+        `Business hours are incomplete for ${item.day} at branch "${branch.name}"`,
+        400,
+      );
+    }
+
+    const branchOpenMinutes = timeToMinutes(businessHour.openTime);
+
+    const branchCloseMinutes = timeToMinutes(businessHour.closeTime);
+
+    if (startMinutes < branchOpenMinutes || endMinutes > branchCloseMinutes) {
+      throw new AppError(
+        `Staff schedule must be within branch business hours for ${item.day}`,
+        400,
+      );
+    }
+  }
+
+  // Cross-branch overlap validation
+  const schedulesByDay = new Map<string, typeof payload.schedule>();
+
+  for (const item of payload.schedule) {
+    const existing = schedulesByDay.get(item.day) ?? [];
+
+    existing.push(item);
+
+    schedulesByDay.set(item.day, existing);
+  }
+
+  for (const [day, schedules] of schedulesByDay) {
+    const sortedSchedules = [...schedules].sort(
+      (a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime),
+    );
+
+    for (let i = 0; i < sortedSchedules.length - 1; i++) {
+      const current = sortedSchedules[i];
+      const next = sortedSchedules[i + 1];
+
+      const currentEnd = timeToMinutes(current.endTime);
+
+      const nextStart = timeToMinutes(next.startTime);
+
+      if (currentEnd > nextStart) {
+        throw new AppError(`Schedule conflict detected on ${day}`, 409);
+      }
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // replace current schedule
+    await tx.staffSchedule.deleteMany({
+      where: {
+        staffId,
+      },
+    });
+
+    await tx.staffSchedule.createMany({
+      data: payload.schedule.map((item) => ({
+        staffId,
+        branchId: item.branchId,
+        day: item.day,
+        startTime: item.startTime,
+        endTime: item.endTime,
+      })),
+    });
+  });
+
+  return {
+    staffId,
+  };
+};
+
+const getStaffSchedule = async (
+  staffId: string,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  const staff = await prisma.staff.findUnique({
+    where: {
+      id: staffId,
+    },
+
+    include: {
+      branches: {
+        select: {
+          branchId: true,
+        },
+      },
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  // STAFF can only view own schedule
+  if (requester.role === Role.STAFF) {
+    if (staff.userId !== requester.userId) {
+      throw new AppError(
+        "You are not allowed to view this staff schedule",
+        403,
+      );
+    }
+  }
+
+  // BRANCH_MANAGER can only view staff inside managed branch scope
+  if (requester.role === Role.BRANCH_MANAGER) {
+    const managerBranches = await prisma.branchManagerBranch.findMany({
+      where: {
+        userId: requester.userId,
+      },
+
+      select: {
+        branchId: true,
+      },
+    });
+
+    const allowedBranchIds = new Set(
+      managerBranches.map((item) => item.branchId),
+    );
+
+    const hasAccess = staff.branches.some((item) =>
+      allowedBranchIds.has(item.branchId),
+    );
+
+    if (!hasAccess) {
+      throw new AppError(
+        "You are not allowed to view this staff schedule",
+        403,
+      );
+    }
+  }
+
+  const schedule = await prisma.staffSchedule.findMany({
+    where: {
+      staffId,
+    },
+
+    include: {
+      branch: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
+
+    orderBy: [
+      {
+        day: "asc",
+      },
+      {
+        startTime: "asc",
+      },
+    ],
+  });
+
+  return {
+    staffId: staff.id,
+    schedule: schedule.map((item) => ({
+      day: item.day,
+
+      branch: {
+        id: item.branch.id,
+        name: item.branch.name,
+      },
+
+      branchId: item.branchId,
+      startTime: item.startTime,
+      endTime: item.endTime,
+    })),
+  };
+};
+
+const getDayOfWeekFromDate = (date: string): DayOfWeek => {
+  const jsDay = new Date(`${date}T00:00:00Z`).getUTCDay();
+
+  const dayMap: Record<number, DayOfWeek> = {
+    0: DayOfWeek.SUNDAY,
+    1: DayOfWeek.MONDAY,
+    2: DayOfWeek.TUESDAY,
+    3: DayOfWeek.WEDNESDAY,
+    4: DayOfWeek.THURSDAY,
+    5: DayOfWeek.FRIDAY,
+    6: DayOfWeek.SATURDAY,
+  };
+
+  return dayMap[jsDay];
+};
+
+const createStaffUnavailability = async (
+  staffId: string,
+  payload: ICreateStaffUnavailabilityPayload,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  const staff = await prisma.staff.findUnique({
+    where: {
+      id: staffId,
+    },
+    include: {
+      branches: {
+        select: {
+          branchId: true,
+        },
+      },
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  // Branch Manager scope check
+  if (requester.role === Role.BRANCH_MANAGER) {
+    const managerBranches = await prisma.branchManagerBranch.findMany({
+      where: {
+        userId: requester.userId,
+      },
+      select: {
+        branchId: true,
+      },
+    });
+
+    const allowedBranchIds = new Set(
+      managerBranches.map((item) => item.branchId),
+    );
+
+    const hasAccess = staff.branches.some((item) =>
+      allowedBranchIds.has(item.branchId),
+    );
+
+    if (!hasAccess) {
+      throw new AppError(
+        "You are not allowed to manage this staff member",
+        403,
+      );
+    }
+  }
+
+  const startMinutes = timeToMinutes(payload.startTime);
+  const endMinutes = timeToMinutes(payload.endTime);
+
+  if (startMinutes >= endMinutes) {
+    throw new AppError("startTime must be earlier than endTime", 400);
+  }
+
+  const day = getDayOfWeekFromDate(payload.date);
+
+  // Find staff working schedule for that weekday
+  const schedules = await prisma.staffSchedule.findMany({
+    where: {
+      staffId,
+      day,
+    },
+    select: {
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  if (schedules.length === 0) {
+    throw new AppError("Staff is not scheduled to work on this date", 400);
+  }
+
+  // Unavailability must fit inside at least one working period
+  const fitsWorkingSchedule = schedules.some((schedule) => {
+    const workStart = timeToMinutes(schedule.startTime);
+    const workEnd = timeToMinutes(schedule.endTime);
+
+    return startMinutes >= workStart && endMinutes <= workEnd;
+  });
+
+  if (!fitsWorkingSchedule) {
+    throw new AppError(
+      "Unavailability must be within staff working hours",
+      400,
+    );
+  }
+
+  const date = new Date(`${payload.date}T00:00:00.000Z`);
+
+  // Overlap check
+  const existing = await prisma.staffUnavailability.findMany({
+    where: {
+      staffId,
+      date,
+    },
+    select: {
+      id: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  const hasOverlap = existing.some((item) => {
+    const existingStart = timeToMinutes(item.startTime);
+    const existingEnd = timeToMinutes(item.endTime);
+
+    return startMinutes < existingEnd && endMinutes > existingStart;
+  });
+
+  if (hasOverlap) {
+    throw new AppError(
+      "Unavailability conflicts with an existing blocked period",
+      409,
+    );
+  }
+
+  const result = await prisma.staffUnavailability.create({
+    data: {
+      staffId,
+      type: payload.type,
+      date,
+      startTime: payload.startTime,
+      endTime: payload.endTime,
+      reason: payload.reason?.trim() || null,
+    },
+  });
+
+  return {
+    id: result.id,
+    type: result.type,
+    date: payload.date,
+    startTime: result.startTime,
+    endTime: result.endTime,
+    reason: result.reason,
+  };
+};
+
+const getStaffUnavailability = async (
+  staffId: string,
+  query: {
+    from?: string;
+    to?: string;
+  },
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  const staff = await prisma.staff.findUnique({
+    where: {
+      id: staffId,
+    },
+
+    include: {
+      branches: {
+        select: {
+          branchId: true,
+        },
+      },
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  // STAFF can only view own unavailability
+  if (requester.role === Role.STAFF) {
+    if (staff.userId !== requester.userId) {
+      throw new AppError(
+        "You are not allowed to view this staff unavailability",
+        403,
+      );
+    }
+  }
+
+  // BRANCH_MANAGER scope check
+  if (requester.role === Role.BRANCH_MANAGER) {
+    const managerBranches = await prisma.branchManagerBranch.findMany({
+      where: {
+        userId: requester.userId,
+      },
+
+      select: {
+        branchId: true,
+      },
+    });
+
+    const allowedBranchIds = new Set(
+      managerBranches.map((item) => item.branchId),
+    );
+
+    const hasAccess = staff.branches.some((item) =>
+      allowedBranchIds.has(item.branchId),
+    );
+
+    if (!hasAccess) {
+      throw new AppError(
+        "You are not allowed to view this staff unavailability",
+        403,
+      );
+    }
+  }
+
+  let fromDate: Date | undefined;
+  let toDate: Date | undefined;
+
+  if (query.from) {
+    fromDate = new Date(`${query.from}T00:00:00.000Z`);
+  }
+
+  if (query.to) {
+    toDate = new Date(`${query.to}T23:59:59.999Z`);
+  }
+
+  if (fromDate && toDate && fromDate > toDate) {
+    throw new AppError("from date must not be later than to date", 400);
+  }
+
+  const items = await prisma.staffUnavailability.findMany({
+    where: {
+      staffId,
+
+      ...(fromDate || toDate
+        ? {
+            date: {
+              ...(fromDate && {
+                gte: fromDate,
+              }),
+
+              ...(toDate && {
+                lte: toDate,
+              }),
+            },
+          }
+        : {}),
+    },
+
+    orderBy: [
+      {
+        date: "asc",
+      },
+      {
+        startTime: "asc",
+      },
+    ],
+  });
+
+  return {
+    items: items.map((item) => ({
+      id: item.id,
+      type: item.type,
+
+      date: item.date.toISOString().slice(0, 10),
+
+      startTime: item.startTime,
+      endTime: item.endTime,
+      reason: item.reason,
+
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    })),
+  };
+};
+
+const updateStaffUnavailability = async (
+  staffId: string,
+  unavailabilityId: string,
+  payload: IUpdateStaffUnavailabilityPayload,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  const staff = await prisma.staff.findUnique({
+    where: {
+      id: staffId,
+    },
+
+    include: {
+      branches: {
+        select: {
+          branchId: true,
+        },
+      },
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  // Branch Manager scope check
+  if (requester.role === Role.BRANCH_MANAGER) {
+    const managerBranches = await prisma.branchManagerBranch.findMany({
+      where: {
+        userId: requester.userId,
+      },
+
+      select: {
+        branchId: true,
+      },
+    });
+
+    const allowedBranchIds = new Set(
+      managerBranches.map((item) => item.branchId),
+    );
+
+    const hasAccess = staff.branches.some((item) =>
+      allowedBranchIds.has(item.branchId),
+    );
+
+    if (!hasAccess) {
+      throw new AppError(
+        "You are not allowed to manage this staff member",
+        403,
+      );
+    }
+  }
+
+  const existingUnavailability = await prisma.staffUnavailability.findFirst({
+    where: {
+      id: unavailabilityId,
+      staffId,
+    },
+  });
+
+  if (!existingUnavailability) {
+    throw new AppError("Staff unavailability not found", 404);
+  }
+
+  const finalType = payload.type ?? existingUnavailability.type;
+
+  const finalDateString =
+    payload.date ?? existingUnavailability.date.toISOString().slice(0, 10);
+
+  const finalStartTime = payload.startTime ?? existingUnavailability.startTime;
+
+  const finalEndTime = payload.endTime ?? existingUnavailability.endTime;
+
+  const finalReason =
+    payload.reason !== undefined
+      ? payload.reason.trim() || null
+      : existingUnavailability.reason;
+
+  const startMinutes = timeToMinutes(finalStartTime);
+
+  const endMinutes = timeToMinutes(finalEndTime);
+
+  if (startMinutes >= endMinutes) {
+    throw new AppError("startTime must be earlier than endTime", 400);
+  }
+
+  const day = getDayOfWeekFromDate(finalDateString);
+
+  const schedules = await prisma.staffSchedule.findMany({
+    where: {
+      staffId,
+      day,
+    },
+
+    select: {
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  if (schedules.length === 0) {
+    throw new AppError("Staff is not scheduled to work on this date", 400);
+  }
+
+  const fitsWorkingSchedule = schedules.some((schedule) => {
+    const workStart = timeToMinutes(schedule.startTime);
+
+    const workEnd = timeToMinutes(schedule.endTime);
+
+    return startMinutes >= workStart && endMinutes <= workEnd;
+  });
+
+  if (!fitsWorkingSchedule) {
+    throw new AppError(
+      "Unavailability must be within staff working hours",
+      400,
+    );
+  }
+
+  const finalDate = new Date(`${finalDateString}T00:00:00.000Z`);
+
+  // Check overlap against OTHER records
+  const otherUnavailability = await prisma.staffUnavailability.findMany({
+    where: {
+      staffId,
+      date: finalDate,
+
+      id: {
+        not: unavailabilityId,
+      },
+    },
+
+    select: {
+      id: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  const hasOverlap = otherUnavailability.some((item) => {
+    const existingStart = timeToMinutes(item.startTime);
+
+    const existingEnd = timeToMinutes(item.endTime);
+
+    return startMinutes < existingEnd && endMinutes > existingStart;
+  });
+
+  if (hasOverlap) {
+    throw new AppError(
+      "Unavailability conflicts with an existing blocked period",
+      409,
+    );
+  }
+
+  const updated = await prisma.staffUnavailability.update({
+    where: {
+      id: unavailabilityId,
+    },
+
+    data: {
+      type: finalType,
+      date: finalDate,
+      startTime: finalStartTime,
+      endTime: finalEndTime,
+      reason: finalReason,
+    },
+  });
+
+  return {
+    id: updated.id,
+    type: updated.type,
+    date: updated.date.toISOString().slice(0, 10),
+    startTime: updated.startTime,
+    endTime: updated.endTime,
+    reason: updated.reason,
+  };
+};
+
+const deleteStaffUnavailability = async (
+  staffId: string,
+  unavailabilityId: string,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  const staff = await prisma.staff.findUnique({
+    where: {
+      id: staffId,
+    },
+
+    include: {
+      branches: {
+        select: {
+          branchId: true,
+        },
+      },
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  if (requester.role === Role.BRANCH_MANAGER) {
+    const managerBranches = await prisma.branchManagerBranch.findMany({
+      where: {
+        userId: requester.userId,
+      },
+
+      select: {
+        branchId: true,
+      },
+    });
+
+    const allowedBranchIds = new Set(
+      managerBranches.map((item) => item.branchId),
+    );
+
+    const hasAccess = staff.branches.some((item) =>
+      allowedBranchIds.has(item.branchId),
+    );
+
+    if (!hasAccess) {
+      throw new AppError(
+        "You are not allowed to manage this staff member",
+        403,
+      );
+    }
+  }
+
+  const existingUnavailability = await prisma.staffUnavailability.findFirst({
+    where: {
+      id: unavailabilityId,
+      staffId,
+    },
+  });
+
+  if (!existingUnavailability) {
+    throw new AppError("Staff unavailability not found", 404);
+  }
+
+  await prisma.staffUnavailability.delete({
+    where: {
+      id: unavailabilityId,
+    },
+  });
+
+  return null;
+};
+
+const getMyStaffSchedule = async (userId: string) => {
+  const staff = await prisma.staff.findUnique({
+    where: {
+      userId,
+    },
+
+    select: {
+      id: true,
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff profile not found", 404);
+  }
+
+  return getStaffSchedule(staff.id, {
+    userId,
+    role: Role.STAFF,
+  });
+};
+
 export const staffService = {
   createStaff,
   getStaff,
@@ -1585,4 +2621,12 @@ export const staffService = {
   assignStaffPackages,
   getBranchStaff,
   getEligibleStaffForService,
+  getEligibleStaffForPackage,
+  updateStaffSchedule,
+  getStaffSchedule,
+  createStaffUnavailability,
+  getStaffUnavailability,
+  updateStaffUnavailability,
+  deleteStaffUnavailability,
+  getMyStaffSchedule,
 };

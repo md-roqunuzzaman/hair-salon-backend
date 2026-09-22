@@ -62,3 +62,25 @@ enum StaffStatus {
   ACTIVE
   INACTIVE
 }
+
+enum StaffUnavailabilityType {
+  BREAK
+  TIME_OFF
+  LEAVE
+  BLOCKED
+}
+
+enum BookingMethod {
+  PAY_NOW
+  RESERVE_NOW
+}
+
+enum AppointmentStatus {
+  PENDING_PAYMENT
+  RESERVED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  EXPIRED
+}

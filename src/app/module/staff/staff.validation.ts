@@ -75,6 +75,77 @@ const assignStaffPackagesValidationSchema = z.object({
   }),
 });
 
+const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+const updateStaffScheduleValidationSchema = z.object({
+  body: z.object({
+    schedule: z
+      .array(
+        z.object({
+          day: z.enum([
+            "MONDAY",
+            "TUESDAY",
+            "WEDNESDAY",
+            "THURSDAY",
+            "FRIDAY",
+            "SATURDAY",
+            "SUNDAY",
+          ]),
+
+          branchId: z.string().uuid("Invalid branch ID"),
+
+          startTime: z
+            .string()
+            .regex(timeRegex, "startTime must be in HH:mm format"),
+
+          endTime: z
+            .string()
+            .regex(timeRegex, "endTime must be in HH:mm format"),
+        }),
+      )
+      .min(1, "At least one schedule item is required"),
+  }),
+});
+
+const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+
+const createStaffUnavailabilityValidationSchema = z.object({
+  body: z.object({
+    type: z.enum(["BREAK", "TIME_OFF", "LEAVE", "BLOCKED"]),
+
+    date: z.string().regex(dateRegex, "date must be in YYYY-MM-DD format"),
+
+    startTime: z.string().regex(timeRegex, "startTime must be in HH:mm format"),
+
+    endTime: z.string().regex(timeRegex, "endTime must be in HH:mm format"),
+
+    reason: z.string().max(500).optional(),
+  }),
+});
+
+const updateStaffUnavailabilityValidationSchema = z.object({
+  body: z.object({
+    type: z.enum(["BREAK", "TIME_OFF", "LEAVE", "BLOCKED"]).optional(),
+
+    date: z
+      .string()
+      .regex(dateRegex, "date must be in YYYY-MM-DD format")
+      .optional(),
+
+    startTime: z
+      .string()
+      .regex(timeRegex, "startTime must be in HH:mm format")
+      .optional(),
+
+    endTime: z
+      .string()
+      .regex(timeRegex, "endTime must be in HH:mm format")
+      .optional(),
+
+    reason: z.string().max(500).optional(),
+  }),
+});
+
 export const staffValidation = {
   createStaffValidationSchema,
   updateStaffValidationSchema,
@@ -82,4 +153,7 @@ export const staffValidation = {
   assignStaffBranchesValidationSchema,
   assignStaffServicesValidationSchema,
   assignStaffPackagesValidationSchema,
+  updateStaffScheduleValidationSchema,
+  createStaffUnavailabilityValidationSchema,
+  updateStaffUnavailabilityValidationSchema,
 };

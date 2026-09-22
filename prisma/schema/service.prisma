@@ -6,12 +6,13 @@ model Service {
   durationMinutes Int
   status          ServiceStatus @default(ACTIVE)
 
-  images    ServiceImage[]
-  branches  ServiceBranch[]
-  packages  PackageService[]
-  staff     StaffService[]
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
+  images       ServiceImage[]
+  branches     ServiceBranch[]
+  packages     PackageService[]
+  staff        StaffService[]
+  appointments Appointment[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 }
 
 model ServiceImage {

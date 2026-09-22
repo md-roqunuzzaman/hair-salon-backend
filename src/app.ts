@@ -13,6 +13,8 @@ import { ServiceRoutes } from "./app/module/service/service.route.js";
 import { PackageRoutes } from "./app/module/package/package.route.js";
 import { GroupPurchaseRoutes } from "./app/module/group-purchase/group-purchase.route.js";
 import { StaffRoutes } from "./app/module/staff/staff.route.js";
+import { AvailabilityRoutes } from "./app/module/availability/availability.route.js";
+import { AppointmentRoutes } from "./app/module/appointment/appointment.route.js";
 
 const app: Application = express();
 
@@ -38,6 +40,8 @@ app.use("/api/v1/services", ServiceRoutes);
 app.use("/api/v1/packages", PackageRoutes);
 app.use("/api/v1/group-purchases", GroupPurchaseRoutes);
 app.use("/api/v1/staff", StaffRoutes);
+app.use("/api/v1/availability", AvailabilityRoutes);
+app.use("/api/v1/appointments", AppointmentRoutes);
 // Basic route
 app.get("/", async (req: Request, res: Response) => {
   res.status(httpStatus.OK).json({

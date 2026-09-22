@@ -163,6 +163,173 @@ const getEligibleStaffForService = catchAsync(
   },
 );
 
+const getEligibleStaffForPackage = catchAsync(
+  async (req: Request, res: Response) => {
+    const branchId = req.params.branchId as string;
+    const packageId = req.params.packageId as string;
+
+    const result = await staffService.getEligibleStaffForPackage(
+      branchId,
+      packageId,
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Eligible staff for package fetched successfully",
+      data: result,
+    });
+  },
+);
+
+const updateStaffSchedule = catchAsync(async (req: Request, res: Response) => {
+  const staffId = req.params.staffId as string;
+
+  const result = await staffService.updateStaffSchedule(staffId, req.body, {
+    userId: req.user!.userId,
+    role: req.user!.role,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Schedule updated successfully",
+    data: result,
+  });
+});
+
+const getStaffSchedule = catchAsync(async (req: Request, res: Response) => {
+  const staffId = req.params.staffId as string;
+
+  const result = await staffService.getStaffSchedule(staffId, {
+    userId: req.user!.userId,
+    role: req.user!.role,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Staff schedule fetched successfully",
+    data: result,
+  });
+});
+
+const createStaffUnavailability = catchAsync(
+  async (req: Request, res: Response) => {
+    const staffId = req.params.staffId as string;
+
+    const result = await staffService.createStaffUnavailability(
+      staffId,
+      req.body,
+      {
+        userId: req.user!.userId,
+        role: req.user!.role,
+      },
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.CREATED,
+      success: true,
+      message: "Staff unavailability created successfully",
+      data: result,
+    });
+  },
+);
+
+const getStaffUnavailability = catchAsync(
+  async (req: Request, res: Response) => {
+    const staffId = req.params.staffId as string;
+
+    const from = req.query.from as string | undefined;
+
+    const to = req.query.to as string | undefined;
+
+    const result = await staffService.getStaffUnavailability(
+      staffId,
+      {
+        from,
+        to,
+      },
+      {
+        userId: req.user!.userId,
+        role: req.user!.role,
+      },
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Staff unavailability fetched successfully",
+      data: result,
+    });
+  },
+);
+
+const updateStaffUnavailability = catchAsync(
+  async (req: Request, res: Response) => {
+    const staffId = req.params.staffId as string;
+
+    const unavailabilityId = req.params.id as string;
+
+    const result = await staffService.updateStaffUnavailability(
+      staffId,
+      unavailabilityId,
+      req.body,
+      {
+        userId: req.user!.userId,
+        role: req.user!.role,
+      },
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Staff unavailability updated successfully",
+      data: result,
+    });
+  },
+);
+
+const deleteStaffUnavailability = catchAsync(
+  async (req: Request, res: Response) => {
+    const staffId = req.params.staffId as string;
+    const unavailabilityId = req.params.id as string;
+
+    const result = await staffService.deleteStaffUnavailability(
+      staffId,
+      unavailabilityId,
+      {
+        userId: req.user!.userId,
+        role: req.user!.role,
+      },
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Unavailability removed successfully",
+      data: result,
+    });
+  },
+);
+
+const getMyStaffSchedule = catchAsync(async (req: Request, res: Response) => {
+  /*
+   * userId comes from the authenticated JWT.
+   * Frontend does NOT need to send staffId.
+   */
+  const userId = req.user!.userId;
+
+  const result = await staffService.getMyStaffSchedule(userId);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "My staff schedule fetched successfully",
+    data: result,
+  });
+});
+
 export const staffController = {
   createStaff,
   getStaff,
@@ -174,4 +341,12 @@ export const staffController = {
   assignStaffPackages,
   getBranchStaff,
   getEligibleStaffForService,
+  getEligibleStaffForPackage,
+  updateStaffSchedule,
+  getStaffSchedule,
+  createStaffUnavailability,
+  getStaffUnavailability,
+  updateStaffUnavailability,
+  deleteStaffUnavailability,
+  getMyStaffSchedule,
 };

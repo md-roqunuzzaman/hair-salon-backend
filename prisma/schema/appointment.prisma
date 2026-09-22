@@ -1,0 +1,57 @@
+model Appointment {
+  id String @id @default(uuid())
+
+  customerId String
+  branchId   String
+  staffId    String
+
+  serviceId String?
+  packageId String?
+
+  bookingMethod     BookingMethod
+  appointmentStatus AppointmentStatus
+  paymentStatus     PaymentStatus
+
+  date      DateTime
+  startTime String
+  endTime   String
+
+  price           Decimal @db.Decimal(10, 2)
+  currency        String  @default("HKD")
+  durationMinutes Int
+
+  itemName String
+
+  holdExpiresAt DateTime?
+
+  qrToken      String?   @unique
+  qrVerifiedAt DateTime?
+  qrVerifiedBy String?
+
+  completedAt        DateTime?
+  cancelledAt        DateTime?
+  cancellationReason String?
+  noShowAt           DateTime?
+
+  customer User     @relation("CustomerAppointments", fields: [customerId], references: [id], onDelete: Restrict)
+  branch   Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  staff    Staff    @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  service  Service? @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  package  Package? @relation(fields: [packageId], references: [id], onDelete: Restrict)
+
+  verifiedByUser User? @relation("AppointmentQrVerifier", fields: [qrVerifiedBy], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([branchId])
+  @@index([staffId])
+  @@index([serviceId])
+  @@index([packageId])
+  @@index([date])
+  @@index([staffId, date])
+  @@index([appointmentStatus])
+  @@index([paymentStatus])
+  @@index([holdExpiresAt])
+}

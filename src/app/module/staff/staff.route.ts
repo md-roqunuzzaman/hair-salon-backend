@@ -66,4 +66,48 @@ router.put(
   staffController.assignStaffPackages,
 );
 
+router.put(
+  "/:staffId/schedule",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  validateRequest(staffValidation.updateStaffScheduleValidationSchema),
+  staffController.updateStaffSchedule,
+);
+
+router.get(
+  "/me/schedule",
+  auth(Role.STAFF),
+  staffController.getMyStaffSchedule,
+);
+router.get(
+  "/:staffId/schedule",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER, Role.STAFF),
+  staffController.getStaffSchedule,
+);
+
+router.post(
+  "/:staffId/unavailability",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  validateRequest(staffValidation.createStaffUnavailabilityValidationSchema),
+  staffController.createStaffUnavailability,
+);
+
+router.get(
+  "/:staffId/unavailability",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER, Role.STAFF),
+  staffController.getStaffUnavailability,
+);
+
+router.patch(
+  "/:staffId/unavailability/:id",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  validateRequest(staffValidation.updateStaffUnavailabilityValidationSchema),
+  staffController.updateStaffUnavailability,
+);
+
+router.delete(
+  "/:staffId/unavailability/:id",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  staffController.deleteStaffUnavailability,
+);
+
 export const StaffRoutes = router;

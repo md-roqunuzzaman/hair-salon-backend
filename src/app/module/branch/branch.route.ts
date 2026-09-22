@@ -63,4 +63,10 @@ router.get(
   "/:branchId/services/:serviceId/staff",
   staffController.getEligibleStaffForService,
 );
+
+router.get(
+  "/:branchId/packages/:packageId/staff",
+  staffController.getEligibleStaffForPackage,
+);
+
 export const BranchRoutes = router;

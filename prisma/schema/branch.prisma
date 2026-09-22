@@ -12,6 +12,8 @@ model Branch {
   packages       PackageBranch[]
   staff          StaffBranch[]
   managers       BranchManagerBranch[]
+  staffSchedules StaffSchedule[]
+  appointments   Appointment[]
   createdAt      DateTime              @default(now())
   updatedAt      DateTime              @updatedAt
 }

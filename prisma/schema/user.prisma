@@ -10,8 +10,10 @@ model User {
   groupPurchases     GroupPurchase[]
   mustChangePassword Boolean         @default(false)
 
-  staffProfile    Staff?
-  managedBranches BranchManagerBranch[]
-  createdAt       DateTime              @default(now())
-  updatedAt       DateTime              @updatedAt
+  staffProfile         Staff?
+  managedBranches      BranchManagerBranch[]
+  appointments         Appointment[]         @relation("CustomerAppointments")
+  verifiedAppointments Appointment[]         @relation("AppointmentQrVerifier")
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
 }
