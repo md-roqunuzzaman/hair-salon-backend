@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { NextFunction, Request, Response, Router } from "express";
 
 import { Role } from "../../../../generated/prisma/client.js";
 
@@ -9,8 +9,15 @@ import { validateRequest } from "../../middleware/validateRequest.js";
 import { staffController } from "./staff.controller.js";
 
 import { staffValidation } from "./staff.validation.js";
+import { reviewValidation } from "../review/review.validation.js";
+import { reviewController } from "../review/review.controller.js";
 
 const router = Router();
+
+const queryToBody = (req: Request, res: Response, next: NextFunction) => {
+  req.body = req.query;
+  next();
+};
 
 router.post(
   "/",
@@ -74,6 +81,14 @@ router.put(
 );
 
 router.get(
+  "/me/appointments",
+  auth(Role.STAFF),
+  queryToBody,
+  validateRequest(staffValidation.getMyAppointmentsValidationSchema),
+  staffController.getMyAppointments,
+);
+
+router.get(
   "/me/schedule",
   auth(Role.STAFF),
   staffController.getMyStaffSchedule,
@@ -110,4 +125,10 @@ router.delete(
   staffController.deleteStaffUnavailability,
 );
 
+router.get(
+  "/:staffId/reviews",
+  queryToBody,
+  validateRequest(reviewValidation.getReviewsValidationSchema),
+  reviewController.getStaffReviews,
+);
 export const StaffRoutes = router;

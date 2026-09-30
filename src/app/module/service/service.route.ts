@@ -19,7 +19,7 @@ router.post(
   serviceController.createService,
 );
 
-router.get("/", auth(Role.BRAND_OWNER), serviceController.getServices);
+router.get("/", serviceController.getServices);
 
 router.get("/:serviceId", serviceController.getServiceById);
 

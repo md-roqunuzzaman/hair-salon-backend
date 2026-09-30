@@ -146,6 +146,37 @@ const updateStaffUnavailabilityValidationSchema = z.object({
   }),
 });
 
+const getMyAppointmentsValidationSchema = z.object({
+  body: z.object({
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")
+      .optional(),
+
+    status: z
+      .enum([
+        "PENDING_PAYMENT",
+        "RESERVED",
+        "CONFIRMED",
+        "COMPLETED",
+        "CANCELLED",
+        "NO_SHOW",
+        "EXPIRED",
+      ])
+      .optional(),
+
+    page: z
+      .string()
+      .regex(/^\d+$/, "page must be a positive integer")
+      .optional(),
+
+    limit: z
+      .string()
+      .regex(/^\d+$/, "limit must be a positive integer")
+      .optional(),
+  }),
+});
+
 export const staffValidation = {
   createStaffValidationSchema,
   updateStaffValidationSchema,
@@ -156,4 +187,5 @@ export const staffValidation = {
   updateStaffScheduleValidationSchema,
   createStaffUnavailabilityValidationSchema,
   updateStaffUnavailabilityValidationSchema,
+  getMyAppointmentsValidationSchema,
 };

@@ -1,0 +1,48 @@
+model Review {
+  id String @id @default(uuid())
+
+  customerId    String
+  appointmentId String @unique
+  branchId      String
+  staffId       String
+
+  rating  Int
+  comment String?
+
+  moderationStatus ReviewModerationStatus @default(VISIBLE)
+  moderationReason String?
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  images ReviewImage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([branchId])
+  @@index([staffId])
+  @@index([rating])
+  @@index([moderationStatus])
+}
+
+model ReviewImage {
+  id String @id @default(uuid())
+
+  reviewId  String
+  objectKey String
+
+  sortOrder Int @default(0)
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([reviewId])
+}

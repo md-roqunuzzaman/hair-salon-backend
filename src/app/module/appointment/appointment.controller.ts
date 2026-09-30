@@ -154,6 +154,108 @@ const getAppointmentQr = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const verifyQr = catchAsync(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const role = req.user!.role;
+
+  const result = await appointmentService.verifyQr(userId, role, req.body);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Reservation verified successfully",
+    data: result,
+  });
+});
+
+const completeAppointment = catchAsync(async (req: Request, res: Response) => {
+  const appointmentId = req.params.appointmentId;
+
+  if (Array.isArray(appointmentId)) {
+    throw new AppError("Invalid appointmentId", 400);
+  }
+
+  const userId = req.user!.userId;
+  const role = req.user!.role;
+
+  const result = await appointmentService.completeAppointment(
+    appointmentId,
+    userId,
+    role,
+    req.body,
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Appointment completed successfully",
+    data: result,
+  });
+});
+
+const markNoShow = catchAsync(async (req: Request, res: Response) => {
+  const appointmentId = req.params.appointmentId;
+
+  if (Array.isArray(appointmentId)) {
+    throw new AppError("Invalid appointmentId", 400);
+  }
+
+  const userId = req.user!.userId;
+  const role = req.user!.role;
+
+  const result = await appointmentService.markNoShow(
+    appointmentId,
+    userId,
+    role,
+    req.body,
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Appointment marked as no-show successfully",
+    data: result,
+  });
+});
+
+const getBranchAppointments = catchAsync(
+  async (req: Request, res: Response) => {
+    const branchId = req.params.branchId;
+
+    if (Array.isArray(branchId)) {
+      throw new AppError("Invalid branchId", 400);
+    }
+
+    const userId = req.user!.userId;
+    const role = req.user!.role;
+
+    const result = await appointmentService.getBranchAppointments(
+      branchId,
+      userId,
+      role,
+      req.body,
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Branch appointments fetched successfully",
+      data: result,
+    });
+  },
+);
+
+const getAllAppointments = catchAsync(async (req: Request, res: Response) => {
+  const result = await appointmentService.getAllAppointments(req.body);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Appointments fetched successfully",
+    data: result,
+  });
+});
+
 export const appointmentController = {
   createPayNowAppointment,
   createReserveAppointment,
@@ -162,4 +264,9 @@ export const appointmentController = {
   cancelAppointment,
   rescheduleAppointment,
   getAppointmentQr,
+  verifyQr,
+  completeAppointment,
+  markNoShow,
+  getBranchAppointments,
+  getAllAppointments,
 };

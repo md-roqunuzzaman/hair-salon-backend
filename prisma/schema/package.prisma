@@ -21,6 +21,7 @@ model Package {
   groupPurchases GroupPurchase[]
   staff          StaffPackage[]
   appointments   Appointment[]
+  promotions     PromotionPackage[]
 
   services PackageService[]
   branches PackageBranch[]

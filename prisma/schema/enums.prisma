@@ -56,6 +56,7 @@ enum PaymentStatus {
   FAILED
   REFUNDED
   PARTIALLY_REFUNDED
+  PARTIALLY_PAID
 }
 
 enum StaffStatus {
@@ -73,6 +74,7 @@ enum StaffUnavailabilityType {
 enum BookingMethod {
   PAY_NOW
   RESERVE_NOW
+  DEPOSIT
 }
 
 enum AppointmentStatus {
@@ -83,4 +85,51 @@ enum AppointmentStatus {
   CANCELLED
   NO_SHOW
   EXPIRED
+}
+
+enum PaymentProvider {
+  STRIPE
+}
+
+enum PaymentPurpose {
+  APPOINTMENT
+  GROUP_PURCHASE
+  WALLET_TOP_UP
+  APPOINTMENT_DEPOSIT
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+enum WalletTransactionType {
+  TOP_UP
+  BONUS
+  APPOINTMENT_PAYMENT
+  GROUP_PURCHASE_PAYMENT
+  REFUND
+  ADJUSTMENT
+}
+
+enum BalanceType {
+  PAID
+  BONUS
+}
+
+enum WalletTopupStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum PromotionStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ReviewModerationStatus {
+  VISIBLE
+  HIDDEN
 }

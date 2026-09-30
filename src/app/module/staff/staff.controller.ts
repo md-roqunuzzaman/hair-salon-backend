@@ -330,6 +330,19 @@ const getMyStaffSchedule = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getMyAppointments = catchAsync(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+
+  const result = await staffService.getMyAppointments(userId, req.body);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Staff appointments fetched successfully",
+    data: result,
+  });
+});
+
 export const staffController = {
   createStaff,
   getStaff,
@@ -349,4 +362,5 @@ export const staffController = {
   updateStaffUnavailability,
   deleteStaffUnavailability,
   getMyStaffSchedule,
+  getMyAppointments,
 };

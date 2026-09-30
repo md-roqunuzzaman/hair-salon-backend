@@ -12,8 +12,9 @@ model GroupPurchase {
   reservationExpiresAt DateTime?
   purchasedAt          DateTime?
 
-  customer User    @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  package  Package @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  customer User      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  package  Package   @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  payments Payment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

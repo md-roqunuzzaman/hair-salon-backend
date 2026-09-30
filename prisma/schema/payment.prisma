@@ -1,0 +1,70 @@
+model Payment {
+  id String @id @default(uuid())
+
+  customerId      String
+  appointmentId   String?
+  groupPurchaseId String?
+
+  purpose  PaymentPurpose
+  provider PaymentProvider @default(STRIPE)
+
+  amount   Decimal @db.Decimal(10, 2)
+  currency String  @default("HKD")
+
+  status PaymentStatus @default(PENDING)
+
+  providerPaymentId String? @unique
+
+  paidAt     DateTime?
+  failedAt   DateTime?
+  refundedAt DateTime?
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+
+  groupPurchase GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
+  refunds       Refund[]
+  walletTopupId String?
+  walletTopup   WalletTopup?   @relation(fields: [walletTopupId], references: [id], onDelete: Restrict)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([walletTopupId])
+  @@index([customerId])
+  @@index([appointmentId])
+  @@index([groupPurchaseId])
+  @@index([status])
+}
+
+model StripeWebhookEvent {
+  id String @id
+
+  type String
+
+  processedAt DateTime @default(now())
+}
+
+model Refund {
+  id String @id @default(uuid())
+
+  paymentId String
+
+  providerRefundId String? @unique
+
+  amount Decimal @db.Decimal(10, 2)
+
+  reason String
+
+  status RefundStatus @default(PENDING)
+
+  refundedAt DateTime?
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([paymentId])
+  @@index([status])
+}

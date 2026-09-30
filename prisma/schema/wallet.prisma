@@ -1,0 +1,66 @@
+model Wallet {
+  id String @id @default(uuid())
+
+  customerId String @unique
+
+  paidBalance  Decimal @default(0) @db.Decimal(10, 2)
+  bonusBalance Decimal @default(0) @db.Decimal(10, 2)
+
+  currency String @default("HKD")
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  transactions WalletTransaction[]
+  topups       WalletTopup[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+}
+
+model WalletTransaction {
+  id String @id @default(uuid())
+
+  walletId String
+
+  type WalletTransactionType
+
+  balanceType BalanceType
+
+  amount Decimal @db.Decimal(10, 2)
+
+  referenceId String?
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+
+  @@index([walletId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model WalletTopup {
+  id String @id @default(uuid())
+
+  walletId String
+
+  amount         Decimal @db.Decimal(10, 2)
+  potentialBonus Decimal @default(0) @db.Decimal(10, 2)
+
+  status WalletTopupStatus @default(PENDING)
+
+  providerPaymentId String? @unique
+
+  paidAt   DateTime?
+  failedAt DateTime?
+
+  wallet    Wallet    @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  payments  Payment[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([walletId])
+  @@index([status])
+}

@@ -7,6 +7,10 @@ import { validateRequest } from "../../middleware/validateRequest.js";
 
 import { appointmentController } from "./appointment.controller.js";
 import { appointmentValidation } from "./appointment.validation.js";
+import { walletValidation } from "../wallet/wallet.validation.js";
+import { walletController } from "../wallet/wallet.controller.js";
+import { reviewValidation } from "../review/review.validation.js";
+import { reviewController } from "../review/review.controller.js";
 
 const router = Router();
 
@@ -63,4 +67,46 @@ router.get(
   appointmentController.getAppointmentQr,
 );
 
+router.post(
+  "/verify-qr",
+  auth(Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER),
+  validateRequest(appointmentValidation.verifyQrValidationSchema),
+  appointmentController.verifyQr,
+);
+
+router.post(
+  "/:appointmentId/complete",
+  auth(Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER),
+  validateRequest(appointmentValidation.completeAppointmentValidationSchema),
+  appointmentController.completeAppointment,
+);
+
+router.post(
+  "/:appointmentId/no-show",
+  auth(Role.BRANCH_MANAGER, Role.BRAND_OWNER),
+  validateRequest(appointmentValidation.markNoShowValidationSchema),
+  appointmentController.markNoShow,
+);
+
+router.get(
+  "/",
+  auth(Role.BRAND_OWNER),
+  queryToBody,
+  validateRequest(appointmentValidation.getAllAppointmentsValidationSchema),
+  appointmentController.getAllAppointments,
+);
+
+router.post(
+  "/:appointmentId/pay-with-wallet",
+  auth(Role.CUSTOMER),
+  validateRequest(walletValidation.payAppointmentWithWalletValidationSchema),
+  walletController.payAppointmentWithWallet,
+);
+
+router.post(
+  "/:appointmentId/reviews",
+  auth(Role.CUSTOMER),
+  validateRequest(reviewValidation.createReviewValidationSchema),
+  reviewController.createReview,
+);
 export const AppointmentRoutes = router;

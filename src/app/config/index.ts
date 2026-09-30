@@ -23,4 +23,7 @@ export default {
   brand_description: process.env.BRAND_DESCRIPTION,
   brand_phone: process.env.BRAND_PHONE,
   brand_email: process.env.BRAND_EMAIL,
+  stripe_secret_key: process.env.STRIPE_SECRET_KEY!,
+
+  stripe_webhook_secret: process.env.STRIPE_WEBHOOK_SECRET!,
 };

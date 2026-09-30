@@ -1,0 +1,60 @@
+model Promotion {
+  id String @id @default(uuid())
+
+  name String
+
+  minimumTopup Decimal @db.Decimal(10, 2)
+  bonusAmount  Decimal @db.Decimal(10, 2)
+
+  startAt DateTime
+  endAt   DateTime
+
+  status PromotionStatus @default(ACTIVE)
+
+  branches PromotionBranch[]
+  services PromotionService[]
+  packages PromotionPackage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([startAt])
+  @@index([endAt])
+}
+
+model PromotionBranch {
+  promotionId String
+  branchId    String
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([promotionId, branchId])
+  @@index([branchId])
+}
+
+model PromotionService {
+  promotionId String
+  serviceId   String
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([promotionId, serviceId])
+  @@index([serviceId])
+}
+
+model PromotionPackage {
+  promotionId String
+  packageId   String
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@id([promotionId, packageId])
+  @@index([packageId])
+}

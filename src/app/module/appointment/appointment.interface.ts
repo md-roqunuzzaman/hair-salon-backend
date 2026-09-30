@@ -193,3 +193,98 @@ export interface IAppointmentQrResponse {
   available: boolean;
   qrValue: string | null;
 }
+
+export interface IVerifyQrPayload {
+  qrToken: string;
+  branchId: string;
+}
+
+export interface IVerifyQrResponse {
+  appointmentId: string;
+  appointmentStatus: "CONFIRMED";
+  qrVerifiedAt: Date;
+
+  verifiedBy: {
+    id: string;
+    name: string;
+  };
+}
+
+export interface ICompleteAppointmentPayload {
+  notes?: string;
+}
+
+export interface ICompleteAppointmentResponse {
+  appointmentId: string;
+  appointmentStatus: "COMPLETED";
+  completedAt: Date;
+  reviewEnabled: true;
+}
+
+export interface IMarkNoShowPayload {
+  reason: string;
+}
+
+export interface IMarkNoShowResponse {
+  appointmentId: string;
+  appointmentStatus: "NO_SHOW";
+}
+
+export interface IBranchAppointmentsQuery {
+  page?: string;
+  limit?: string;
+
+  date?: string;
+  staffId?: string;
+
+  bookingMethod?: "PAY_NOW" | "RESERVE_NOW";
+
+  appointmentStatus?:
+    | "PENDING_PAYMENT"
+    | "RESERVED"
+    | "CONFIRMED"
+    | "COMPLETED"
+    | "CANCELLED"
+    | "NO_SHOW"
+    | "EXPIRED";
+
+  paymentStatus?:
+    | "UNPAID"
+    | "PENDING"
+    | "PAID"
+    | "FAILED"
+    | "REFUNDED"
+    | "PARTIALLY_REFUNDED";
+}
+
+export interface IAllAppointmentsQuery {
+  page?: string;
+  limit?: string;
+
+  branchId?: string;
+  staffId?: string;
+  serviceId?: string;
+  packageId?: string;
+
+  bookingMethod?: "PAY_NOW" | "RESERVE_NOW";
+
+  appointmentStatus?:
+    | "PENDING_PAYMENT"
+    | "RESERVED"
+    | "CONFIRMED"
+    | "COMPLETED"
+    | "CANCELLED"
+    | "NO_SHOW"
+    | "EXPIRED";
+
+  paymentStatus?:
+    | "UNPAID"
+    | "PENDING"
+    | "PAID"
+    | "FAILED"
+    | "REFUNDED"
+    | "PARTIALLY_REFUNDED";
+
+  from?: string;
+  to?: string;
+}

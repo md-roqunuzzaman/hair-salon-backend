@@ -2,10 +2,12 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 
 import {
+  AppointmentStatus,
   BranchStatus,
   DayOfWeek,
   ListingStatus,
   PackageStatus,
+  PaymentStatus,
   Prisma,
   Role,
   ServiceStatus,
@@ -22,11 +24,16 @@ import {
   IAssignStaffServicesPayload,
   ICreateStaffPayload,
   ICreateStaffUnavailabilityPayload,
+  IMyStaffAppointmentsQuery,
   IUpdateStaffPayload,
   IUpdateStaffSchedulePayload,
   IUpdateStaffStatusPayload,
   IUpdateStaffUnavailabilityPayload,
 } from "./staff.interface.js";
+import {
+  IMyPaymentItem,
+  IMyPaymentsQuery,
+} from "../payment/payment.interface.js";
 
 const generateTemporaryPassword = () => {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -2610,6 +2617,187 @@ const getMyStaffSchedule = async (userId: string) => {
   });
 };
 
+const getMyAppointments = async (
+  userId: string,
+  query: IMyStaffAppointmentsQuery,
+) => {
+  // =====================================================
+  // 1. RESOLVE LOGGED-IN STAFF
+  // =====================================================
+
+  const staff = await prisma.staff.findUnique({
+    where: {
+      userId,
+    },
+
+    select: {
+      id: true,
+      status: true,
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  if (staff.status !== "ACTIVE") {
+    throw new AppError("Staff is inactive", 403);
+  }
+
+  // =====================================================
+  // 2. PAGINATION
+  // =====================================================
+
+  const page = Number(query.page ?? 1);
+  const limit = Number(query.limit ?? 20);
+
+  if (page < 1) {
+    throw new AppError("page must be at least 1", 400);
+  }
+
+  if (limit < 1 || limit > 100) {
+    throw new AppError("limit must be between 1 and 100", 400);
+  }
+
+  const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 3. FILTERS
+  // =====================================================
+
+  const where: Prisma.AppointmentWhereInput = {
+    staffId: staff.id,
+  };
+
+  if (query.date) {
+    where.date = new Date(`${query.date}T00:00:00.000Z`);
+  }
+
+  if (query.status) {
+    where.appointmentStatus = query.status as AppointmentStatus;
+  }
+
+  // =====================================================
+  // 4. FETCH
+  // =====================================================
+
+  const [appointments, total] = await prisma.$transaction([
+    prisma.appointment.findMany({
+      where,
+
+      skip,
+      take: limit,
+
+      orderBy: [
+        {
+          date: "asc",
+        },
+        {
+          startTime: "asc",
+        },
+      ],
+
+      select: {
+        id: true,
+
+        bookingMethod: true,
+        appointmentStatus: true,
+        paymentStatus: true,
+
+        date: true,
+        startTime: true,
+        endTime: true,
+
+        itemName: true,
+        durationMinutes: true,
+
+        branch: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        customer: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+          },
+        },
+
+        serviceId: true,
+        packageId: true,
+      },
+    }),
+
+    prisma.appointment.count({
+      where,
+    }),
+  ]);
+
+  // =====================================================
+  // 5. DTO
+  // =====================================================
+
+  const items = appointments.map((appointment) => ({
+    id: appointment.id,
+
+    bookingMethod: appointment.bookingMethod,
+
+    appointmentStatus: appointment.appointmentStatus,
+
+    paymentStatus: appointment.paymentStatus,
+
+    branch: {
+      id: appointment.branch.id,
+      name: appointment.branch.name,
+    },
+
+    customer: {
+      id: appointment.customer.id,
+      name: appointment.customer.name,
+      phone: appointment.customer.phone,
+    },
+
+    service: appointment.serviceId
+      ? {
+          id: appointment.serviceId,
+          name: appointment.itemName,
+        }
+      : null,
+
+    package: appointment.packageId
+      ? {
+          id: appointment.packageId,
+          name: appointment.itemName,
+        }
+      : null,
+
+    date: appointment.date.toISOString().slice(0, 10),
+
+    startTime: appointment.startTime,
+    endTime: appointment.endTime,
+
+    durationMinutes: appointment.durationMinutes,
+  }));
+
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+  return {
+    items,
+
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    },
+  };
+};
+
 export const staffService = {
   createStaff,
   getStaff,
@@ -2629,4 +2817,5 @@ export const staffService = {
   updateStaffUnavailability,
   deleteStaffUnavailability,
   getMyStaffSchedule,
+  getMyAppointments,
 };

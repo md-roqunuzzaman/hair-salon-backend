@@ -69,3 +69,18 @@ export interface IUpdateStaffUnavailabilityPayload {
   endTime?: string;
   reason?: string;
 }
+
+export interface IMyStaffAppointmentsQuery {
+  date?: string;
+  status?:
+    | "PENDING_PAYMENT"
+    | "RESERVED"
+    | "CONFIRMED"
+    | "COMPLETED"
+    | "CANCELLED"
+    | "NO_SHOW"
+    | "EXPIRED";
+
+  page?: string;
+  limit?: string;
+}

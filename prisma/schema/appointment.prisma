@@ -29,9 +29,11 @@ model Appointment {
   qrVerifiedBy String?
 
   completedAt        DateTime?
+  completionNotes    String?
   cancelledAt        DateTime?
   cancellationReason String?
   noShowAt           DateTime?
+  noShowReason       String?
 
   customer User     @relation("CustomerAppointments", fields: [customerId], references: [id], onDelete: Restrict)
   branch   Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
@@ -39,7 +41,12 @@ model Appointment {
   service  Service? @relation(fields: [serviceId], references: [id], onDelete: Restrict)
   package  Package? @relation(fields: [packageId], references: [id], onDelete: Restrict)
 
-  verifiedByUser User? @relation("AppointmentQrVerifier", fields: [qrVerifiedBy], references: [id], onDelete: SetNull)
+  verifiedByUser    User?     @relation("AppointmentQrVerifier", fields: [qrVerifiedBy], references: [id], onDelete: SetNull)
+  depositPercentage Decimal?  @db.Decimal(5, 2)
+  depositAmount     Decimal?  @db.Decimal(10, 2)
+  remainingAmount   Decimal?  @db.Decimal(10, 2)
+  payments          Payment[]
+  review            Review?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

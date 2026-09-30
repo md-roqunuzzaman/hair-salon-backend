@@ -12,23 +12,32 @@ import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 import { AvailabilityService } from "../availability/availability.service.js";
+import { notificationService } from "../notification/notification.service.js";
 
 import {
+  IAllAppointmentsQuery,
   IAppointmentDetails,
   IAppointmentQrResponse,
+  IBranchAppointmentsQuery,
   ICancelAppointmentPayload,
   ICancelAppointmentResponse,
+  ICompleteAppointmentPayload,
+  ICompleteAppointmentResponse,
   ICreatePayNowAppointmentPayload,
   ICreateReserveAppointmentPayload,
+  IMarkNoShowPayload,
+  IMarkNoShowResponse,
   IMyAppointmentsQuery,
   IMyAppointmentsResult,
   IPayNowAppointmentResponse,
   IRescheduleAppointmentPayload,
   IRescheduleAppointmentResponse,
   IReserveAppointmentResponse,
+  IVerifyQrPayload,
+  IVerifyQrResponse,
 } from "./appointment.interface.js";
 
-const PAY_NOW_HOLD_MINUTES = 5;
+const PAY_NOW_HOLD_MINUTES = 2;
 const MAX_TRANSACTION_RETRIES = 3;
 
 const timeToMinutes = (time: string) => {
@@ -1104,6 +1113,7 @@ const cancelAppointment = async (
 
       select: {
         id: true,
+        customerId: true,
         appointmentStatus: true,
         paymentStatus: true,
       },
@@ -1127,7 +1137,7 @@ const cancelAppointment = async (
       );
     }
 
-    return tx.appointment.update({
+    const updatedAppointment = await tx.appointment.update({
       where: {
         id: appointmentId,
       },
@@ -1145,6 +1155,18 @@ const cancelAppointment = async (
         appointmentStatus: true,
       },
     });
+
+    await notificationService.createNotification(
+      {
+        userId: current.customerId,
+        type: "BOOKING_CANCELLED",
+        title: "Booking cancelled",
+        message: "Your appointment has been cancelled.",
+      },
+      tx,
+    );
+
+    return updatedAppointment;
   });
 
   return {
@@ -1407,7 +1429,7 @@ const rescheduleAppointment = async (
           // UPDATE SAME APPOINTMENT
           // ---------------------------------------------
 
-          return tx.appointment.update({
+          const updatedAppointment = await tx.appointment.update({
             where: {
               id: appointmentId,
             },
@@ -1426,6 +1448,18 @@ const rescheduleAppointment = async (
               endTime: true,
             },
           });
+
+          await notificationService.createNotification(
+            {
+              userId: current.customerId,
+              type: "BOOKING_RESCHEDULED",
+              title: "Booking rescheduled",
+              message: `Your appointment has been rescheduled to ${date} at ${startTime}.`,
+            },
+            tx,
+          );
+
+          return updatedAppointment;
         },
 
         {
@@ -1534,6 +1568,978 @@ const getAppointmentQr = async (
   };
 };
 
+const verifyQr = async (
+  userId: string,
+  role: Role,
+  payload: IVerifyQrPayload,
+): Promise<IVerifyQrResponse> => {
+  // GET /appointments/:id/qr returns:
+  // reservation:<token>
+  //
+  // Contract request uses raw qrToken.
+  // For operational robustness, backend accepts either.
+  const qrToken = payload.qrToken.startsWith("reservation:")
+    ? payload.qrToken.slice("reservation:".length)
+    : payload.qrToken;
+
+  if (!qrToken) {
+    throw new AppError("Invalid QR", 400);
+  }
+
+  // =====================================================
+  // 1. FIND APPOINTMENT BY QR TOKEN
+  // =====================================================
+
+  const appointment = await prisma.appointment.findFirst({
+    where: {
+      qrToken,
+    },
+
+    include: {
+      staff: {
+        select: {
+          userId: true,
+        },
+      },
+
+      branch: {
+        include: {
+          bookingPolicy: true,
+        },
+      },
+    },
+  });
+
+  if (!appointment) {
+    throw new AppError("Invalid QR", 404);
+  }
+
+  // =====================================================
+  // 2. PAY NOW MUST NEVER USE RESERVATION QR
+  // =====================================================
+
+  if (appointment.bookingMethod === BookingMethod.PAY_NOW) {
+    throw new AppError("QR is not allowed for Pay Now appointments", 409);
+  }
+
+  // =====================================================
+  // 3. BRANCH MUST MATCH
+  // =====================================================
+
+  if (appointment.branchId !== payload.branchId) {
+    throw new AppError("QR does not belong to this branch", 403);
+  }
+
+  // =====================================================
+  // 4. AUTHORIZATION / BRANCH SCOPE
+  // =====================================================
+
+  if (role === Role.BRANCH_MANAGER) {
+    const managerBranch = await prisma.branchManagerBranch.findUnique({
+      where: {
+        userId_branchId: {
+          userId,
+          branchId: appointment.branchId,
+        },
+      },
+    });
+
+    if (!managerBranch) {
+      throw new AppError(
+        "You are not allowed to verify QR for this branch",
+        403,
+      );
+    }
+  }
+
+  if (role === Role.STAFF) {
+    // Authorized STAFF = assigned staff for appointment.
+    if (appointment.staff.userId !== userId) {
+      throw new AppError(
+        "You are not allowed to verify this appointment QR",
+        403,
+      );
+    }
+  }
+
+  // BRAND_OWNER = brand-wide access.
+
+  // =====================================================
+  // 5. ALREADY USED
+  // =====================================================
+
+  if (appointment.qrVerifiedAt) {
+    throw new AppError("QR has already been used", 409);
+  }
+
+  // =====================================================
+  // 6. VALID APPOINTMENT STATUS
+  // =====================================================
+
+  if (appointment.appointmentStatus !== AppointmentStatus.RESERVED) {
+    throw new AppError("QR cannot be verified for this appointment", 409);
+  }
+
+  // =====================================================
+  // 7. QR EXPIRY
+  // =====================================================
+  // Current booking policy:
+  // reserveExpiryRule = APPOINTMENT_TIME
+  //
+  // So reservation QR is valid only before appointment start.
+  // =====================================================
+
+  const appointmentDate = appointment.date.toISOString().slice(0, 10);
+
+  const appointmentDateTime = new Date(
+    `${appointmentDate}T${appointment.startTime}:00+08:00`,
+  );
+
+  if (new Date() >= appointmentDateTime) {
+    throw new AppError("QR has expired", 410);
+  }
+
+  // =====================================================
+  // 8. VERIFIED-BY USER
+  // =====================================================
+
+  const verifiedByUser = await prisma.user.findUnique({
+    where: {
+      id: userId,
+    },
+
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  if (!verifiedByUser) {
+    throw new AppError("Verifier user not found", 404);
+  }
+
+  // =====================================================
+  // 9. ATOMIC SINGLE-USE QR VERIFICATION
+  // =====================================================
+
+  const qrVerifiedAt = new Date();
+
+  const result = await prisma.$transaction(async (tx) => {
+    const current = await tx.appointment.findUnique({
+      where: {
+        id: appointment.id,
+      },
+
+      select: {
+        id: true,
+        customerId: true,
+        bookingMethod: true,
+        appointmentStatus: true,
+        qrVerifiedAt: true,
+        qrToken: true,
+        branchId: true,
+      },
+    });
+
+    if (!current || current.qrToken !== qrToken) {
+      throw new AppError("Invalid QR", 404);
+    }
+
+    if (current.bookingMethod === BookingMethod.PAY_NOW) {
+      throw new AppError("QR is not allowed for Pay Now appointments", 409);
+    }
+
+    if (current.branchId !== payload.branchId) {
+      throw new AppError("QR does not belong to this branch", 403);
+    }
+
+    if (current.qrVerifiedAt) {
+      throw new AppError("QR has already been used", 409);
+    }
+
+    if (current.appointmentStatus !== AppointmentStatus.RESERVED) {
+      throw new AppError("QR cannot be verified for this appointment", 409);
+    }
+
+    const updatedAppointment = await tx.appointment.update({
+      where: {
+        id: current.id,
+      },
+
+      data: {
+        appointmentStatus: AppointmentStatus.CONFIRMED,
+
+        qrVerifiedAt,
+
+        qrVerifiedBy: userId,
+      },
+
+      select: {
+        id: true,
+        appointmentStatus: true,
+        qrVerifiedAt: true,
+      },
+    });
+
+    await notificationService.createNotification(
+      {
+        userId: current.customerId,
+        type: "BOOKING_CONFIRMED",
+        title: "Booking confirmed",
+        message: "Your reservation has been confirmed.",
+      },
+      tx,
+    );
+
+    return updatedAppointment;
+  });
+
+  if (!result.qrVerifiedAt) {
+    throw new AppError("QR verification failed", 500);
+  }
+
+  return {
+    appointmentId: result.id,
+    appointmentStatus: "CONFIRMED",
+    qrVerifiedAt: result.qrVerifiedAt,
+
+    verifiedBy: {
+      id: verifiedByUser.id,
+      name: verifiedByUser.name,
+    },
+  };
+};
+
+const completeAppointment = async (
+  appointmentId: string,
+  userId: string,
+  role: Role,
+  payload: ICompleteAppointmentPayload,
+): Promise<ICompleteAppointmentResponse> => {
+  const appointment = await prisma.appointment.findUnique({
+    where: {
+      id: appointmentId,
+    },
+
+    include: {
+      staff: {
+        select: {
+          userId: true,
+        },
+      },
+    },
+  });
+
+  if (!appointment) {
+    throw new AppError("Appointment not found", 404);
+  }
+
+  // =====================================================
+  // 1. ROLE / RESOURCE SCOPE
+  // =====================================================
+
+  if (role === Role.STAFF) {
+    if (appointment.staff.userId !== userId) {
+      throw new AppError(
+        "You are not allowed to complete this appointment",
+        403,
+      );
+    }
+  }
+
+  if (role === Role.BRANCH_MANAGER) {
+    const managerBranch = await prisma.branchManagerBranch.findUnique({
+      where: {
+        userId_branchId: {
+          userId,
+          branchId: appointment.branchId,
+        },
+      },
+    });
+
+    if (!managerBranch) {
+      throw new AppError(
+        "You are not allowed to complete this appointment",
+        403,
+      );
+    }
+  }
+
+  // BRAND_OWNER = brand-wide access.
+
+  // =====================================================
+  // 2. VALID STATUS
+  // =====================================================
+
+  if (appointment.appointmentStatus !== AppointmentStatus.CONFIRMED) {
+    throw new AppError(
+      "Appointment cannot be completed in its current status",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 3. COMPLETE TRANSACTIONALLY
+  // =====================================================
+
+  const completedAt = new Date();
+
+  const result = await prisma.$transaction(async (tx) => {
+    const current = await tx.appointment.findUnique({
+      where: {
+        id: appointmentId,
+      },
+
+      select: {
+        id: true,
+        customerId: true,
+        appointmentStatus: true,
+      },
+    });
+
+    if (!current) {
+      throw new AppError("Appointment not found", 404);
+    }
+
+    if (current.appointmentStatus !== AppointmentStatus.CONFIRMED) {
+      throw new AppError(
+        "Appointment cannot be completed in its current status",
+        409,
+      );
+    }
+
+    const updatedAppointment = await tx.appointment.update({
+      where: {
+        id: appointmentId,
+      },
+
+      data: {
+        appointmentStatus: AppointmentStatus.COMPLETED,
+
+        completedAt,
+
+        completionNotes: payload.notes?.trim() || null,
+      },
+
+      select: {
+        id: true,
+        appointmentStatus: true,
+        completedAt: true,
+      },
+    });
+
+    await notificationService.createNotification(
+      {
+        userId: current.customerId,
+        type: "SERVICE_COMPLETED",
+        title: "Service completed",
+        message: "Your appointment is complete. You can now leave a review.",
+      },
+      tx,
+    );
+
+    return updatedAppointment;
+  });
+
+  if (!result.completedAt) {
+    throw new AppError("Appointment completion failed", 500);
+  }
+
+  return {
+    appointmentId: result.id,
+    appointmentStatus: "COMPLETED",
+    completedAt: result.completedAt,
+    reviewEnabled: true,
+  };
+};
+
+const markNoShow = async (
+  appointmentId: string,
+  userId: string,
+  role: Role,
+  payload: IMarkNoShowPayload,
+): Promise<IMarkNoShowResponse> => {
+  const appointment = await prisma.appointment.findUnique({
+    where: {
+      id: appointmentId,
+    },
+
+    select: {
+      id: true,
+      branchId: true,
+      appointmentStatus: true,
+    },
+  });
+
+  if (!appointment) {
+    throw new AppError("Appointment not found", 404);
+  }
+
+  // =====================================================
+  // 1. BRANCH MANAGER SCOPE
+  // =====================================================
+
+  if (role === Role.BRANCH_MANAGER) {
+    const managerBranch = await prisma.branchManagerBranch.findUnique({
+      where: {
+        userId_branchId: {
+          userId,
+          branchId: appointment.branchId,
+        },
+      },
+    });
+
+    if (!managerBranch) {
+      throw new AppError(
+        "You are not allowed to mark this appointment as no-show",
+        403,
+      );
+    }
+  }
+
+  // BRAND_OWNER = brand-wide access.
+
+  // =====================================================
+  // 2. VALID STATUS TRANSITION
+  // =====================================================
+
+  const noShowAllowedStatuses: AppointmentStatus[] = [
+    AppointmentStatus.RESERVED,
+    AppointmentStatus.CONFIRMED,
+  ];
+
+  if (!noShowAllowedStatuses.includes(appointment.appointmentStatus)) {
+    throw new AppError(
+      "Appointment cannot be marked as no-show in its current status",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 3. UPDATE TRANSACTIONALLY
+  // =====================================================
+
+  const noShowAt = new Date();
+
+  const result = await prisma.$transaction(async (tx) => {
+    const current = await tx.appointment.findUnique({
+      where: {
+        id: appointmentId,
+      },
+
+      select: {
+        id: true,
+        appointmentStatus: true,
+      },
+    });
+
+    if (!current) {
+      throw new AppError("Appointment not found", 404);
+    }
+
+    if (!noShowAllowedStatuses.includes(current.appointmentStatus)) {
+      throw new AppError(
+        "Appointment cannot be marked as no-show in its current status",
+        409,
+      );
+    }
+
+    return tx.appointment.update({
+      where: {
+        id: appointmentId,
+      },
+
+      data: {
+        appointmentStatus: AppointmentStatus.NO_SHOW,
+
+        noShowAt,
+
+        noShowReason: payload.reason.trim(),
+      },
+
+      select: {
+        id: true,
+        appointmentStatus: true,
+      },
+    });
+  });
+
+  return {
+    appointmentId: result.id,
+    appointmentStatus: "NO_SHOW",
+  };
+};
+
+const getBranchAppointments = async (
+  branchId: string,
+  userId: string,
+  role: Role,
+  query: IBranchAppointmentsQuery,
+) => {
+  // =====================================================
+  // 1. BRANCH EXISTS
+  // =====================================================
+
+  const branch = await prisma.branch.findUnique({
+    where: {
+      id: branchId,
+    },
+
+    select: {
+      id: true,
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  // =====================================================
+  // 2. ROLE / BRANCH SCOPE
+  // =====================================================
+
+  let staffProfileId: string | null = null;
+
+  if (role === Role.BRANCH_MANAGER) {
+    const managerBranch = await prisma.branchManagerBranch.findUnique({
+      where: {
+        userId_branchId: {
+          userId,
+          branchId,
+        },
+      },
+
+      select: {
+        userId: true,
+      },
+    });
+
+    if (!managerBranch) {
+      throw new AppError(
+        "You are not allowed to access appointments for this branch",
+        403,
+      );
+    }
+  }
+
+  if (role === Role.STAFF) {
+    const staff = await prisma.staff.findUnique({
+      where: {
+        userId,
+      },
+
+      select: {
+        id: true,
+
+        branches: {
+          where: {
+            branchId,
+          },
+
+          select: {
+            branchId: true,
+          },
+        },
+      },
+    });
+
+    if (!staff) {
+      throw new AppError("Staff not found", 404);
+    }
+
+    if (staff.branches.length === 0) {
+      throw new AppError(
+        "You are not allowed to access appointments for this branch",
+        403,
+      );
+    }
+
+    staffProfileId = staff.id;
+  }
+
+  // BRAND_OWNER = any branch.
+
+  // =====================================================
+  // 3. PAGINATION
+  // =====================================================
+
+  const page = Number(query.page ?? 1);
+  const limit = Number(query.limit ?? 20);
+
+  if (page < 1) {
+    throw new AppError("page must be at least 1", 400);
+  }
+
+  if (limit < 1 || limit > 100) {
+    throw new AppError("limit must be between 1 and 100", 400);
+  }
+
+  const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 4. FILTERS
+  // =====================================================
+
+  const where: Prisma.AppointmentWhereInput = {
+    branchId,
+  };
+
+  if (query.date) {
+    where.date = new Date(`${query.date}T00:00:00.000Z`);
+  }
+
+  if (query.bookingMethod) {
+    where.bookingMethod = query.bookingMethod as BookingMethod;
+  }
+
+  if (query.appointmentStatus) {
+    where.appointmentStatus = query.appointmentStatus as AppointmentStatus;
+  }
+
+  if (query.paymentStatus) {
+    where.paymentStatus = query.paymentStatus as PaymentStatus;
+  }
+
+  // STAFF may only see own assigned appointments.
+  if (role === Role.STAFF) {
+    where.staffId = staffProfileId!;
+  } else if (query.staffId) {
+    where.staffId = query.staffId;
+  }
+
+  // =====================================================
+  // 5. FETCH
+  // =====================================================
+
+  const [appointments, total] = await prisma.$transaction([
+    prisma.appointment.findMany({
+      where,
+
+      skip,
+      take: limit,
+
+      orderBy: [
+        {
+          date: "asc",
+        },
+        {
+          startTime: "asc",
+        },
+      ],
+
+      select: {
+        id: true,
+
+        bookingMethod: true,
+        appointmentStatus: true,
+        paymentStatus: true,
+
+        date: true,
+        startTime: true,
+        endTime: true,
+
+        itemName: true,
+        durationMinutes: true,
+        price: true,
+        currency: true,
+
+        customer: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+          },
+        },
+
+        staff: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        serviceId: true,
+        packageId: true,
+      },
+    }),
+
+    prisma.appointment.count({
+      where,
+    }),
+  ]);
+
+  // =====================================================
+  // 6. DTO
+  // =====================================================
+
+  const items = appointments.map((appointment) => ({
+    id: appointment.id,
+
+    bookingMethod: appointment.bookingMethod,
+
+    appointmentStatus: appointment.appointmentStatus,
+
+    paymentStatus: appointment.paymentStatus,
+
+    customer: {
+      id: appointment.customer.id,
+      name: appointment.customer.name,
+      phone: appointment.customer.phone,
+    },
+
+    staff: {
+      id: appointment.staff.id,
+      name: appointment.staff.name,
+    },
+
+    service: appointment.serviceId
+      ? {
+          id: appointment.serviceId,
+          name: appointment.itemName,
+        }
+      : null,
+
+    package: appointment.packageId
+      ? {
+          id: appointment.packageId,
+          name: appointment.itemName,
+        }
+      : null,
+
+    date: appointment.date.toISOString().slice(0, 10),
+
+    startTime: appointment.startTime,
+    endTime: appointment.endTime,
+
+    durationMinutes: appointment.durationMinutes,
+
+    price: Number(appointment.price),
+    currency: appointment.currency,
+  }));
+
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+  return {
+    items,
+
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    },
+  };
+};
+
+const getAllAppointments = async (query: IAllAppointmentsQuery) => {
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
+
+  const page = Number(query.page ?? 1);
+  const limit = Number(query.limit ?? 20);
+
+  if (page < 1) {
+    throw new AppError("page must be at least 1", 400);
+  }
+
+  if (limit < 1 || limit > 100) {
+    throw new AppError("limit must be between 1 and 100", 400);
+  }
+
+  const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 2. FILTERS
+  // =====================================================
+
+  const where: Prisma.AppointmentWhereInput = {};
+
+  if (query.branchId) {
+    where.branchId = query.branchId;
+  }
+
+  if (query.staffId) {
+    where.staffId = query.staffId;
+  }
+
+  if (query.serviceId) {
+    where.serviceId = query.serviceId;
+  }
+
+  if (query.packageId) {
+    where.packageId = query.packageId;
+  }
+
+  if (query.bookingMethod) {
+    where.bookingMethod = query.bookingMethod as BookingMethod;
+  }
+
+  if (query.appointmentStatus) {
+    where.appointmentStatus = query.appointmentStatus as AppointmentStatus;
+  }
+
+  if (query.paymentStatus) {
+    where.paymentStatus = query.paymentStatus as PaymentStatus;
+  }
+
+  if (query.from || query.to) {
+    where.date = {};
+
+    if (query.from) {
+      where.date.gte = new Date(`${query.from}T00:00:00.000Z`);
+    }
+
+    if (query.to) {
+      where.date.lte = new Date(`${query.to}T00:00:00.000Z`);
+    }
+  }
+
+  // =====================================================
+  // 3. FETCH + COUNT
+  // =====================================================
+
+  const [appointments, total] = await prisma.$transaction([
+    prisma.appointment.findMany({
+      where,
+
+      skip,
+      take: limit,
+
+      orderBy: [
+        {
+          date: "desc",
+        },
+        {
+          startTime: "desc",
+        },
+      ],
+
+      select: {
+        id: true,
+
+        bookingMethod: true,
+        appointmentStatus: true,
+        paymentStatus: true,
+
+        date: true,
+        startTime: true,
+        endTime: true,
+
+        itemName: true,
+        durationMinutes: true,
+
+        price: true,
+        currency: true,
+
+        branch: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        customer: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+          },
+        },
+
+        staff: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        serviceId: true,
+        packageId: true,
+      },
+    }),
+
+    prisma.appointment.count({
+      where,
+    }),
+  ]);
+
+  // =====================================================
+  // 4. RESPONSE DTO
+  // =====================================================
+
+  const items = appointments.map((appointment) => ({
+    id: appointment.id,
+
+    bookingMethod: appointment.bookingMethod,
+
+    appointmentStatus: appointment.appointmentStatus,
+
+    paymentStatus: appointment.paymentStatus,
+
+    branch: {
+      id: appointment.branch.id,
+      name: appointment.branch.name,
+    },
+
+    customer: {
+      id: appointment.customer.id,
+      name: appointment.customer.name,
+      phone: appointment.customer.phone,
+    },
+
+    staff: {
+      id: appointment.staff.id,
+      name: appointment.staff.name,
+    },
+
+    service: appointment.serviceId
+      ? {
+          id: appointment.serviceId,
+
+          // Booking-time snapshot
+          name: appointment.itemName,
+        }
+      : null,
+
+    package: appointment.packageId
+      ? {
+          id: appointment.packageId,
+
+          // Booking-time snapshot
+          name: appointment.itemName,
+        }
+      : null,
+
+    date: appointment.date.toISOString().slice(0, 10),
+
+    startTime: appointment.startTime,
+    endTime: appointment.endTime,
+
+    durationMinutes: appointment.durationMinutes,
+
+    price: Number(appointment.price),
+    currency: appointment.currency,
+  }));
+
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+  return {
+    items,
+
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    },
+  };
+};
+
 export const appointmentService = {
   createPayNowAppointment,
   createReserveAppointment,
@@ -1542,4 +2548,9 @@ export const appointmentService = {
   cancelAppointment,
   rescheduleAppointment,
   getAppointmentQr,
+  verifyQr,
+  completeAppointment,
+  markNoShow,
+  getBranchAppointments,
+  getAllAppointments,
 };

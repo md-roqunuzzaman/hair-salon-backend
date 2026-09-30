@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { NextFunction, Request, Response, Router } from "express";
 
 import { Role } from "../../../../generated/prisma/client.js";
 
@@ -9,6 +9,12 @@ import { branchController } from "./branch.controller.js";
 import { branchValidation } from "./branch.validation.js";
 import { packageController } from "../package/package.controller.js";
 import { staffController } from "../staff/staff.controller.js";
+import { appointmentValidation } from "../appointment/appointment.validation.js";
+import { appointmentController } from "../appointment/appointment.controller.js";
+import { reviewValidation } from "../review/review.validation.js";
+import { reviewController } from "../review/review.controller.js";
+import { dashboardValidation } from "../dashboard/dashboard.validation.js";
+import { dashboardController } from "../dashboard/dashboard.controller.js";
 
 const router = Router();
 
@@ -69,4 +75,46 @@ router.get(
   staffController.getEligibleStaffForPackage,
 );
 
+const appointmentQueryToBody = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  req.body = req.query;
+  next();
+};
+router.get(
+  "/:branchId/appointments",
+  auth(Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER),
+  appointmentQueryToBody,
+  validateRequest(appointmentValidation.getBranchAppointmentsValidationSchema),
+  appointmentController.getBranchAppointments,
+);
+
+const queryToBody = (req: Request, res: Response, next: NextFunction) => {
+  req.body = {
+    ...req.query,
+  };
+
+  next();
+};
+
+router.get(
+  "/:branchId/reviews",
+  queryToBody,
+  validateRequest(reviewValidation.getReviewsValidationSchema),
+  reviewController.getBranchReviews,
+);
+
+router.get(
+  "/:branchId/dashboard",
+
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+
+  queryToBody,
+
+  validateRequest(dashboardValidation.getDashboardValidationSchema),
+
+  dashboardController.getBranchDashboard,
+);
 export const BranchRoutes = router;
