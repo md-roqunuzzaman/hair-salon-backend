@@ -20,7 +20,14 @@ router.post(
   validateRequest(appointmentValidation.createPayNowValidationSchema),
   appointmentController.createPayNowAppointment,
 );
-
+router.post(
+  "/deposit",
+  auth(Role.CUSTOMER),
+  validateRequest(
+    appointmentValidation.createDepositAppointmentValidationSchema,
+  ),
+  appointmentController.createDepositAppointment,
+);
 router.post(
   "/reserve",
   auth(Role.CUSTOMER),
@@ -39,6 +46,12 @@ router.get(
   queryToBody,
   validateRequest(appointmentValidation.getMyAppointmentsValidationSchema),
   appointmentController.getMyAppointments,
+);
+router.post(
+  "/:appointmentId/remaining-payment",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER, Role.STAFF),
+  validateRequest(appointmentValidation.recordRemainingPaymentValidationSchema),
+  appointmentController.recordRemainingPayment,
 );
 
 router.get(
@@ -109,4 +122,5 @@ router.post(
   validateRequest(reviewValidation.createReviewValidationSchema),
   reviewController.createReview,
 );
+
 export const AppointmentRoutes = router;

@@ -36,9 +36,32 @@ export interface IUpdateBusinessHoursPayload {
 
 export interface IUpdateBookingPolicyPayload {
   slotIntervalMinutes: number;
+
   minimumBookingNoticeMinutes: number;
+
   maximumAdvanceBookingDays: number;
+
   cancellationCutoffHours: number;
+
   rescheduleCutoffHours: number;
+
   reserveExpiryRule: ReserveExpiryRule;
+
+  // Deposit is always enabled.
+  // Only the percentage can be configured.
+  depositPercentage: number;
+}
+
+export interface ICustomerOperationalSearchQuery {
+  q: string;
+}
+
+export interface ICustomerOperationalSearchItem {
+  id: string;
+  name: string;
+  phone: string | null;
+}
+
+export interface ICustomerOperationalSearchResponse {
+  items: ICustomerOperationalSearchItem[];
 }

@@ -17,7 +17,7 @@ export interface ICreatePackagePayload {
 
   branchIds: string[];
 
-  imageObjectKeys: string[];
+  imageObjectKeys?: string[];
 
   listingStatus: ListingStatus;
 
@@ -35,6 +35,7 @@ export interface IUpdatePackagePayload {
   regularPrice?: number;
   packagePrice?: number;
   durationMinutes?: number;
+  imageObjectKeys?: string[];
 
   capacity?: number;
   purchaseLimitPerCustomer?: number;

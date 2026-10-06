@@ -65,6 +65,21 @@ const getStaffReviews = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getMyReviews = catchAsync(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AppError("AUTH_REQUIRED", 401);
+  }
+
+  const result = await reviewService.getMyReviews(req.user.userId, req.body);
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: "My reviews fetched successfully",
+    data: result,
+  });
+});
+
 const updateReview = catchAsync(async (req: Request, res: Response) => {
   const customerId = req.user!.userId;
 
@@ -114,7 +129,11 @@ const moderateReview = catchAsync(async (req: Request, res: Response) => {
     throw new AppError("Invalid reviewId", 400);
   }
 
-  const result = await reviewService.moderateReview(reviewId, req.body);
+  const result = await reviewService.moderateReview(
+    reviewId,
+    req.user!.userId,
+    req.body,
+  );
 
   sendResponse(res, {
     success: true,
@@ -124,11 +143,65 @@ const moderateReview = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const saveReviewReply = catchAsync(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AppError("AUTH_REQUIRED", 401);
+  }
+
+  const reviewId = req.params.reviewId;
+
+  if (!reviewId || Array.isArray(reviewId)) {
+    throw new AppError("Invalid reviewId", 400);
+  }
+
+  const result = await reviewService.saveReviewReply(
+    reviewId,
+    req.user.userId,
+    req.user.role,
+    req.body,
+  );
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: "Review reply saved successfully",
+    data: result,
+  });
+});
+
+const deleteReviewReply = catchAsync(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AppError("AUTH_REQUIRED", 401);
+  }
+
+  const reviewId = req.params.reviewId;
+
+  if (!reviewId || Array.isArray(reviewId)) {
+    throw new AppError("Invalid reviewId", 400);
+  }
+
+  await reviewService.deleteReviewReply(
+    reviewId,
+    req.user.userId,
+    req.user.role,
+  );
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: "Review reply deleted successfully",
+    data: null,
+  });
+});
+
 export const reviewController = {
   createReview,
   getBranchReviews,
   getStaffReviews,
+  getMyReviews,
   updateReview,
   deleteReview,
   moderateReview,
+  saveReviewReply,
+  deleteReviewReply,
 };

@@ -59,7 +59,11 @@ const updateService = catchAsync(async (req: Request, res: Response) => {
 const updateServiceStatus = catchAsync(async (req: Request, res: Response) => {
   const serviceId = req.params.serviceId as string;
 
-  const result = await serviceService.updateServiceStatus(serviceId, req.body);
+  const result = await serviceService.updateServiceStatus(
+    serviceId,
+    req.body,
+    req.user!.userId,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

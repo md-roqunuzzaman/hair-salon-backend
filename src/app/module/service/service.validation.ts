@@ -25,7 +25,8 @@ const createServiceValidationSchema = z.object({
 
     imageObjectKeys: z
       .array(z.string().min(1, "Invalid image object key"))
-      .min(1, "At least one service image is required"),
+      .min(1, "At least one service image is required")
+      .optional(),
   }),
 });
 
@@ -36,6 +37,7 @@ const updateServiceValidationSchema = z.object({
     description: z.string().max(1000).optional(),
 
     price: z.number().positive().optional(),
+    imageObjectKeys: z.array(z.string().trim().min(1)).optional(),
 
     durationMinutes: z.number().int().positive().optional(),
   }),

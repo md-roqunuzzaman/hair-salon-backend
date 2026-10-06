@@ -16,8 +16,10 @@ model User {
   verifiedAppointments Appointment[]         @relation("AppointmentQrVerifier")
   payments             Payment[]
   wallet               Wallet?
-  reviews              Review[]
+  reviews              Review[]              @relation("CustomerReviews")
+  reviewReplies        Review[]              @relation("ReviewRepliedBy")
   notifications        Notification[]
+  auditLogs            AuditLog[]
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
 }

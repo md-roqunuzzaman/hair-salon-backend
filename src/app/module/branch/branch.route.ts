@@ -117,4 +117,12 @@ router.get(
 
   dashboardController.getBranchDashboard,
 );
+
+router.get(
+  "/:branchId/customers/search",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  queryToBody,
+  validateRequest(branchValidation.customerOperationalSearchValidationSchema),
+  branchController.searchBranchCustomers,
+);
 export const BranchRoutes = router;

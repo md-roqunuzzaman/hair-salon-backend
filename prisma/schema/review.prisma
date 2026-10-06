@@ -9,10 +9,15 @@ model Review {
   rating  Int
   comment String?
 
-  moderationStatus ReviewModerationStatus @default(VISIBLE)
+  moderationStatus ReviewModerationStatus @default(PENDING)
   moderationReason String?
 
-  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  replyText   String?
+  repliedAt   DateTime?
+  repliedById String?
+
+  customer  User  @relation("CustomerReviews", fields: [customerId], references: [id], onDelete: Cascade)
+  repliedBy User? @relation("ReviewRepliedBy", fields: [repliedById], references: [id], onDelete: SetNull)
 
   appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
 
@@ -30,6 +35,7 @@ model Review {
   @@index([staffId])
   @@index([rating])
   @@index([moderationStatus])
+  @@index([repliedById])
 }
 
 model ReviewImage {

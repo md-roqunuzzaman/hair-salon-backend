@@ -22,3 +22,13 @@ export interface IModerateReviewPayload {
   moderationStatus: ReviewModerationStatus;
   reason?: string;
 }
+
+export interface IReviewReplyPayload {
+  reply: string;
+}
+
+export interface IGetReviewsQuery {
+  page?: number;
+  limit?: number;
+  rating?: number;
+}

@@ -169,8 +169,20 @@ const updateBookingPolicyValidationSchema = z.object({
       .min(0, "Reschedule cutoff cannot be negative"),
 
     reserveExpiryRule: z.enum(["APPOINTMENT_TIME"]),
+
+    depositPercentage: z
+      .number()
+      .min(1, "Deposit percentage must be at least 1")
+      .max(100, "Deposit percentage cannot exceed 100"),
   }),
 });
+
+const customerOperationalSearchValidationSchema = z.object({
+  body: z.object({
+    q: z.string().trim().min(1, "Search query is required").max(100),
+  }),
+});
+
 export const branchValidation = {
   createBranchValidationSchema,
   updateBranchValidationSchema,
@@ -178,4 +190,5 @@ export const branchValidation = {
   businessHourSchema,
   updateBusinessHoursValidationSchema,
   updateBookingPolicyValidationSchema,
+  customerOperationalSearchValidationSchema,
 };

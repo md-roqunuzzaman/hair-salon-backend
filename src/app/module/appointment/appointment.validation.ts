@@ -273,6 +273,48 @@ const getAllAppointmentsValidationSchema = z.object({
     }),
 });
 
+const createDepositAppointmentValidationSchema = z.object({
+  body: z
+    .object({
+      branchId: z.string().uuid("Invalid branchId"),
+
+      serviceId: z.string().uuid("Invalid serviceId").optional(),
+
+      packageId: z.string().uuid("Invalid packageId").optional(),
+
+      staffId: z.string().uuid("Invalid staffId"),
+
+      date: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format"),
+
+      startTime: z
+        .string()
+        .regex(
+          /^([01]\d|2[0-3]):[0-5]\d$/,
+          "Start time must be in HH:mm format",
+        ),
+    })
+    .superRefine((data, ctx) => {
+      const hasService = Boolean(data.serviceId);
+      const hasPackage = Boolean(data.packageId);
+
+      if (hasService === hasPackage) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["serviceId"],
+          message: "Exactly one of serviceId or packageId is required",
+        });
+      }
+    }),
+});
+
+const recordRemainingPaymentValidationSchema = z.object({
+  body: z.object({
+    paymentMethod: z.enum(["CASH", "CARD", "FPS", "OTHER"]),
+  }),
+});
+
 export const appointmentValidation = {
   createPayNowValidationSchema,
   createReserveValidationSchema,
@@ -285,4 +327,6 @@ export const appointmentValidation = {
   markNoShowValidationSchema,
   getBranchAppointmentsValidationSchema,
   getAllAppointmentsValidationSchema,
+  createDepositAppointmentValidationSchema,
+  recordRemainingPaymentValidationSchema,
 };

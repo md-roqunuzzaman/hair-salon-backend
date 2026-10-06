@@ -1,10 +1,15 @@
 import {
   AppointmentStatus,
+  BalanceType,
   BookingMethod,
   PackageType,
+  PaymentProvider,
+  PaymentPurpose,
   PaymentStatus,
   Prisma,
+  RefundStatus,
   Role,
+  WalletTransactionType,
 } from "../../../../generated/prisma/client.js";
 
 import { prisma } from "../../lib/prisma.js";
@@ -14,10 +19,12 @@ import {
   IBookingConversionReportQuery,
   IGroupPurchaseReportResponse,
   IPackageReportResponse,
+  IPaymentReportResponse,
   IReportDateQuery,
   IServiceReportResponse,
   IStaffReportQuery,
   IStaffReportResponse,
+  IWalletReportResponse,
 } from "./report.interface.js";
 
 const roundPercentage = (value: number) => Number(value.toFixed(2));
@@ -1442,6 +1449,278 @@ const getStaffReport = async (
   };
 };
 
+const getPaymentReport = async (): Promise<IPaymentReportResponse> => {
+  // =====================================================
+  // 1. STRIPE BUSINESS PAYMENTS
+  // =====================================================
+  //
+  // Include:
+  // - PAY_NOW appointment payment
+  // - DEPOSIT payment
+  // - Group Purchase payment
+  //
+  // Exclude:
+  // - Wallet top-up
+  // - Salon/manual remaining payment
+  //
+  // REFUNDED / PARTIALLY_REFUNDED payment original amount
+  // remains part of gross Stripe payments.
+  // Actual refunded amount is deducted separately below.
+  // =====================================================
+
+  const stripePaymentSummary = await prisma.payment.aggregate({
+    where: {
+      provider: PaymentProvider.STRIPE,
+
+      purpose: {
+        in: [
+          PaymentPurpose.APPOINTMENT,
+          PaymentPurpose.APPOINTMENT_DEPOSIT,
+          PaymentPurpose.GROUP_PURCHASE,
+        ],
+      },
+
+      status: {
+        in: [
+          PaymentStatus.PAID,
+          PaymentStatus.PARTIALLY_REFUNDED,
+          PaymentStatus.REFUNDED,
+        ],
+      },
+    },
+
+    _sum: {
+      amount: true,
+    },
+  });
+
+  const stripePayments = Number(stripePaymentSummary._sum.amount ?? 0);
+
+  // =====================================================
+  // 2. WALLET PAYMENTS
+  // =====================================================
+  //
+  // Wallet payment ledger is stored as negative amounts:
+  //
+  // APPOINTMENT_PAYMENT
+  // amount = -280
+  //
+  // Therefore sum will be negative.
+  // Convert final amount to positive report value.
+  //
+  // Both PAID and BONUS balances count because together
+  // they represent the actual amount used to pay.
+  // =====================================================
+
+  const walletPaymentSummary = await prisma.walletTransaction.aggregate({
+    where: {
+      type: {
+        in: [
+          WalletTransactionType.APPOINTMENT_PAYMENT,
+          WalletTransactionType.GROUP_PURCHASE_PAYMENT,
+        ],
+      },
+
+      amount: {
+        lt: 0,
+      },
+    },
+
+    _sum: {
+      amount: true,
+    },
+  });
+
+  const walletPayments = Math.abs(
+    Number(walletPaymentSummary._sum.amount ?? 0),
+  );
+
+  // =====================================================
+  // 3. SUCCESSFUL REFUNDS
+  // =====================================================
+  //
+  // Refund table is source of truth.
+  // Only SUCCEEDED refunds affect financial report.
+  // =====================================================
+
+  const refundSummary = await prisma.refund.aggregate({
+    where: {
+      status: RefundStatus.SUCCEEDED,
+    },
+
+    _sum: {
+      amount: true,
+    },
+  });
+
+  const refunds = Number(refundSummary._sum.amount ?? 0);
+
+  // =====================================================
+  // 4. NET PAYMENTS
+  // =====================================================
+
+  const netPayments = stripePayments + walletPayments - refunds;
+
+  // =====================================================
+  // 5. RESPONSE
+  // =====================================================
+
+  return {
+    stripePayments,
+    walletPayments,
+    refunds,
+    netPayments,
+  };
+};
+
+const getWalletReport = async (): Promise<IWalletReportResponse> => {
+  // =====================================================
+  // 1. TOP-UP TOTAL
+  // =====================================================
+  //
+  // Successful wallet credits recorded as:
+  // type = TOP_UP
+  // balanceType = PAID
+  // amount = positive
+  // =====================================================
+
+  const topupSummary = await prisma.walletTransaction.aggregate({
+    where: {
+      type: WalletTransactionType.TOP_UP,
+      balanceType: BalanceType.PAID,
+
+      amount: {
+        gt: 0,
+      },
+    },
+
+    _sum: {
+      amount: true,
+    },
+  });
+
+  const topupTotal = Number(topupSummary._sum.amount ?? 0);
+
+  // =====================================================
+  // 2. BONUS ISSUED
+  // =====================================================
+
+  const bonusSummary = await prisma.walletTransaction.aggregate({
+    where: {
+      type: WalletTransactionType.BONUS,
+      balanceType: BalanceType.BONUS,
+
+      amount: {
+        gt: 0,
+      },
+    },
+
+    _sum: {
+      amount: true,
+    },
+  });
+
+  const bonusIssued = Number(bonusSummary._sum.amount ?? 0);
+
+  // =====================================================
+  // 3. PAID BALANCE USED
+  // =====================================================
+  //
+  // Wallet spending is stored as negative amount.
+  // Count appointment + group-purchase spending.
+  // =====================================================
+
+  const paidBalanceUsedSummary = await prisma.walletTransaction.aggregate({
+    where: {
+      type: {
+        in: [
+          WalletTransactionType.APPOINTMENT_PAYMENT,
+          WalletTransactionType.GROUP_PURCHASE_PAYMENT,
+        ],
+      },
+
+      balanceType: BalanceType.PAID,
+
+      amount: {
+        lt: 0,
+      },
+    },
+
+    _sum: {
+      amount: true,
+    },
+  });
+
+  const paidBalancePurposed = Math.abs(
+    Number(paidBalanceUsedSummary._sum.amount ?? 0),
+  );
+
+  // =====================================================
+  // 4. BONUS BALANCE USED
+  // =====================================================
+
+  const bonusBalanceUsedSummary = await prisma.walletTransaction.aggregate({
+    where: {
+      type: {
+        in: [
+          WalletTransactionType.APPOINTMENT_PAYMENT,
+          WalletTransactionType.GROUP_PURCHASE_PAYMENT,
+        ],
+      },
+
+      balanceType: BalanceType.BONUS,
+
+      amount: {
+        lt: 0,
+      },
+    },
+
+    _sum: {
+      amount: true,
+    },
+  });
+
+  const bonusBalancePurposed = Math.abs(
+    Number(bonusBalanceUsedSummary._sum.amount ?? 0),
+  );
+
+  // =====================================================
+  // 5. WALLET REFUNDS
+  // =====================================================
+  //
+  // Refund credited back to wallet should be a positive
+  // WalletTransaction with type REFUND.
+  // =====================================================
+
+  const refundSummary = await prisma.walletTransaction.aggregate({
+    where: {
+      type: WalletTransactionType.REFUND,
+
+      amount: {
+        gt: 0,
+      },
+    },
+
+    _sum: {
+      amount: true,
+    },
+  });
+
+  const refunds = Number(refundSummary._sum.amount ?? 0);
+
+  // =====================================================
+  // 6. RESPONSE
+  // =====================================================
+
+  return {
+    topupTotal,
+    bonusIssued,
+    paidBalancePurposed,
+    bonusBalancePurposed,
+    refunds,
+  };
+};
+
 export const reportService = {
   getBranchReport,
   getBookingConversionReport,
@@ -1449,4 +1728,6 @@ export const reportService = {
   getPackageReport,
   getGroupPurchaseReport,
   getStaffReport,
+  getPaymentReport,
+  getWalletReport,
 };

@@ -42,9 +42,20 @@ const moderateReviewValidationSchema = z.object({
   }),
 });
 
+const reviewReplyValidationSchema = z.object({
+  body: z.object({
+    reply: z
+      .string()
+      .trim()
+      .min(1, "Reply is required")
+      .max(2000, "Reply cannot exceed 2000 characters"),
+  }),
+});
+
 export const reviewValidation = {
   createReviewValidationSchema,
   getReviewsValidationSchema,
   updateReviewValidationSchema,
   moderateReviewValidationSchema,
+  reviewReplyValidationSchema,
 };

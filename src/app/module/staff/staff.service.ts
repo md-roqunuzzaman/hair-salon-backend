@@ -34,6 +34,7 @@ import {
   IMyPaymentItem,
   IMyPaymentsQuery,
 } from "../payment/payment.interface.js";
+import { auditLogService } from "../auditLog/auditLog.service.js";
 
 const generateTemporaryPassword = () => {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -798,7 +799,10 @@ const updateStaffStatus = async (
     throw new AppError("Staff not found", 404);
   }
 
-  // Branch Manager scope check
+  // =====================================================
+  // 1. BRANCH MANAGER SCOPE CHECK
+  // =====================================================
+
   if (requester.role === Role.BRANCH_MANAGER) {
     const managerBranches = await prisma.branchManagerBranch.findMany({
       where: {
@@ -826,15 +830,63 @@ const updateStaffStatus = async (
     }
   }
 
-  const updatedStaff = await prisma.staff.update({
-    where: {
-      id: staffId,
-    },
+  // =====================================================
+  // 2. SAME STATUS
+  // =====================================================
 
-    data: {
-      status: payload.status,
-    },
+  if (staff.status === payload.status) {
+    return {
+      id: staff.id,
+      status: staff.status,
+    };
+  }
+
+  // =====================================================
+  // 3. UPDATE + AUDIT
+  // =====================================================
+
+  const updatedStaff = await prisma.$transaction(async (tx) => {
+    const result = await tx.staff.update({
+      where: {
+        id: staffId,
+      },
+
+      data: {
+        status: payload.status,
+      },
+
+      select: {
+        id: true,
+        status: true,
+      },
+    });
+
+    await auditLogService.createAuditLog(
+      {
+        userId: requester.userId,
+
+        action: "STAFF_STATUS_CHANGED",
+
+        entityType: "STAFF",
+
+        entityId: staffId,
+
+        metadata: {
+          previousStatus: staff.status,
+          newStatus: result.status,
+          performedByRole: requester.role,
+        },
+      },
+
+      tx,
+    );
+
+    return result;
   });
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
 
   return {
     id: updatedStaff.id,

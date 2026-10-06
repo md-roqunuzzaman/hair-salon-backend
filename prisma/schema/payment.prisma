@@ -8,6 +8,8 @@ model Payment {
   purpose  PaymentPurpose
   provider PaymentProvider @default(STRIPE)
 
+  salonPaymentMethod SalonPaymentMethod?
+
   amount   Decimal @db.Decimal(10, 2)
   currency String  @default("HKD")
 
@@ -24,11 +26,14 @@ model Payment {
   appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
 
   groupPurchase GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
-  refunds       Refund[]
+
+  refunds Refund[]
+
   walletTopupId String?
-  walletTopup   WalletTopup?   @relation(fields: [walletTopupId], references: [id], onDelete: Restrict)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  walletTopup   WalletTopup? @relation(fields: [walletTopupId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([walletTopupId])
   @@index([customerId])

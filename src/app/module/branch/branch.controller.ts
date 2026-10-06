@@ -7,6 +7,7 @@ import { catchAsync } from "../../utils/catchAsync.js";
 import { sendResponse } from "../../utils/sendResponse.js";
 
 import { branchService } from "./branch.service.js";
+import { AppError } from "../../utils/app-error.js";
 
 const createBranch = catchAsync(async (req: Request, res: Response) => {
   const result = await branchService.createBranch(req.body);
@@ -58,7 +59,11 @@ const updateBranch = catchAsync(async (req: Request, res: Response) => {
 const updateBranchStatus = catchAsync(async (req: Request, res: Response) => {
   const branchId = req.params.branchId as string;
 
-  const result = await branchService.updateBranchStatus(branchId, req.body);
+  const result = await branchService.updateBranchStatus(
+    branchId,
+    req.body,
+    req.user!.userId,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -110,7 +115,11 @@ const getBookingPolicy = catchAsync(async (req: Request, res: Response) => {
 const updateBookingPolicy = catchAsync(async (req: Request, res: Response) => {
   const branchId = req.params.branchId as string;
 
-  const result = await branchService.updateBookingPolicy(branchId, req.body);
+  const result = await branchService.updateBookingPolicy(
+    branchId,
+    req.body,
+    req.user!.userId,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -119,6 +128,34 @@ const updateBookingPolicy = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+const searchBranchCustomers = catchAsync(
+  async (req: Request, res: Response) => {
+    if (!req.user) {
+      throw new AppError("AUTH_REQUIRED", 401);
+    }
+
+    const branchId = req.params.branchId;
+
+    if (!branchId || Array.isArray(branchId)) {
+      throw new AppError("Invalid branchId", 400);
+    }
+
+    const result = await branchService.searchBranchCustomers(
+      branchId,
+      req.user.userId,
+      req.user.role,
+      req.body,
+    );
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message: "Customers searched successfully",
+      data: result,
+    });
+  },
+);
 
 export const branchController = {
   createBranch,
@@ -130,4 +167,5 @@ export const branchController = {
   updateBusinessHours,
   getBookingPolicy,
   updateBookingPolicy,
+  searchBranchCustomers,
 };

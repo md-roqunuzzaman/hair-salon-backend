@@ -73,3 +73,18 @@ export interface IStaffReportItem {
 export interface IStaffReportResponse {
   items: IStaffReportItem[];
 }
+
+export interface IPaymentReportResponse {
+  stripePayments: number;
+  walletPayments: number;
+  refunds: number;
+  netPayments: number;
+}
+
+export interface IWalletReportResponse {
+  topupTotal: number;
+  bonusIssued: number;
+  paidBalancePurposed: number;
+  bonusBalancePurposed: number;
+  refunds: number;
+}

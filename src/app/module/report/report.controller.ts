@@ -88,6 +88,29 @@ const getStaffReport = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+const getPaymentReport = catchAsync(async (req: Request, res: Response) => {
+  const result = await reportService.getPaymentReport();
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: "Payment report fetched successfully",
+    data: result,
+  });
+});
+
+const getWalletReport = catchAsync(async (req: Request, res: Response) => {
+  const result = await reportService.getWalletReport();
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: "Wallet report fetched successfully",
+    data: result,
+  });
+});
+
 export const reportController = {
   getBranchReport,
   getBookingConversionReport,
@@ -95,4 +118,6 @@ export const reportController = {
   getPackageReport,
   getGroupPurchaseReport,
   getStaffReport,
+  getPaymentReport,
+  getWalletReport,
 };

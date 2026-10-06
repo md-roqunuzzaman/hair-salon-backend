@@ -6,13 +6,14 @@ export interface ICreateServicePayload {
   price: number;
   durationMinutes: number;
   branchIds: string[];
-  imageObjectKeys: string[];
+  imageObjectKeys?: string[];
 }
 
 export interface IUpdateServicePayload {
   name?: string;
   description?: string;
   price?: number;
+  imageObjectKeys?: string[];
   durationMinutes?: number;
 }
 

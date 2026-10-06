@@ -10,6 +10,8 @@ import {
 import { prisma } from "../../lib/prisma.js";
 
 import { AppError } from "../../utils/app-error.js";
+import { auditLogService } from "../auditLog/auditLog.service.js";
+import { uploadService } from "../upload/upload.service.js";
 
 import {
   IAssignPackageBranchesPayload,
@@ -22,7 +24,10 @@ import {
 const createPackage = async (payload: ICreatePackagePayload) => {
   const packageName = payload.name.trim();
 
-  // 1. Duplicate package name check
+  // =====================================================
+  // 1. DUPLICATE PACKAGE NAME
+  // =====================================================
+
   const existingPackage = await prisma.package.findFirst({
     where: {
       name: {
@@ -36,28 +41,30 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     throw new AppError("Package already exists", 409);
   }
 
-  // 2. Duplicate service IDs check
+  // =====================================================
+  // 2. UNIQUE SERVICE IDS
+  // =====================================================
+
   const uniqueServiceIds = [...new Set(payload.serviceIds)];
 
   if (uniqueServiceIds.length !== payload.serviceIds.length) {
     throw new AppError("Duplicate service IDs are not allowed", 400);
   }
 
-  // 3. Duplicate branch IDs check
+  // =====================================================
+  // 3. UNIQUE BRANCH IDS
+  // =====================================================
+
   const uniqueBranchIds = [...new Set(payload.branchIds)];
 
   if (uniqueBranchIds.length !== payload.branchIds.length) {
     throw new AppError("Duplicate branch IDs are not allowed", 400);
   }
 
-  // 4. Duplicate image keys check
-  const uniqueImageObjectKeys = [...new Set(payload.imageObjectKeys)];
+  // =====================================================
+  // 4. CHECK SERVICES
+  // =====================================================
 
-  if (uniqueImageObjectKeys.length !== payload.imageObjectKeys.length) {
-    throw new AppError("Duplicate package images are not allowed", 400);
-  }
-
-  // 5. Check all services exist
   const services = await prisma.service.findMany({
     where: {
       id: {
@@ -81,7 +88,6 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     throw new AppError("One or more services do not exist", 404);
   }
 
-  // 6. All included services must be ACTIVE
   const inactiveService = services.find(
     (service) => service.status !== ServiceStatus.ACTIVE,
   );
@@ -93,7 +99,10 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     );
   }
 
-  // 7. Check all branches exist
+  // =====================================================
+  // 5. CHECK BRANCHES
+  // =====================================================
+
   const branches = await prisma.branch.findMany({
     where: {
       id: {
@@ -111,7 +120,6 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     throw new AppError("One or more branches do not exist", 404);
   }
 
-  // 8. All assigned branches must be ACTIVE
   const inactiveBranch = branches.find(
     (branch) => branch.status !== BranchStatus.ACTIVE,
   );
@@ -120,8 +128,10 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     throw new AppError("Package cannot be assigned to an inactive branch", 400);
   }
 
-  // 9. Every included service must be available
-  // in every branch assigned to this package
+  // =====================================================
+  // 6. SERVICES MUST EXIST IN EVERY PACKAGE BRANCH
+  // =====================================================
+
   for (const service of services) {
     const serviceBranchIds = new Set(
       service.branches.map((serviceBranch) => serviceBranch.branchId),
@@ -139,7 +149,10 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     }
   }
 
-  // 10. Extra safety for prices
+  // =====================================================
+  // 7. PRICE VALIDATION
+  // =====================================================
+
   if (payload.packagePrice > payload.regularPrice) {
     throw new AppError(
       "Package price cannot be greater than regular price",
@@ -147,7 +160,10 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     );
   }
 
-  // 11. Group Purchase specific rules
+  // =====================================================
+  // 8. GROUP PURCHASE VALIDATION
+  // =====================================================
+
   if (payload.type === PackageType.GROUP_PURCHASE_PACKAGE) {
     if (
       !payload.capacity ||
@@ -176,17 +192,24 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     }
   }
 
-  // 12. Create everything atomically
+  // =====================================================
+  // 9. CREATE PACKAGE
+  // Images are uploaded AFTER package creation.
+  // =====================================================
+
   const createdPackage = await prisma.$transaction(async (tx) => {
     const packageData = await tx.package.create({
       data: {
         type: payload.type,
+
         name: packageName,
 
         description: payload.description?.trim() || null,
 
         regularPrice: payload.regularPrice,
+
         packagePrice: payload.packagePrice,
+
         durationMinutes: payload.durationMinutes,
 
         listingStatus: payload.listingStatus,
@@ -220,6 +243,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     await tx.packageService.createMany({
       data: uniqueServiceIds.map((serviceId) => ({
         packageId: packageData.id,
+
         serviceId,
       })),
     });
@@ -227,36 +251,40 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     await tx.packageBranch.createMany({
       data: uniqueBranchIds.map((branchId) => ({
         packageId: packageData.id,
-        branchId,
-      })),
-    });
 
-    await tx.packageImage.createMany({
-      data: uniqueImageObjectKeys.map((objectKey, index) => ({
-        packageId: packageData.id,
-        objectKey,
-        isPrimary: index === 0,
-        sortOrder: index,
+        branchId,
       })),
     });
 
     return packageData;
   });
 
-  // 13. Standard Package response
+  // =====================================================
+  // 10. STANDARD PACKAGE RESPONSE
+  // =====================================================
+
   if (createdPackage.type === PackageType.STANDARD_SERVICE_PACKAGE) {
     return {
       id: createdPackage.id,
       type: createdPackage.type,
       name: createdPackage.name,
+
       packagePrice: Number(createdPackage.packagePrice),
+
       durationMinutes: createdPackage.durationMinutes,
+
       status: createdPackage.status,
+
       listingStatus: createdPackage.listingStatus,
+
+      images: [],
     };
   }
 
-  // 14. Group Purchase response
+  // =====================================================
+  // 11. GROUP PURCHASE RESPONSE
+  // =====================================================
+
   const capacity = createdPackage.capacity ?? 0;
 
   const remainingQuantity = capacity - createdPackage.soldQuantity;
@@ -264,22 +292,34 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   return {
     id: createdPackage.id,
     type: createdPackage.type,
+
     capacity,
+
     soldQuantity: createdPackage.soldQuantity,
+
     remainingQuantity,
+
     status: createdPackage.status,
+
     listingStatus: createdPackage.listingStatus,
+
     soldOut: remainingQuantity <= 0,
+
+    images: [],
   };
 };
 
 const getPackages = async (query: Record<string, any>) => {
   const limit = query.limit ? Number(query.limit) : 20;
+
   const page = query.page ? Number(query.page) : 1;
+
   const skip = (page - 1) * limit;
 
   const type = query.type as PackageType | undefined;
+
   const status = query.status as PackageStatus | undefined;
+
   const listingStatus = query.listingStatus as ListingStatus | undefined;
 
   const andConditions: Prisma.PackageWhereInput[] = [];
@@ -302,81 +342,99 @@ const getPackages = async (query: Record<string, any>) => {
     });
   }
 
-  const packages = await prisma.package.findMany({
-    where: {
-      AND: andConditions,
-    },
-
-    take: limit,
-    skip,
-
-    orderBy: {
-      createdAt: "desc",
-    },
-
-    include: {
-      images: {
-        where: {
-          isPrimary: true,
-        },
-        take: 1,
-        select: {
-          objectKey: true,
-        },
+  const [packages, totalPackageCount] = await Promise.all([
+    prisma.package.findMany({
+      where: {
+        AND: andConditions,
       },
 
-      services: {
-        select: {
-          service: {
-            select: {
-              id: true,
-              name: true,
+      take: limit,
+      skip,
+
+      orderBy: {
+        createdAt: "desc",
+      },
+
+      include: {
+        images: {
+          where: {
+            isPrimary: true,
+          },
+
+          take: 1,
+
+          select: {
+            objectKey: true,
+          },
+        },
+
+        services: {
+          select: {
+            service: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+
+        branches: {
+          select: {
+            branch: {
+              select: {
+                id: true,
+                name: true,
+              },
             },
           },
         },
       },
+    }),
 
-      branches: {
-        select: {
-          branch: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-        },
+    prisma.package.count({
+      where: {
+        AND: andConditions,
       },
-    },
-  });
+    }),
+  ]);
 
-  const totalPackageCount = await prisma.package.count({
-    where: {
-      AND: andConditions,
-    },
-  });
-
-  return {
-    items: packages.map((item) => {
+  const items = await Promise.all(
+    packages.map(async (item) => {
       const capacity = item.capacity ?? null;
 
       const remainingQuantity =
         capacity !== null ? capacity - item.soldQuantity : null;
 
+      const primaryImageObjectKey = item.images[0]?.objectKey ?? null;
+
+      const primaryImageUrl = primaryImageObjectKey
+        ? await uploadService.getImageUrl(primaryImageObjectKey)
+        : null;
+
       return {
         id: item.id,
+
         type: item.type,
+
         name: item.name,
+
         description: item.description,
 
         regularPrice: Number(item.regularPrice),
+
         packagePrice: Number(item.packagePrice),
+
         durationMinutes: item.durationMinutes,
 
         status: item.status,
+
         listingStatus: item.listingStatus,
 
         capacity,
+
         soldQuantity: item.soldQuantity,
+
         remainingQuantity,
 
         soldOut:
@@ -384,26 +442,42 @@ const getPackages = async (query: Record<string, any>) => {
             ? remainingQuantity !== null && remainingQuantity <= 0
             : false,
 
-        primaryImageObjectKey: item.images[0]?.objectKey || null,
+        // Keep existing field
+        primaryImageObjectKey,
+
+        // New signed URL
+        primaryImageUrl,
 
         services: item.services.map((serviceItem) => ({
           id: serviceItem.service.id,
+
           name: serviceItem.service.name,
         })),
 
         branches: item.branches.map((branchItem) => ({
           id: branchItem.branch.id,
+
           name: branchItem.branch.name,
         })),
       };
     }),
+  );
+
+  const totalPages = Math.ceil(totalPackageCount / limit);
+
+  return {
+    items,
 
     pagination: {
       page,
       limit,
+
       total: totalPackageCount,
-      totalPages: Math.ceil(totalPackageCount / limit),
-      hasNextPage: page < Math.ceil(totalPackageCount / limit),
+
+      totalPages,
+
+      hasNextPage: page < totalPages,
+
       hasPreviousPage: page > 1,
     },
   };
@@ -420,6 +494,7 @@ const getPackageById = async (packageId: string) => {
         orderBy: {
           sortOrder: "asc",
         },
+
         select: {
           id: true,
           objectKey: true,
@@ -465,26 +540,53 @@ const getPackageById = async (packageId: string) => {
   const remainingQuantity =
     capacity !== null ? capacity - packageData.soldQuantity : null;
 
+  // =====================================================
+  // GENERATE SIGNED IMAGE URLS
+  // =====================================================
+
+  const images = await Promise.all(
+    packageData.images.map(async (image) => ({
+      id: image.id,
+
+      objectKey: image.objectKey,
+
+      url: await uploadService.getImageUrl(image.objectKey),
+
+      isPrimary: image.isPrimary,
+
+      sortOrder: image.sortOrder,
+    })),
+  );
+
   return {
     id: packageData.id,
+
     type: packageData.type,
+
     name: packageData.name,
+
     description: packageData.description,
 
     regularPrice: Number(packageData.regularPrice),
+
     packagePrice: Number(packageData.packagePrice),
+
     durationMinutes: packageData.durationMinutes,
 
     status: packageData.status,
+
     listingStatus: packageData.listingStatus,
 
     capacity,
+
     soldQuantity: packageData.soldQuantity,
+
     remainingQuantity,
 
     purchaseLimitPerCustomer: packageData.purchaseLimitPerCustomer,
 
     salesStartAt: packageData.salesStartAt,
+
     salesEndAt: packageData.salesEndAt,
 
     soldOut:
@@ -492,24 +594,25 @@ const getPackageById = async (packageId: string) => {
         ? remainingQuantity !== null && remainingQuantity <= 0
         : false,
 
-    images: packageData.images.map((image) => ({
-      id: image.id,
-      objectKey: image.objectKey,
-      isPrimary: image.isPrimary,
-      sortOrder: image.sortOrder,
-    })),
+    images,
 
     services: packageData.services.map((item) => ({
       id: item.service.id,
+
       name: item.service.name,
+
       price: Number(item.service.price),
+
       durationMinutes: item.service.durationMinutes,
+
       status: item.service.status,
     })),
 
     branches: packageData.branches.map((item) => ({
       id: item.branch.id,
+
       name: item.branch.name,
+
       status: item.branch.status,
     })),
   };
@@ -519,9 +622,17 @@ const updatePackage = async (
   packageId: string,
   payload: IUpdatePackagePayload,
 ) => {
+  // =====================================================
+  // 1. FIND PACKAGE
+  // =====================================================
+
   const packageData = await prisma.package.findUnique({
     where: {
       id: packageId,
+    },
+
+    include: {
+      images: true,
     },
   });
 
@@ -529,11 +640,16 @@ const updatePackage = async (
     throw new AppError("Package not found", 404);
   }
 
+  // =====================================================
+  // 2. DUPLICATE NAME
+  // =====================================================
+
   if (payload.name) {
     const existingPackage = await prisma.package.findFirst({
       where: {
         name: {
           equals: payload.name.trim(),
+
           mode: "insensitive",
         },
 
@@ -548,6 +664,10 @@ const updatePackage = async (
     }
   }
 
+  // =====================================================
+  // 3. PRICE VALIDATION
+  // =====================================================
+
   const regularPrice = payload.regularPrice ?? Number(packageData.regularPrice);
 
   const packagePrice = payload.packagePrice ?? Number(packageData.packagePrice);
@@ -558,6 +678,10 @@ const updatePackage = async (
       400,
     );
   }
+
+  // =====================================================
+  // 4. STANDARD PACKAGE CANNOT USE GROUP PURCHASE FIELDS
+  // =====================================================
 
   if (
     packageData.type === PackageType.STANDARD_SERVICE_PACKAGE &&
@@ -571,6 +695,10 @@ const updatePackage = async (
       400,
     );
   }
+
+  // =====================================================
+  // 5. GROUP PURCHASE VALIDATION
+  // =====================================================
 
   if (packageData.type === PackageType.GROUP_PURCHASE_PACKAGE) {
     const capacity = payload.capacity ?? packageData.capacity;
@@ -609,63 +737,163 @@ const updatePackage = async (
     }
   }
 
-  const updatedPackage = await prisma.package.update({
-    where: {
-      id: packageId,
-    },
+  // =====================================================
+  // 6. IMAGE VALIDATION
+  // =====================================================
 
-    data: {
-      ...(payload.name !== undefined && {
-        name: payload.name.trim(),
-      }),
+  let uniqueImageObjectKeys: string[] | undefined;
 
-      ...(payload.description !== undefined && {
-        description: payload.description.trim(),
-      }),
+  if (payload.imageObjectKeys !== undefined) {
+    uniqueImageObjectKeys = [...new Set(payload.imageObjectKeys)];
 
-      ...(payload.regularPrice !== undefined && {
-        regularPrice: payload.regularPrice,
-      }),
+    if (uniqueImageObjectKeys.length !== payload.imageObjectKeys.length) {
+      throw new AppError("Duplicate package images are not allowed", 400);
+    }
 
-      ...(payload.packagePrice !== undefined && {
-        packagePrice: payload.packagePrice,
-      }),
+    const expectedPrefix = `packages/${packageId}/`;
 
-      ...(payload.durationMinutes !== undefined && {
-        durationMinutes: payload.durationMinutes,
-      }),
+    const invalidImage = uniqueImageObjectKeys.find(
+      (objectKey) => !objectKey.startsWith(expectedPrefix),
+    );
 
-      ...(packageData.type === PackageType.GROUP_PURCHASE_PACKAGE && {
-        ...(payload.capacity !== undefined && {
-          capacity: payload.capacity,
+    if (invalidImage) {
+      throw new AppError("Invalid package image object key", 400);
+    }
+
+    // ===================================================
+    // VERIFY R2 OBJECTS EXIST
+    // ===================================================
+
+    await Promise.all(
+      uniqueImageObjectKeys.map((objectKey) =>
+        uploadService.verifyImageExists(objectKey),
+      ),
+    );
+  }
+
+  // =====================================================
+  // 7. UPDATE PACKAGE + IMAGES
+  // =====================================================
+
+  const updatedPackage = await prisma.$transaction(async (tx) => {
+    await tx.package.update({
+      where: {
+        id: packageId,
+      },
+
+      data: {
+        ...(payload.name !== undefined && {
+          name: payload.name.trim(),
         }),
 
-        ...(payload.purchaseLimitPerCustomer !== undefined && {
-          purchaseLimitPerCustomer: payload.purchaseLimitPerCustomer,
+        ...(payload.description !== undefined && {
+          description: payload.description.trim(),
         }),
 
-        ...(payload.salesStartAt !== undefined && {
-          salesStartAt: new Date(payload.salesStartAt),
+        ...(payload.regularPrice !== undefined && {
+          regularPrice: payload.regularPrice,
         }),
 
-        ...(payload.salesEndAt !== undefined && {
-          salesEndAt: new Date(payload.salesEndAt),
+        ...(payload.packagePrice !== undefined && {
+          packagePrice: payload.packagePrice,
         }),
-      }),
-    },
+
+        ...(payload.durationMinutes !== undefined && {
+          durationMinutes: payload.durationMinutes,
+        }),
+
+        ...(packageData.type === PackageType.GROUP_PURCHASE_PACKAGE && {
+          ...(payload.capacity !== undefined && {
+            capacity: payload.capacity,
+          }),
+
+          ...(payload.purchaseLimitPerCustomer !== undefined && {
+            purchaseLimitPerCustomer: payload.purchaseLimitPerCustomer,
+          }),
+
+          ...(payload.salesStartAt !== undefined && {
+            salesStartAt: new Date(payload.salesStartAt),
+          }),
+
+          ...(payload.salesEndAt !== undefined && {
+            salesEndAt: new Date(payload.salesEndAt),
+          }),
+        }),
+      },
+    });
+
+    // ================================================
+    // REPLACE PACKAGE IMAGES
+    // ================================================
+
+    if (uniqueImageObjectKeys !== undefined) {
+      await tx.packageImage.deleteMany({
+        where: {
+          packageId,
+        },
+      });
+
+      if (uniqueImageObjectKeys.length > 0) {
+        await tx.packageImage.createMany({
+          data: uniqueImageObjectKeys.map((objectKey, index) => ({
+            packageId,
+
+            objectKey,
+
+            isPrimary: index === 0,
+
+            sortOrder: index,
+          })),
+        });
+      }
+    }
+
+    return await tx.package.findUnique({
+      where: {
+        id: packageId,
+      },
+
+      include: {
+        images: {
+          orderBy: {
+            sortOrder: "asc",
+          },
+        },
+      },
+    });
   });
+
+  if (!updatedPackage) {
+    throw new AppError("Package not found after update", 404);
+  }
+
+  // =====================================================
+  // 8. RESPONSE
+  // =====================================================
 
   return {
     id: updatedPackage.id,
+
     name: updatedPackage.name,
+
     packagePrice: Number(updatedPackage.packagePrice),
+
     capacity: updatedPackage.capacity,
+
+    images: updatedPackage.images.map((image) => ({
+      objectKey: image.objectKey,
+
+      isPrimary: image.isPrimary,
+
+      sortOrder: image.sortOrder,
+    })),
   };
 };
 
 const updatePackageStatus = async (
   packageId: string,
   payload: IUpdatePackageStatusPayload,
+  userId: string,
 ) => {
   const packageData = await prisma.package.findUnique({
     where: {
@@ -677,13 +905,52 @@ const updatePackageStatus = async (
     throw new AppError("Package not found", 404);
   }
 
-  const updatedPackage = await prisma.package.update({
-    where: {
-      id: packageId,
-    },
-    data: {
-      status: payload.status,
-    },
+  // =====================================================
+  // SAME STATUS — NO UPDATE / NO AUDIT
+  // =====================================================
+
+  if (packageData.status === payload.status) {
+    return {
+      id: packageData.id,
+      status: packageData.status,
+    };
+  }
+
+  // =====================================================
+  // UPDATE + AUDIT
+  // =====================================================
+
+  const updatedPackage = await prisma.$transaction(async (tx) => {
+    const result = await tx.package.update({
+      where: {
+        id: packageId,
+      },
+
+      data: {
+        status: payload.status,
+      },
+    });
+
+    await auditLogService.createAuditLog(
+      {
+        userId,
+
+        action: "PACKAGE_STATUS_CHANGED",
+
+        entityType: "PACKAGE",
+
+        entityId: packageId,
+
+        metadata: {
+          previousStatus: packageData.status,
+          newStatus: result.status,
+        },
+      },
+
+      tx,
+    );
+
+    return result;
   });
 
   return {
@@ -695,6 +962,7 @@ const updatePackageStatus = async (
 const updatePackageListing = async (
   packageId: string,
   payload: IUpdatePackageListingPayload,
+  userId: string,
 ) => {
   const packageData = await prisma.package.findUnique({
     where: {
@@ -706,13 +974,51 @@ const updatePackageListing = async (
     throw new AppError("Package not found", 404);
   }
 
-  const updatedPackage = await prisma.package.update({
-    where: {
-      id: packageId,
-    },
-    data: {
-      listingStatus: payload.listingStatus,
-    },
+  // =====================================================
+  // SAME LISTING STATUS — NO UPDATE / NO AUDIT
+  // =====================================================
+
+  if (packageData.listingStatus === payload.listingStatus) {
+    return {
+      id: packageData.id,
+      listingStatus: packageData.listingStatus,
+    };
+  }
+
+  // =====================================================
+  // UPDATE + AUDIT
+  // =====================================================
+
+  const updatedPackage = await prisma.$transaction(async (tx) => {
+    const result = await tx.package.update({
+      where: {
+        id: packageId,
+      },
+
+      data: {
+        listingStatus: payload.listingStatus,
+      },
+    });
+
+    await auditLogService.createAuditLog(
+      {
+        userId,
+
+        action: "PACKAGE_LISTING_CHANGED",
+
+        entityType: "PACKAGE",
+
+        entityId: packageId,
+
+        metadata: {
+          previousListingStatus: packageData.listingStatus,
+          newListingStatus: result.listingStatus,
+        },
+      },
+      tx,
+    );
+
+    return result;
   });
 
   return {
@@ -832,15 +1138,22 @@ const getBranchPackages = async (
   query: Record<string, any>,
 ) => {
   const limit = query.limit ? Number(query.limit) : 20;
+
   const page = query.page ? Number(query.page) : 1;
+
   const skip = (page - 1) * limit;
 
   const type = query.type as PackageType | undefined;
+
+  // =====================================================
+  // CHECK BRANCH
+  // =====================================================
 
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
     },
+
     select: {
       id: true,
       status: true,
@@ -859,9 +1172,11 @@ const getBranchPackages = async (
     {
       status: PackageStatus.ACTIVE,
     },
+
     {
       listingStatus: ListingStatus.LISTED,
     },
+
     {
       branches: {
         some: {
@@ -877,52 +1192,64 @@ const getBranchPackages = async (
     });
   }
 
-  const packages = await prisma.package.findMany({
-    where: {
-      AND: andConditions,
-    },
+  // =====================================================
+  // FETCH
+  // =====================================================
 
-    take: limit,
-    skip,
-
-    orderBy: {
-      createdAt: "desc",
-    },
-
-    include: {
-      images: {
-        where: {
-          isPrimary: true,
-        },
-        take: 1,
-        select: {
-          objectKey: true,
-        },
+  const [packages, totalPackageCount] = await Promise.all([
+    prisma.package.findMany({
+      where: {
+        AND: andConditions,
       },
 
-      services: {
-        select: {
-          service: {
-            select: {
-              id: true,
-              name: true,
+      take: limit,
+      skip,
+
+      orderBy: {
+        createdAt: "desc",
+      },
+
+      include: {
+        images: {
+          where: {
+            isPrimary: true,
+          },
+
+          take: 1,
+
+          select: {
+            objectKey: true,
+          },
+        },
+
+        services: {
+          select: {
+            service: {
+              select: {
+                id: true,
+                name: true,
+              },
             },
           },
         },
       },
-    },
-  });
+    }),
 
-  const totalPackageCount = await prisma.package.count({
-    where: {
-      AND: andConditions,
-    },
-  });
+    prisma.package.count({
+      where: {
+        AND: andConditions,
+      },
+    }),
+  ]);
 
   const now = new Date();
 
-  return {
-    items: packages.map((item) => {
+  // =====================================================
+  // RESPONSE ITEMS + SIGNED IMAGE URL
+  // =====================================================
+
+  const items = await Promise.all(
+    packages.map(async (item) => {
       const capacity = item.capacity ?? null;
 
       const remainingQuantity =
@@ -942,42 +1269,75 @@ const getBranchPackages = async (
             now <= item.salesEndAt
           : null;
 
+      const primaryImageObjectKey = item.images[0]?.objectKey ?? null;
+
+      const primaryImageUrl = primaryImageObjectKey
+        ? await uploadService.getImageUrl(primaryImageObjectKey)
+        : null;
+
       return {
         id: item.id,
+
         type: item.type,
+
         name: item.name,
+
         description: item.description,
 
         regularPrice: Number(item.regularPrice),
+
         packagePrice: Number(item.packagePrice),
+
         durationMinutes: item.durationMinutes,
 
-        primaryImageObjectKey: item.images[0]?.objectKey || null,
+        // Existing
+        primaryImageObjectKey,
+
+        // New
+        primaryImageUrl,
 
         services: item.services.map((serviceItem) => ({
           id: serviceItem.service.id,
+
           name: serviceItem.service.name,
         })),
 
         ...(item.type === PackageType.GROUP_PURCHASE_PACKAGE && {
           capacity: item.capacity,
+
           soldQuantity: item.soldQuantity,
+
           remainingQuantity,
+
           purchaseLimitPerCustomer: item.purchaseLimitPerCustomer,
+
           salesStartAt: item.salesStartAt,
+
           salesEndAt: item.salesEndAt,
+
           soldOut,
+
           purchaseAvailable: groupPurchaseAvailable,
         }),
       };
     }),
+  );
+
+  const totalPages = Math.ceil(totalPackageCount / limit);
+
+  return {
+    items,
 
     pagination: {
       page,
       limit,
+
       total: totalPackageCount,
-      totalPages: Math.ceil(totalPackageCount / limit),
-      hasNextPage: page < Math.ceil(totalPackageCount / limit),
+
+      totalPages,
+
+      hasNextPage: page < totalPages,
+
       hasPreviousPage: page > 1,
     },
   };

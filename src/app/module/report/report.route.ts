@@ -64,4 +64,12 @@ router.get(
   auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
   reportController.getStaffReport,
 );
+
+router.get(
+  "/payments",
+  auth(Role.BRAND_OWNER),
+  reportController.getPaymentReport,
+);
+
+router.get("/wallet", auth(Role.BRAND_OWNER), reportController.getWalletReport);
 export const ReportRoutes = router;

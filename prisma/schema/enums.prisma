@@ -89,6 +89,7 @@ enum AppointmentStatus {
 
 enum PaymentProvider {
   STRIPE
+  SALON
 }
 
 enum PaymentPurpose {
@@ -96,6 +97,14 @@ enum PaymentPurpose {
   GROUP_PURCHASE
   WALLET_TOP_UP
   APPOINTMENT_DEPOSIT
+  APPOINTMENT_REMAINING
+}
+
+enum SalonPaymentMethod {
+  CASH
+  CARD
+  FPS
+  OTHER
 }
 
 enum RefundStatus {
@@ -130,6 +139,7 @@ enum PromotionStatus {
 }
 
 enum ReviewModerationStatus {
+  PENDING
   VISIBLE
   HIDDEN
 }

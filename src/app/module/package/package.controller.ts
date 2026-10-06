@@ -59,7 +59,11 @@ const updatePackage = catchAsync(async (req: Request, res: Response) => {
 const updatePackageStatus = catchAsync(async (req: Request, res: Response) => {
   const packageId = req.params.packageId as string;
 
-  const result = await packageService.updatePackageStatus(packageId, req.body);
+  const result = await packageService.updatePackageStatus(
+    packageId,
+    req.body,
+    req.user!.userId,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -72,7 +76,11 @@ const updatePackageStatus = catchAsync(async (req: Request, res: Response) => {
 const updatePackageListing = catchAsync(async (req: Request, res: Response) => {
   const packageId = req.params.packageId as string;
 
-  const result = await packageService.updatePackageListing(packageId, req.body);
+  const result = await packageService.updatePackageListing(
+    packageId,
+    req.body,
+    req.user!.userId,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

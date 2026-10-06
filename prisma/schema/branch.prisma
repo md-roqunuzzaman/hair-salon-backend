@@ -47,7 +47,7 @@ model BranchBookingPolicy {
   cancellationCutoffHours     Int               @default(12)
   rescheduleCutoffHours       Int               @default(12)
   reserveExpiryRule           ReserveExpiryRule @default(APPOINTMENT_TIME)
-  depositEnabled              Boolean           @default(false)
+  depositEnabled              Boolean           @default(true)
   depositPercentage           Decimal?          @db.Decimal(5, 2)
 
   createdAt DateTime @default(now())

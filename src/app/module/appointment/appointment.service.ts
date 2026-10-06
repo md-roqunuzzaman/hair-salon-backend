@@ -2,6 +2,8 @@ import {
   AppointmentStatus,
   BookingMethod,
   PackageStatus,
+  PaymentProvider,
+  PaymentPurpose,
   PaymentStatus,
   Prisma,
   Role,
@@ -11,6 +13,8 @@ import crypto from "node:crypto";
 
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import httpStatus from "http-status";
+
 import { AvailabilityService } from "../availability/availability.service.js";
 import { notificationService } from "../notification/notification.service.js";
 
@@ -23,8 +27,10 @@ import {
   ICancelAppointmentResponse,
   ICompleteAppointmentPayload,
   ICompleteAppointmentResponse,
+  ICreateDepositAppointmentPayload,
   ICreatePayNowAppointmentPayload,
   ICreateReserveAppointmentPayload,
+  IDepositAppointmentResponse,
   IMarkNoShowPayload,
   IMarkNoShowResponse,
   IMyAppointmentsQuery,
@@ -35,7 +41,9 @@ import {
   IReserveAppointmentResponse,
   IVerifyQrPayload,
   IVerifyQrResponse,
+  TRecordRemainingPayment,
 } from "./appointment.interface.js";
+import { auditLogService } from "../auditLog/auditLog.service.js";
 
 const PAY_NOW_HOLD_MINUTES = 2;
 const MAX_TRANSACTION_RETRIES = 3;
@@ -348,6 +356,408 @@ const createPayNowAppointment = async (
   throw new AppError("The selected time slot is no longer available", 409);
 };
 
+const createDepositAppointment = async (
+  customerId: string,
+  payload: ICreateDepositAppointmentPayload,
+): Promise<IDepositAppointmentResponse> => {
+  const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
+
+  // =====================================================
+  // 1. FIRST AVAILABILITY CHECK
+  // =====================================================
+
+  const availability = await AvailabilityService.getAvailableSlots({
+    branchId,
+
+    ...(serviceId
+      ? {
+          serviceId,
+        }
+      : {}),
+
+    ...(packageId
+      ? {
+          packageId,
+        }
+      : {}),
+
+    staffId,
+    date,
+  });
+
+  const requestedSlot = availability.slots.find(
+    (slot) =>
+      slot.staffId === staffId &&
+      slot.startTime === startTime &&
+      slot.available,
+  );
+
+  if (!requestedSlot) {
+    throw new AppError("The selected time slot is no longer available", 409);
+  }
+
+  const dateOnly = new Date(`${date}T00:00:00.000Z`);
+
+  // =====================================================
+  // 2. SERIALIZABLE TRANSACTION WITH RETRY
+  // =====================================================
+
+  for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
+    try {
+      const result = await prisma.$transaction(
+        async (tx) => {
+          // =================================================
+          // 3. BRANCH + DEPOSIT POLICY
+          // =================================================
+
+          const branch = await tx.branch.findUnique({
+            where: {
+              id: branchId,
+            },
+
+            include: {
+              bookingPolicy: true,
+            },
+          });
+
+          if (!branch) {
+            throw new AppError("Branch not found", 404);
+          }
+
+          if (!branch.bookingPolicy) {
+            throw new AppError("Branch booking policy not found", 404);
+          }
+
+          if (!branch.bookingPolicy.depositEnabled) {
+            throw new AppError(
+              "Deposit booking is not enabled for this branch",
+              400,
+            );
+          }
+
+          if (branch.bookingPolicy.depositPercentage === null) {
+            throw new AppError("Deposit percentage is not configured", 500);
+          }
+
+          const depositPercentage = new Prisma.Decimal(
+            branch.bookingPolicy.depositPercentage,
+          );
+
+          if (depositPercentage.lte(0) || depositPercentage.gt(100)) {
+            throw new AppError("Invalid deposit percentage configuration", 500);
+          }
+
+          // =================================================
+          // 4. BOOKING TARGET SNAPSHOT
+          // =================================================
+
+          let itemName: string;
+          let durationMinutes: number;
+          let price: Prisma.Decimal;
+
+          if (serviceId) {
+            const service = await tx.service.findUnique({
+              where: {
+                id: serviceId,
+              },
+
+              select: {
+                id: true,
+                name: true,
+                price: true,
+                durationMinutes: true,
+                status: true,
+
+                branches: {
+                  where: {
+                    branchId,
+                  },
+
+                  select: {
+                    branchId: true,
+                  },
+                },
+              },
+            });
+
+            if (!service) {
+              throw new AppError("Service not found", 404);
+            }
+
+            if (service.status !== ServiceStatus.ACTIVE) {
+              throw new AppError("Service is inactive", 400);
+            }
+
+            if (service.branches.length === 0) {
+              throw new AppError(
+                "Service is not available at this branch",
+                400,
+              );
+            }
+
+            itemName = service.name;
+
+            durationMinutes = service.durationMinutes;
+
+            price = service.price;
+          } else {
+            const packageData = await tx.package.findUnique({
+              where: {
+                id: packageId!,
+              },
+
+              select: {
+                id: true,
+                name: true,
+                packagePrice: true,
+                durationMinutes: true,
+                status: true,
+
+                branches: {
+                  where: {
+                    branchId,
+                  },
+
+                  select: {
+                    branchId: true,
+                  },
+                },
+              },
+            });
+
+            if (!packageData) {
+              throw new AppError("Package not found", 404);
+            }
+
+            if (packageData.status !== PackageStatus.ACTIVE) {
+              throw new AppError("Package is inactive", 400);
+            }
+
+            if (packageData.branches.length === 0) {
+              throw new AppError(
+                "Package is not available at this branch",
+                400,
+              );
+            }
+
+            itemName = packageData.name;
+
+            durationMinutes = packageData.durationMinutes;
+
+            price = packageData.packagePrice;
+          }
+
+          // =================================================
+          // 5. DEPOSIT CALCULATION
+          // =================================================
+
+          const depositAmount = price
+            .mul(depositPercentage)
+            .div(100)
+            .toDecimalPlaces(2);
+
+          const remainingAmount = price.sub(depositAmount).toDecimalPlaces(2);
+
+          // =================================================
+          // 6. REQUESTED TIME RANGE
+          // =================================================
+
+          const requestedStart = timeToMinutes(startTime);
+
+          const requestedEnd = requestedStart + durationMinutes;
+
+          const endTime = minutesToTime(requestedEnd);
+
+          const now = new Date();
+
+          // =================================================
+          // 7. FINAL ATOMIC CONFLICT RECHECK
+          // =================================================
+
+          const blockingAppointments = await tx.appointment.findMany({
+            where: {
+              staffId,
+              date: dateOnly,
+
+              OR: [
+                {
+                  appointmentStatus: {
+                    in: [
+                      AppointmentStatus.RESERVED,
+                      AppointmentStatus.CONFIRMED,
+                    ],
+                  },
+                },
+
+                {
+                  appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
+                  holdExpiresAt: {
+                    gt: now,
+                  },
+                },
+              ],
+            },
+
+            select: {
+              startTime: true,
+              endTime: true,
+            },
+          });
+
+          const hasConflict = blockingAppointments.some((appointment) => {
+            const existingStart = timeToMinutes(appointment.startTime);
+
+            const existingEnd = timeToMinutes(appointment.endTime);
+
+            return intervalsOverlap(
+              requestedStart,
+              requestedEnd,
+              existingStart,
+              existingEnd,
+            );
+          });
+
+          if (hasConflict) {
+            throw new AppError(
+              "The selected time slot is no longer available",
+              409,
+            );
+          }
+
+          // =================================================
+          // 8. TEMPORARY DEPOSIT PAYMENT HOLD
+          // =================================================
+
+          const holdExpiresAt = new Date(
+            now.getTime() + PAY_NOW_HOLD_MINUTES * 60 * 1000,
+          );
+
+          // =================================================
+          // 9. CREATE DEPOSIT APPOINTMENT
+          // =================================================
+
+          const appointment = await tx.appointment.create({
+            data: {
+              customerId,
+              branchId,
+              staffId,
+
+              serviceId: serviceId ?? null,
+
+              packageId: packageId ?? null,
+
+              bookingMethod: BookingMethod.DEPOSIT,
+
+              appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
+              paymentStatus: PaymentStatus.PENDING,
+
+              date: dateOnly,
+
+              startTime,
+              endTime,
+
+              itemName,
+              durationMinutes,
+
+              price,
+              currency: "HKD",
+
+              // Deposit snapshot
+              depositPercentage,
+              depositAmount,
+              remainingAmount,
+
+              // Hold slot while customer
+              // completes deposit payment
+              holdExpiresAt,
+
+              // QR is generated only AFTER
+              // successful deposit verification
+              qrToken: null,
+              qrVerifiedAt: null,
+              qrVerifiedBy: null,
+            },
+
+            select: {
+              id: true,
+
+              bookingMethod: true,
+
+              appointmentStatus: true,
+
+              paymentStatus: true,
+
+              price: true,
+
+              depositPercentage: true,
+              depositAmount: true,
+              remainingAmount: true,
+
+              holdExpiresAt: true,
+            },
+          });
+
+          if (!appointment.holdExpiresAt) {
+            throw new AppError("Appointment hold could not be created", 500);
+          }
+
+          return appointment;
+        },
+
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        },
+      );
+
+      // =====================================================
+      // 10. RESPONSE
+      // =====================================================
+
+      return {
+        appointmentId: result.id,
+
+        bookingMethod: "DEPOSIT",
+
+        appointmentStatus: "PENDING_PAYMENT",
+
+        paymentStatus: "PENDING",
+
+        price: Number(result.price),
+
+        depositPercentage: Number(result.depositPercentage),
+
+        depositAmount: Number(result.depositAmount),
+
+        remainingAmount: Number(result.remainingAmount),
+
+        holdExpiresAt: result.holdExpiresAt!,
+
+        qrAvailable: false,
+      };
+    } catch (error) {
+      const isSerializableConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+
+      if (isSerializableConflict && attempt < MAX_TRANSACTION_RETRIES) {
+        continue;
+      }
+
+      if (isSerializableConflict) {
+        throw new AppError(
+          "The selected time slot is no longer available",
+          409,
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError("The selected time slot is no longer available", 409);
+};
 const createReserveAppointment = async (
   customerId: string,
   payload: ICreateReserveAppointmentPayload,
@@ -730,6 +1140,10 @@ const getMyAppointments = async (
 
         price: true,
 
+        depositPercentage: true,
+        depositAmount: true,
+        remainingAmount: true,
+
         qrToken: true,
         qrVerifiedAt: true,
 
@@ -767,10 +1181,30 @@ const getMyAppointments = async (
 
   const items = appointments.map((appointment) => {
     const qrAvailable =
-      appointment.bookingMethod === BookingMethod.RESERVE_NOW &&
+      (appointment.bookingMethod === BookingMethod.RESERVE_NOW ||
+        appointment.bookingMethod === BookingMethod.DEPOSIT) &&
       appointment.appointmentStatus === AppointmentStatus.RESERVED &&
       Boolean(appointment.qrToken) &&
       !appointment.qrVerifiedAt;
+
+    const price = Number(appointment.price);
+
+    const depositPercentage = Number(appointment.depositPercentage ?? 0);
+
+    const depositAmount = Number(appointment.depositAmount ?? 0);
+
+    const remainingAmount = Number(appointment.remainingAmount ?? price);
+
+    let amountPaid = 0;
+    let amountDue = price;
+
+    if (appointment.paymentStatus === PaymentStatus.PAID) {
+      amountPaid = price;
+      amountDue = 0;
+    } else if (appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID) {
+      amountPaid = depositAmount;
+      amountDue = remainingAmount;
+    }
 
     return {
       id: appointment.id,
@@ -803,7 +1237,14 @@ const getMyAppointments = async (
       startTime: appointment.startTime,
       endTime: appointment.endTime,
 
-      price: Number(appointment.price),
+      price,
+
+      depositPercentage,
+      depositAmount,
+      remainingAmount,
+
+      amountPaid,
+      amountDue,
 
       qrAvailable,
     };
@@ -895,7 +1336,8 @@ const getAppointmentById = async (
   // =====================================================
 
   const qrAvailable =
-    appointment.bookingMethod === BookingMethod.RESERVE_NOW &&
+    (appointment.bookingMethod === BookingMethod.RESERVE_NOW ||
+      appointment.bookingMethod === BookingMethod.DEPOSIT) &&
     appointment.appointmentStatus === AppointmentStatus.RESERVED &&
     Boolean(appointment.qrToken) &&
     !appointment.qrVerifiedAt;
@@ -908,6 +1350,29 @@ const getAppointmentById = async (
 
   const reviewAllowed =
     appointment.appointmentStatus === AppointmentStatus.COMPLETED;
+
+  // =====================================================
+  // FINANCIAL STATE
+  // =====================================================
+
+  const price = Number(appointment.price);
+
+  const depositPercentage = Number(appointment.depositPercentage ?? 0);
+
+  const depositAmount = Number(appointment.depositAmount ?? 0);
+
+  const remainingAmount = Number(appointment.remainingAmount ?? price);
+
+  let amountPaid = 0;
+  let amountDue = price;
+
+  if (appointment.paymentStatus === PaymentStatus.PAID) {
+    amountPaid = price;
+    amountDue = 0;
+  } else if (appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID) {
+    amountPaid = depositAmount;
+    amountDue = remainingAmount;
+  }
 
   // =====================================================
   // RESPONSE DTO
@@ -956,8 +1421,15 @@ const getAppointmentById = async (
     startTime: appointment.startTime,
     endTime: appointment.endTime,
 
-    price: Number(appointment.price),
+    price,
     currency: appointment.currency,
+
+    depositPercentage,
+    depositAmount,
+    remainingAmount,
+
+    amountPaid,
+    amountDue,
 
     qr: {
       available: qrAvailable,
@@ -1093,7 +1565,10 @@ const cancelAppointment = async (
   // Payment/refund module is not implemented yet.
   // =====================================================
 
-  if (appointment.paymentStatus === PaymentStatus.PAID) {
+  if (
+    appointment.paymentStatus === PaymentStatus.PAID ||
+    appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID
+  ) {
     throw new AppError(
       "Paid appointment cancellation requires refund processing",
       422,
@@ -1130,7 +1605,10 @@ const cancelAppointment = async (
       );
     }
 
-    if (current.paymentStatus === PaymentStatus.PAID) {
+    if (
+      current.paymentStatus === PaymentStatus.PAID ||
+      current.paymentStatus === PaymentStatus.PARTIALLY_PAID
+    ) {
       throw new AppError(
         "Paid appointment cancellation requires refund processing",
         422,
@@ -1235,7 +1713,8 @@ const rescheduleAppointment = async (
   // Reserve Now QR already verified means customer has
   // already arrived/checked in.
   if (
-    appointment.bookingMethod === BookingMethod.RESERVE_NOW &&
+    (appointment.bookingMethod === BookingMethod.RESERVE_NOW ||
+      appointment.bookingMethod === BookingMethod.DEPOSIT) &&
     appointment.qrVerifiedAt
   ) {
     throw new AppError("Appointment can no longer be rescheduled", 422);
@@ -1357,7 +1836,8 @@ const rescheduleAppointment = async (
           }
 
           if (
-            current.bookingMethod === BookingMethod.RESERVE_NOW &&
+            (current.bookingMethod === BookingMethod.RESERVE_NOW ||
+              current.bookingMethod === BookingMethod.DEPOSIT) &&
             current.qrVerifiedAt
           ) {
             throw new AppError("Appointment can no longer be rescheduled", 422);
@@ -1550,7 +2030,8 @@ const getAppointmentQr = async (
   // =====================================================
 
   const isQrAvailable =
-    appointment.bookingMethod === BookingMethod.RESERVE_NOW &&
+    (appointment.bookingMethod === BookingMethod.RESERVE_NOW ||
+      appointment.bookingMethod === BookingMethod.DEPOSIT) &&
     appointment.appointmentStatus === AppointmentStatus.RESERVED &&
     Boolean(appointment.qrToken) &&
     !appointment.qrVerifiedAt;
@@ -1791,6 +2272,33 @@ const verifyQr = async (
       tx,
     );
 
+    // =====================================================
+    // AUDIT LOG
+    // =====================================================
+
+    await auditLogService.createAuditLog(
+      {
+        userId,
+
+        action: "QR_VERIFIED",
+
+        entityType: "APPOINTMENT",
+
+        entityId: current.id,
+
+        metadata: {
+          previousStatus: current.appointmentStatus,
+          newStatus: AppointmentStatus.CONFIRMED,
+          branchId: current.branchId,
+          bookingMethod: current.bookingMethod,
+          qrVerifiedAt: qrVerifiedAt.toISOString(),
+          performedByRole: role,
+        },
+      },
+
+      tx,
+    );
+
     return updatedAppointment;
   });
 
@@ -1938,6 +2446,31 @@ const completeAppointment = async (
       tx,
     );
 
+    // =====================================================
+    // AUDIT LOG
+    // =====================================================
+
+    await auditLogService.createAuditLog(
+      {
+        userId,
+
+        action: "APPOINTMENT_COMPLETED",
+
+        entityType: "APPOINTMENT",
+
+        entityId: current.id,
+
+        metadata: {
+          previousStatus: current.appointmentStatus,
+          newStatus: AppointmentStatus.COMPLETED,
+          completedAt: completedAt.toISOString(),
+          notes: payload.notes?.trim() || null,
+          performedByRole: role,
+        },
+      },
+      tx,
+    );
+
     return updatedAppointment;
   });
 
@@ -2044,7 +2577,7 @@ const markNoShow = async (
       );
     }
 
-    return tx.appointment.update({
+    const updatedAppointment = await tx.appointment.update({
       where: {
         id: appointmentId,
       },
@@ -2062,6 +2595,34 @@ const markNoShow = async (
         appointmentStatus: true,
       },
     });
+
+    // =====================================================
+    // AUDIT LOG
+    // =====================================================
+
+    await auditLogService.createAuditLog(
+      {
+        userId,
+
+        action: "APPOINTMENT_NO_SHOW",
+
+        entityType: "APPOINTMENT",
+
+        entityId: current.id,
+
+        metadata: {
+          previousStatus: current.appointmentStatus,
+          newStatus: AppointmentStatus.NO_SHOW,
+          reason: payload.reason.trim(),
+          noShowAt: noShowAt.toISOString(),
+          performedByRole: role,
+        },
+      },
+
+      tx,
+    );
+
+    return updatedAppointment;
   });
 
   return {
@@ -2540,8 +3101,190 @@ const getAllAppointments = async (query: IAllAppointmentsQuery) => {
   };
 };
 
+const recordRemainingPayment = async (
+  appointmentId: string,
+  payload: TRecordRemainingPayment,
+  userId: string,
+) => {
+  const appointment = await prisma.appointment.findUnique({
+    where: {
+      id: appointmentId,
+    },
+
+    include: {
+      payments: true,
+      branch: true,
+    },
+  });
+
+  if (!appointment) {
+    throw new AppError("Appointment not found", httpStatus.NOT_FOUND);
+  }
+
+  if (appointment.bookingMethod !== BookingMethod.DEPOSIT) {
+    throw new AppError(
+      "Remaining payment is only available for deposit appointments",
+      httpStatus.BAD_REQUEST,
+    );
+  }
+
+  if (appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID) {
+    throw new AppError(
+      "Appointment does not have an outstanding remaining payment",
+      httpStatus.BAD_REQUEST,
+    );
+  }
+
+  if (appointment.appointmentStatus !== AppointmentStatus.CONFIRMED) {
+    throw new AppError(
+      "Appointment must be confirmed before recording remaining payment",
+      httpStatus.BAD_REQUEST,
+    );
+  }
+
+  const existingRemainingPayment = appointment.payments.find(
+    (payment) =>
+      payment.purpose === PaymentPurpose.APPOINTMENT_REMAINING &&
+      payment.status === PaymentStatus.PAID,
+  );
+
+  if (existingRemainingPayment) {
+    throw new AppError(
+      "Remaining payment has already been recorded",
+      httpStatus.BAD_REQUEST,
+    );
+  }
+
+  const totalPrice = Number(appointment.price);
+
+  const depositAmount = Number(appointment.depositAmount ?? 0);
+
+  const remainingAmount = Number((totalPrice - depositAmount).toFixed(2));
+
+  if (remainingAmount <= 0) {
+    throw new AppError("No remaining payment is due", httpStatus.BAD_REQUEST);
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    // =================================================
+    // 1. CREATE SALON REMAINING PAYMENT
+    // =================================================
+
+    const payment = await tx.payment.create({
+      data: {
+        customerId: appointment.customerId,
+
+        appointmentId: appointment.id,
+
+        purpose: PaymentPurpose.APPOINTMENT_REMAINING,
+
+        provider: PaymentProvider.SALON,
+
+        salonPaymentMethod: payload.paymentMethod,
+
+        amount: remainingAmount,
+
+        currency: "HKD",
+
+        status: PaymentStatus.PAID,
+
+        paidAt: new Date(),
+      },
+    });
+
+    // =================================================
+    // 2. APPOINTMENT -> FULLY PAID
+    // =================================================
+
+    const updatedAppointment = await tx.appointment.update({
+      where: {
+        id: appointment.id,
+      },
+
+      data: {
+        paymentStatus: PaymentStatus.PAID,
+      },
+    });
+
+    // =================================================
+    // 3. AUDIT LOG
+    // =================================================
+
+    await auditLogService.createAuditLog(
+      {
+        userId,
+
+        action: "REMAINING_PAYMENT_RECORDED",
+
+        entityType: "APPOINTMENT",
+
+        entityId: appointment.id,
+
+        metadata: {
+          paymentId: payment.id,
+
+          previousPaymentStatus: appointment.paymentStatus,
+
+          newPaymentStatus: updatedAppointment.paymentStatus,
+
+          bookingMethod: appointment.bookingMethod,
+
+          totalPrice,
+
+          depositAmount,
+
+          remainingAmount,
+
+          paymentMethod: payload.paymentMethod,
+
+          provider: PaymentProvider.SALON,
+        },
+      },
+
+      tx,
+    );
+
+    // =================================================
+    // 4. RESPONSE
+    // =================================================
+
+    return {
+      appointmentId: updatedAppointment.id,
+
+      bookingMethod: updatedAppointment.bookingMethod,
+
+      appointmentStatus: updatedAppointment.appointmentStatus,
+
+      paymentStatus: updatedAppointment.paymentStatus,
+
+      price: Number(updatedAppointment.price),
+
+      depositAmount: Number(updatedAppointment.depositAmount ?? 0),
+
+      remainingAmount,
+
+      remainingPayment: {
+        id: payment.id,
+
+        amount: Number(payment.amount),
+
+        paymentMethod: payment.salonPaymentMethod,
+
+        provider: payment.provider,
+
+        status: payment.status,
+
+        paidAt: payment.paidAt,
+      },
+    };
+  });
+
+  return result;
+};
+
 export const appointmentService = {
   createPayNowAppointment,
+  createDepositAppointment,
   createReserveAppointment,
   getMyAppointments,
   getAppointmentById,
@@ -2553,4 +3296,5 @@ export const appointmentService = {
   markNoShow,
   getBranchAppointments,
   getAllAppointments,
+  recordRemainingPayment,
 };

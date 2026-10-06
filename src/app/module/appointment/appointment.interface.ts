@@ -1,3 +1,25 @@
+import { SalonPaymentMethod } from "../../../../generated/prisma/enums.js";
+
+export type BookingMethodType = "PAY_NOW" | "RESERVE_NOW" | "DEPOSIT";
+
+export type AppointmentStatusType =
+  | "PENDING_PAYMENT"
+  | "RESERVED"
+  | "CONFIRMED"
+  | "COMPLETED"
+  | "CANCELLED"
+  | "NO_SHOW"
+  | "EXPIRED";
+
+export type PaymentStatusType =
+  | "UNPAID"
+  | "PENDING"
+  | "PARTIALLY_PAID"
+  | "PAID"
+  | "FAILED"
+  | "REFUNDED"
+  | "PARTIALLY_REFUNDED";
+
 export interface ICreatePayNowAppointmentPayload {
   branchId: string;
   serviceId?: string | null;
@@ -48,24 +70,11 @@ export interface IMyAppointmentsQuery {
 export interface IMyAppointmentItem {
   id: string;
 
-  bookingMethod: "PAY_NOW" | "RESERVE_NOW";
+  bookingMethod: BookingMethodType;
 
-  appointmentStatus:
-    | "PENDING_PAYMENT"
-    | "RESERVED"
-    | "CONFIRMED"
-    | "COMPLETED"
-    | "CANCELLED"
-    | "NO_SHOW"
-    | "EXPIRED";
+  appointmentStatus: AppointmentStatusType;
 
-  paymentStatus:
-    | "UNPAID"
-    | "PENDING"
-    | "PAID"
-    | "FAILED"
-    | "REFUNDED"
-    | "PARTIALLY_REFUNDED";
+  paymentStatus: PaymentStatusType;
 
   branch: {
     id: string;
@@ -107,24 +116,11 @@ export interface IMyAppointmentsResult {
 export interface IAppointmentDetails {
   id: string;
 
-  bookingMethod: "PAY_NOW" | "RESERVE_NOW";
+  bookingMethod: BookingMethodType;
 
-  appointmentStatus:
-    | "PENDING_PAYMENT"
-    | "RESERVED"
-    | "CONFIRMED"
-    | "COMPLETED"
-    | "CANCELLED"
-    | "NO_SHOW"
-    | "EXPIRED";
+  appointmentStatus: AppointmentStatusType;
 
-  paymentStatus:
-    | "UNPAID"
-    | "PENDING"
-    | "PAID"
-    | "FAILED"
-    | "REFUNDED"
-    | "PARTIALLY_REFUNDED";
+  paymentStatus: PaymentStatusType;
 
   branch: {
     id: string;
@@ -154,7 +150,11 @@ export interface IAppointmentDetails {
 
   price: number;
   currency: string;
-
+  depositPercentage: number;
+  depositAmount: number;
+  remainingAmount: number;
+  amountPaid: number;
+  amountDue: number;
   qr: {
     available: boolean;
     verified: boolean;
@@ -237,24 +237,11 @@ export interface IBranchAppointmentsQuery {
   date?: string;
   staffId?: string;
 
-  bookingMethod?: "PAY_NOW" | "RESERVE_NOW";
+  bookingMethod?: BookingMethodType;
 
-  appointmentStatus?:
-    | "PENDING_PAYMENT"
-    | "RESERVED"
-    | "CONFIRMED"
-    | "COMPLETED"
-    | "CANCELLED"
-    | "NO_SHOW"
-    | "EXPIRED";
+  appointmentStatus?: AppointmentStatusType;
 
-  paymentStatus?:
-    | "UNPAID"
-    | "PENDING"
-    | "PAID"
-    | "FAILED"
-    | "REFUNDED"
-    | "PARTIALLY_REFUNDED";
+  paymentStatus?: PaymentStatusType;
 }
 
 export interface IAllAppointmentsQuery {
@@ -266,25 +253,50 @@ export interface IAllAppointmentsQuery {
   serviceId?: string;
   packageId?: string;
 
-  bookingMethod?: "PAY_NOW" | "RESERVE_NOW";
+  bookingMethod?: BookingMethodType;
 
-  appointmentStatus?:
-    | "PENDING_PAYMENT"
-    | "RESERVED"
-    | "CONFIRMED"
-    | "COMPLETED"
-    | "CANCELLED"
-    | "NO_SHOW"
-    | "EXPIRED";
+  appointmentStatus?: AppointmentStatusType;
 
-  paymentStatus?:
-    | "UNPAID"
-    | "PENDING"
-    | "PAID"
-    | "FAILED"
-    | "REFUNDED"
-    | "PARTIALLY_REFUNDED";
+  paymentStatus?: PaymentStatusType;
 
   from?: string;
   to?: string;
 }
+
+export interface ICreateDepositAppointmentPayload {
+  branchId: string;
+
+  serviceId?: string;
+  packageId?: string;
+
+  staffId: string;
+
+  date: string;
+  startTime: string;
+}
+
+export interface IDepositAppointmentResponse {
+  appointmentId: string;
+
+  bookingMethod: "DEPOSIT";
+
+  appointmentStatus: "PENDING_PAYMENT";
+
+  paymentStatus: "PENDING";
+
+  price: number;
+
+  depositPercentage: number;
+
+  depositAmount: number;
+
+  remainingAmount: number;
+
+  holdExpiresAt: Date;
+
+  qrAvailable: false;
+}
+
+export type TRecordRemainingPayment = {
+  paymentMethod: SalonPaymentMethod;
+};

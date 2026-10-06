@@ -256,8 +256,48 @@ const getAllAppointments = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const createDepositAppointment = catchAsync(
+  async (req: Request, res: Response) => {
+    const customerId = req.user!.userId;
+
+    const result = await appointmentService.createDepositAppointment(
+      customerId,
+      req.body,
+    );
+
+    sendResponse(res, {
+      success: true,
+      statusCode: 201,
+      message: "Deposit appointment created successfully",
+      data: result,
+    });
+  },
+);
+
+const recordRemainingPayment = catchAsync(async (req, res) => {
+  const appointmentId = req.params.appointmentId as string;
+
+  if (!req.user) {
+    throw new AppError("Unauthorized", httpStatus.UNAUTHORIZED);
+  }
+
+  const result = await appointmentService.recordRemainingPayment(
+    appointmentId,
+    req.body,
+    req.user.userId,
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Remaining payment recorded successfully",
+    data: result,
+  });
+});
+
 export const appointmentController = {
   createPayNowAppointment,
+  createDepositAppointment,
   createReserveAppointment,
   getMyAppointments,
   getAppointmentById,
@@ -269,4 +309,5 @@ export const appointmentController = {
   markNoShow,
   getBranchAppointments,
   getAllAppointments,
+  recordRemainingPayment,
 };

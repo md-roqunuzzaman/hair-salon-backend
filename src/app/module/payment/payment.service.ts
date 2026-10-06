@@ -2,6 +2,7 @@ import {
   AppointmentStatus,
   BalanceType,
   BookingMethod,
+  PaymentProvider,
   PaymentPurpose,
   PaymentStatus,
   RefundStatus,
@@ -12,6 +13,7 @@ import {
 
 import { prisma } from "../../lib/prisma.js";
 import { stripe } from "../../lib/stripe.js";
+import crypto from "crypto";
 import { AppError } from "../../utils/app-error.js";
 import Stripe from "stripe";
 
@@ -27,6 +29,7 @@ import {
   IRefundPaymentPayload,
   IRefundPaymentResponse,
 } from "./payment.interface.js";
+import { auditLogService } from "../auditLog/auditLog.service.js";
 const createStripeIntent = async (
   customerId: string,
   payload: ICreateStripeIntentPayload,
@@ -49,6 +52,10 @@ const createStripeIntent = async (
       paymentStatus: true,
 
       price: true,
+
+      depositAmount: true,
+      remainingAmount: true,
+
       currency: true,
 
       holdExpiresAt: true,
@@ -68,12 +75,15 @@ const createStripeIntent = async (
   }
 
   // =====================================================
-  // 3. MUST BE PAY NOW
+  // 3. MUST BE PAY NOW OR DEPOSIT
   // =====================================================
 
-  if (appointment.bookingMethod !== BookingMethod.PAY_NOW) {
+  if (
+    appointment.bookingMethod !== BookingMethod.PAY_NOW &&
+    appointment.bookingMethod !== BookingMethod.DEPOSIT
+  ) {
     throw new AppError(
-      "PaymentIntent can only be created for Pay Now appointments",
+      "PaymentIntent can only be created for Pay Now or Deposit appointments",
       409,
     );
   }
@@ -103,18 +113,44 @@ const createStripeIntent = async (
   }
 
   // =====================================================
-  // 6. REUSE EXISTING ACTIVE PENDING PAYMENT
+  // 6. DETERMINE PAYMENT PURPOSE + AMOUNT
   // =====================================================
-  // Important:
+
+  let paymentPurpose: PaymentPurpose;
+  let paymentAmount;
+
+  if (appointment.bookingMethod === BookingMethod.PAY_NOW) {
+    paymentPurpose = PaymentPurpose.APPOINTMENT;
+
+    paymentAmount = appointment.price;
+  } else {
+    if (!appointment.depositAmount) {
+      throw new AppError(
+        "Deposit amount is not configured for this appointment",
+        500,
+      );
+    }
+
+    paymentPurpose = PaymentPurpose.APPOINTMENT_DEPOSIT;
+
+    paymentAmount = appointment.depositAmount;
+  }
+
+  // =====================================================
+  // 7. REUSE EXISTING ACTIVE PENDING PAYMENT
+  // =====================================================
   // Mobile/frontend may call create-intent more than once.
-  // We should not blindly create multiple PaymentIntents.
+  // Do not blindly create multiple Stripe PaymentIntents.
   // =====================================================
 
   const existingPayment = await prisma.payment.findFirst({
     where: {
       appointmentId: appointment.id,
+
       customerId,
-      purpose: PaymentPurpose.APPOINTMENT,
+
+      purpose: paymentPurpose,
+
       status: PaymentStatus.PENDING,
 
       providerPaymentId: {
@@ -144,10 +180,15 @@ const createStripeIntent = async (
       ) {
         return {
           paymentId: existingPayment.id,
+
           appointmentId: appointment.id,
+
           amount: Number(existingPayment.amount),
+
           currency: existingPayment.currency,
+
           paymentStatus: "PENDING",
+
           clientSecret: existingIntent.client_secret,
         };
       }
@@ -158,7 +199,7 @@ const createStripeIntent = async (
   }
 
   // =====================================================
-  // 7. CREATE LOCAL PAYMENT ATTEMPT
+  // 8. CREATE LOCAL PAYMENT ATTEMPT
   // =====================================================
 
   const payment = await prisma.payment.create({
@@ -167,9 +208,10 @@ const createStripeIntent = async (
 
       appointmentId: appointment.id,
 
-      purpose: PaymentPurpose.APPOINTMENT,
+      purpose: paymentPurpose,
 
-      amount: appointment.price,
+      amount: paymentAmount,
+
       currency: appointment.currency,
 
       status: PaymentStatus.PENDING,
@@ -177,30 +219,35 @@ const createStripeIntent = async (
   });
 
   // =====================================================
-  // 8. CREATE STRIPE PAYMENT INTENT
+  // 9. CREATE STRIPE PAYMENT INTENT
   // =====================================================
 
   try {
     const paymentIntent = await stripe.paymentIntents.create(
       {
-        amount: Math.round(Number(appointment.price) * 100),
+        amount: Math.round(Number(paymentAmount) * 100),
 
         currency: appointment.currency.toLowerCase(),
 
         metadata: {
           paymentId: payment.id,
+
           appointmentId: appointment.id,
+
           customerId,
-          purpose: PaymentPurpose.APPOINTMENT,
+
+          purpose: paymentPurpose,
         },
 
         automatic_payment_methods: {
           enabled: true,
+
           allow_redirects: "never",
         },
       },
+
       {
-        idempotencyKey: `appointment-payment-${payment.id}`,
+        idempotencyKey: `${paymentPurpose.toLowerCase()}-${payment.id}`,
       },
     );
 
@@ -209,7 +256,7 @@ const createStripeIntent = async (
     }
 
     // ===================================================
-    // 9. SAVE STRIPE PAYMENT INTENT ID
+    // 10. SAVE STRIPE PAYMENT INTENT ID
     // ===================================================
 
     const updatedPayment = await prisma.payment.update({
@@ -235,7 +282,7 @@ const createStripeIntent = async (
 
       clientSecret: paymentIntent.client_secret,
     };
-  } catch (error) {
+  } catch {
     // ===================================================
     // Stripe operation failed:
     // keep audit trail but mark this attempt failed.
@@ -249,6 +296,7 @@ const createStripeIntent = async (
 
       data: {
         status: PaymentStatus.FAILED,
+
         failedAt: new Date(),
       },
     });
@@ -344,6 +392,10 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       // APPOINTMENT PAYMENT
       // =================================================
 
+      // =================================================
+      // APPOINTMENT PAYMENT
+      // =================================================
+
       if (payment.appointmentId) {
         const appointment = await tx.appointment.findUnique({
           where: {
@@ -353,8 +405,10 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           select: {
             id: true,
             customerId: true,
+            bookingMethod: true,
             appointmentStatus: true,
             paymentStatus: true,
+            qrToken: true,
           },
         });
 
@@ -362,44 +416,95 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           throw new AppError("Appointment not found", 404);
         }
 
-        if (
-          appointment.appointmentStatus === AppointmentStatus.PENDING_PAYMENT
-        ) {
-          await tx.appointment.update({
-            where: {
-              id: appointment.id,
-            },
+        // =================================================
+        // PAY NOW PAYMENT
+        // =================================================
 
-            data: {
-              appointmentStatus: AppointmentStatus.CONFIRMED,
+        if (payment.purpose === PaymentPurpose.APPOINTMENT) {
+          if (appointment.bookingMethod !== BookingMethod.PAY_NOW) {
+            throw new AppError("Invalid appointment payment purpose", 409);
+          }
 
-              paymentStatus: PaymentStatus.PAID,
+          if (
+            appointment.appointmentStatus === AppointmentStatus.PENDING_PAYMENT
+          ) {
+            await tx.appointment.update({
+              where: {
+                id: appointment.id,
+              },
 
-              holdExpiresAt: null,
-            },
-          });
+              data: {
+                appointmentStatus: AppointmentStatus.CONFIRMED,
+                paymentStatus: PaymentStatus.PAID,
+                holdExpiresAt: null,
+              },
+            });
 
-          await notificationService.createNotification(
-            {
-              userId: appointment.customerId,
-              type: "BOOKING_CONFIRMED",
-              title: "Booking confirmed",
-              message: "Your appointment has been confirmed successfully.",
-            },
-            tx,
-          );
-        } else if (appointment.paymentStatus !== PaymentStatus.PAID) {
-          await tx.appointment.update({
-            where: {
-              id: appointment.id,
-            },
+            await notificationService.createNotification(
+              {
+                userId: appointment.customerId,
+                type: "BOOKING_CONFIRMED",
+                title: "Booking confirmed",
+                message: "Your appointment has been confirmed successfully.",
+              },
+              tx,
+            );
+          } else if (appointment.paymentStatus !== PaymentStatus.PAID) {
+            await tx.appointment.update({
+              where: {
+                id: appointment.id,
+              },
 
-            data: {
-              paymentStatus: PaymentStatus.PAID,
+              data: {
+                paymentStatus: PaymentStatus.PAID,
+                holdExpiresAt: null,
+              },
+            });
+          }
+        }
 
-              holdExpiresAt: null,
-            },
-          });
+        // =================================================
+        // DEPOSIT PAYMENT
+        // =================================================
+
+        if (payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT) {
+          if (appointment.bookingMethod !== BookingMethod.DEPOSIT) {
+            throw new AppError("Invalid deposit payment purpose", 409);
+          }
+
+          if (
+            appointment.appointmentStatus === AppointmentStatus.PENDING_PAYMENT
+          ) {
+            const qrToken =
+              appointment.qrToken ?? crypto.randomBytes(32).toString("hex");
+
+            await tx.appointment.update({
+              where: {
+                id: appointment.id,
+              },
+
+              data: {
+                appointmentStatus: AppointmentStatus.RESERVED,
+                paymentStatus: PaymentStatus.PARTIALLY_PAID,
+                holdExpiresAt: null,
+
+                qrToken,
+                qrVerifiedAt: null,
+                qrVerifiedBy: null,
+              },
+            });
+
+            await notificationService.createNotification(
+              {
+                userId: appointment.customerId,
+                type: "BOOKING_CONFIRMED",
+                title: "Deposit received",
+                message:
+                  "Your deposit has been received and your appointment is reserved.",
+              },
+              tx,
+            );
+          }
         }
       }
 
@@ -805,6 +910,7 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
 
 const refundPayment = async (
   paymentId: string,
+  userId: string,
   payload: IRefundPaymentPayload,
 ): Promise<IRefundPaymentResponse> => {
   // =====================================================
@@ -830,6 +936,14 @@ const refundPayment = async (
     payment.status !== PaymentStatus.PARTIALLY_REFUNDED
   ) {
     throw new AppError("REFUND_NOT_ALLOWED", 409);
+  }
+
+  if (payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT) {
+    throw new AppError("DEPOSIT_PAYMENT_REFUND_NOT_SUPPORTED", 409);
+  }
+
+  if (payment.provider === PaymentProvider.SALON) {
+    throw new AppError("SALON_PAYMENT_REFUND_NOT_SUPPORTED", 409);
   }
 
   if (!payment.providerPaymentId) {
@@ -872,8 +986,11 @@ const refundPayment = async (
   const localRefund = await prisma.refund.create({
     data: {
       paymentId,
+
       amount: payload.amount,
+
       reason: payload.reason.trim(),
+
       status: RefundStatus.PENDING,
     },
   });
@@ -891,10 +1008,13 @@ const refundPayment = async (
 
         metadata: {
           paymentId,
+
           refundId: localRefund.id,
+
           reason: payload.reason.trim(),
         },
       },
+
       {
         idempotencyKey: `refund-${localRefund.id}`,
       },
@@ -908,8 +1028,12 @@ const refundPayment = async (
 
     const fullyRefunded = totalRefunded >= paymentAmount;
 
+    const newPaymentStatus = fullyRefunded
+      ? PaymentStatus.REFUNDED
+      : PaymentStatus.PARTIALLY_REFUNDED;
+
     // ===================================================
-    // 8. UPDATE LOCALLY
+    // 8. UPDATE LOCALLY + NOTIFICATION + AUDIT LOG
     // ===================================================
 
     await prisma.$transaction(async (tx) => {
@@ -933,32 +1057,87 @@ const refundPayment = async (
         },
 
         data: {
-          status: fullyRefunded
-            ? PaymentStatus.REFUNDED
-            : PaymentStatus.PARTIALLY_REFUNDED,
+          status: newPaymentStatus,
 
           refundedAt: fullyRefunded ? new Date() : payment.refundedAt,
         },
       });
 
+      // =================================================
+      // CUSTOMER NOTIFICATION
+      // =================================================
+
       await notificationService.createNotification(
         {
           userId: payment.customerId,
+
           type: "REFUND_COMPLETED",
+
           title: "Refund completed",
+
           message: "Your refund has been processed successfully.",
         },
+
+        tx,
+      );
+
+      // =================================================
+      // AUDIT LOG
+      // =================================================
+
+      await auditLogService.createAuditLog(
+        {
+          userId,
+
+          action: "REFUND_PROCESSED",
+
+          entityType: "PAYMENT",
+
+          entityId: paymentId,
+
+          metadata: {
+            refundId: localRefund.id,
+
+            providerRefundId: stripeRefund.id,
+
+            amount: payload.amount,
+
+            reason: payload.reason.trim(),
+
+            previousPaymentStatus: payment.status,
+
+            newPaymentStatus,
+
+            alreadyRefunded,
+
+            totalRefunded,
+
+            fullyRefunded,
+          },
+        },
+
         tx,
       );
     });
 
+    // =====================================================
+    // 9. RESPONSE
+    // =====================================================
+
     return {
       paymentId,
+
       refundId: localRefund.id,
+
       refundStatus: "SUCCEEDED",
+
       amount: payload.amount,
     };
   } catch {
+    // =====================================================
+    // 10. MARK LOCAL REFUND FAILED
+    // =====================================================
+
     await prisma.refund.update({
       where: {
         id: localRefund.id,

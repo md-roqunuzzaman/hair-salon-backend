@@ -25,6 +25,8 @@ import { BranchManagerRoutes } from "./app/module/branch-manager/branch-manager.
 import { AdminUserRoutes } from "./app/module/admin/admin.route.js";
 import { DashboardRoutes } from "./app/module/dashboard/dashboard.route.js";
 import { ReportRoutes } from "./app/module/report/report.route.js";
+import { AuditLogRoutes } from "./app/module/auditLog/auditLog.route.js";
+import { UploadRoutes } from "./app/module/upload/upload.route.js";
 
 const app: Application = express();
 
@@ -69,6 +71,8 @@ app.use("/api/v1/branch-managers", BranchManagerRoutes);
 app.use("/api/v1/admin/users", AdminUserRoutes);
 app.use("/api/v1/dashboard", DashboardRoutes);
 app.use("/api/v1/reports", ReportRoutes);
+app.use("/api/v1/audit-logs", AuditLogRoutes);
+app.use("/api/v1/uploads", UploadRoutes);
 // Basic route
 app.get("/", async (req: Request, res: Response) => {
   res.status(httpStatus.OK).json({

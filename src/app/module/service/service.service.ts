@@ -7,6 +7,8 @@ import {
 import { prisma } from "../../lib/prisma.js";
 
 import { AppError } from "../../utils/app-error.js";
+import { auditLogService } from "../auditLog/auditLog.service.js";
+import { uploadService } from "../upload/upload.service.js";
 
 import {
   IAssignServiceBranchesPayload,
@@ -16,7 +18,15 @@ import {
 } from "./service.interface.js";
 
 const createService = async (payload: ICreateServicePayload) => {
+  // =====================================================
+  // 1. NORMALIZE SERVICE NAME
+  // =====================================================
+
   const serviceName = payload.name.trim();
+
+  // =====================================================
+  // 2. DUPLICATE SERVICE CHECK
+  // =====================================================
 
   const existingService = await prisma.service.findFirst({
     where: {
@@ -31,17 +41,19 @@ const createService = async (payload: ICreateServicePayload) => {
     throw new AppError("Service already exists", 409);
   }
 
+  // =====================================================
+  // 3. UNIQUE BRANCH IDS
+  // =====================================================
+
   const uniqueBranchIds = [...new Set(payload.branchIds)];
 
   if (uniqueBranchIds.length !== payload.branchIds.length) {
     throw new AppError("Duplicate branch IDs are not allowed", 400);
   }
 
-  const uniqueImageObjectKeys = [...new Set(payload.imageObjectKeys)];
-
-  if (uniqueImageObjectKeys.length !== payload.imageObjectKeys.length) {
-    throw new AppError("Duplicate service images are not allowed", 400);
-  }
+  // =====================================================
+  // 4. VALIDATE BRANCHES
+  // =====================================================
 
   const branches = await prisma.branch.findMany({
     where: {
@@ -49,6 +61,7 @@ const createService = async (payload: ICreateServicePayload) => {
         in: uniqueBranchIds,
       },
     },
+
     select: {
       id: true,
       status: true,
@@ -65,28 +78,31 @@ const createService = async (payload: ICreateServicePayload) => {
     throw new AppError("Service cannot be assigned to an inactive branch", 400);
   }
 
+  // =====================================================
+  // 5. CREATE SERVICE + BRANCH ASSIGNMENTS
+  // =====================================================
+
   const service = await prisma.$transaction(async (tx) => {
     const createdService = await tx.service.create({
       data: {
         name: serviceName,
+
         description: payload.description?.trim() || null,
+
         price: payload.price,
+
         durationMinutes: payload.durationMinutes,
       },
     });
 
-    await tx.serviceImage.createMany({
-      data: uniqueImageObjectKeys.map((objectKey, index) => ({
-        serviceId: createdService.id,
-        objectKey,
-        isPrimary: index === 0,
-        sortOrder: index,
-      })),
-    });
+    // ===============================================
+    // ASSIGN SERVICE TO BRANCHES
+    // ===============================================
 
     await tx.serviceBranch.createMany({
       data: uniqueBranchIds.map((branchId) => ({
         serviceId: createdService.id,
+
         branchId,
       })),
     });
@@ -94,12 +110,24 @@ const createService = async (payload: ICreateServicePayload) => {
     return createdService;
   });
 
+  // =====================================================
+  // 6. RESPONSE
+  // =====================================================
+
   return {
     id: service.id,
+
     name: service.name,
+
+    description: service.description,
+
     price: Number(service.price),
+
     durationMinutes: service.durationMinutes,
+
     status: service.status,
+
+    images: [],
   };
 };
 
@@ -138,77 +166,108 @@ const getServices = async (query: Record<string, any>) => {
     });
   }
 
-  const services = await prisma.service.findMany({
-    where: {
-      AND: andConditions,
-    },
-
-    take: limit,
-    skip,
-
-    orderBy: {
-      createdAt: "desc",
-    },
-
-    include: {
-      images: {
-        where: {
-          isPrimary: true,
-        },
-        take: 1,
-        select: {
-          objectKey: true,
-        },
+  const [services, totalServiceCount] = await Promise.all([
+    prisma.service.findMany({
+      where: {
+        AND: andConditions,
       },
 
-      branches: {
-        select: {
-          branch: {
-            select: {
-              id: true,
-              name: true,
+      take: limit,
+      skip,
+
+      orderBy: {
+        createdAt: "desc",
+      },
+
+      include: {
+        images: {
+          where: {
+            isPrimary: true,
+          },
+
+          take: 1,
+
+          select: {
+            objectKey: true,
+          },
+        },
+
+        branches: {
+          select: {
+            branch: {
+              select: {
+                id: true,
+                name: true,
+              },
             },
           },
         },
       },
-    },
-  });
+    }),
 
-  const totalServiceCount = await prisma.service.count({
-    where: {
-      AND: andConditions,
-    },
-  });
+    prisma.service.count({
+      where: {
+        AND: andConditions,
+      },
+    }),
+  ]);
+
+  const items = await Promise.all(
+    services.map(async (service) => {
+      const primaryImageObjectKey = service.images[0]?.objectKey ?? null;
+
+      const primaryImageUrl = primaryImageObjectKey
+        ? await uploadService.getImageUrl(primaryImageObjectKey)
+        : null;
+
+      return {
+        id: service.id,
+
+        name: service.name,
+
+        description: service.description,
+
+        price: Number(service.price),
+
+        durationMinutes: service.durationMinutes,
+
+        status: service.status,
+
+        primaryImage: primaryImageObjectKey
+          ? {
+              objectKey: primaryImageObjectKey,
+              url: primaryImageUrl,
+            }
+          : null,
+
+        branches: service.branches.map((item) => ({
+          id: item.branch.id,
+          name: item.branch.name,
+        })),
+      };
+    }),
+  );
+
+  const totalPages = Math.ceil(totalServiceCount / limit);
 
   return {
-    items: services.map((service) => ({
-      id: service.id,
-      name: service.name,
-      description: service.description,
-      price: Number(service.price),
-      durationMinutes: service.durationMinutes,
-      status: service.status,
-
-      primaryImageObjectKey: service.images[0]?.objectKey || null,
-
-      branches: service.branches.map((item) => ({
-        id: item.branch.id,
-        name: item.branch.name,
-      })),
-    })),
+    items,
 
     pagination: {
       page,
       limit,
       total: totalServiceCount,
-      totalPages: Math.ceil(totalServiceCount / limit),
-      hasNextPage: page < Math.ceil(totalServiceCount / limit),
+      totalPages,
+      hasNextPage: page < totalPages,
       hasPreviousPage: page > 1,
     },
   };
 };
-
 const getServiceById = async (serviceId: string) => {
+  // =====================================================
+  // 1. FIND SERVICE
+  // =====================================================
+
   const service = await prisma.service.findUnique({
     where: {
       id: serviceId,
@@ -219,6 +278,7 @@ const getServiceById = async (serviceId: string) => {
         orderBy: {
           sortOrder: "asc",
         },
+
         select: {
           id: true,
           objectKey: true,
@@ -245,42 +305,77 @@ const getServiceById = async (serviceId: string) => {
     throw new AppError("Service not found", 404);
   }
 
-  return {
-    id: service.id,
-    name: service.name,
-    description: service.description,
-    price: Number(service.price),
-    durationMinutes: service.durationMinutes,
-    status: service.status,
+  // =====================================================
+  // 2. GENERATE SIGNED IMAGE URLS
+  // =====================================================
 
-    images: service.images.map((image) => ({
+  const images = await Promise.all(
+    service.images.map(async (image) => ({
       id: image.id,
+
       objectKey: image.objectKey,
+
+      url: await uploadService.getImageUrl(image.objectKey),
+
       isPrimary: image.isPrimary,
+
       sortOrder: image.sortOrder,
     })),
+  );
+
+  // =====================================================
+  // 3. RESPONSE
+  // =====================================================
+
+  return {
+    id: service.id,
+
+    name: service.name,
+
+    description: service.description,
+
+    price: Number(service.price),
+
+    durationMinutes: service.durationMinutes,
+
+    status: service.status,
+
+    images,
 
     branches: service.branches.map((item) => ({
       id: item.branch.id,
+
       name: item.branch.name,
+
       status: item.branch.status,
     })),
   };
 };
-
 const updateService = async (
   serviceId: string,
   payload: IUpdateServicePayload,
 ) => {
+  // =====================================================
+  // 1. FIND SERVICE
+  // =====================================================
+
   const service = await prisma.service.findUnique({
     where: {
       id: serviceId,
+    },
+
+    include: {
+      images: true,
     },
   });
 
   if (!service) {
     throw new AppError("Service not found", 404);
   }
+
+  // =====================================================
+  // 2. CHECK DUPLICATE SERVICE NAME
+  // =====================================================
 
   if (payload.name) {
     const existingService = await prisma.service.findFirst({
@@ -301,41 +396,149 @@ const updateService = async (
     }
   }
 
-  const updatedService = await prisma.service.update({
-    where: {
-      id: serviceId,
-    },
+  // =====================================================
+  // 3. IMAGE VALIDATION
+  // =====================================================
 
-    data: {
-      ...(payload.name !== undefined && {
-        name: payload.name.trim(),
-      }),
+  let uniqueImageObjectKeys: string[] | undefined;
 
-      ...(payload.description !== undefined && {
-        description: payload.description.trim(),
-      }),
+  if (payload.imageObjectKeys !== undefined) {
+    uniqueImageObjectKeys = [...new Set(payload.imageObjectKeys)];
 
-      ...(payload.price !== undefined && {
-        price: payload.price,
-      }),
+    if (uniqueImageObjectKeys.length !== payload.imageObjectKeys.length) {
+      throw new AppError("Duplicate service images are not allowed", 400);
+    }
 
-      ...(payload.durationMinutes !== undefined && {
-        durationMinutes: payload.durationMinutes,
-      }),
-    },
+    const expectedPrefix = `services/${serviceId}/`;
+
+    const invalidImage = uniqueImageObjectKeys.find(
+      (objectKey) => !objectKey.startsWith(expectedPrefix),
+    );
+
+    if (invalidImage) {
+      throw new AppError("Invalid service image object key", 400);
+    }
+
+    // ===================================================
+    // 4. VERIFY IMAGES ACTUALLY EXIST IN R2
+    // ===================================================
+
+    await Promise.all(
+      uniqueImageObjectKeys.map((objectKey) =>
+        uploadService.verifyImageExists(objectKey),
+      ),
+    );
+  }
+
+  // =====================================================
+  // 5. UPDATE SERVICE + IMAGES TRANSACTIONALLY
+  // =====================================================
+
+  const updatedService = await prisma.$transaction(async (tx) => {
+    await tx.service.update({
+      where: {
+        id: serviceId,
+      },
+
+      data: {
+        ...(payload.name !== undefined && {
+          name: payload.name.trim(),
+        }),
+
+        ...(payload.description !== undefined && {
+          description: payload.description.trim(),
+        }),
+
+        ...(payload.price !== undefined && {
+          price: payload.price,
+        }),
+
+        ...(payload.durationMinutes !== undefined && {
+          durationMinutes: payload.durationMinutes,
+        }),
+      },
+    });
+
+    // ================================================
+    // REPLACE SERVICE IMAGES
+    // ================================================
+
+    if (uniqueImageObjectKeys !== undefined) {
+      await tx.serviceImage.deleteMany({
+        where: {
+          serviceId,
+        },
+      });
+
+      if (uniqueImageObjectKeys.length > 0) {
+        await tx.serviceImage.createMany({
+          data: uniqueImageObjectKeys.map((objectKey, index) => ({
+            serviceId,
+            objectKey,
+            isPrimary: index === 0,
+            sortOrder: index,
+          })),
+        });
+      }
+    }
+
+    // ================================================
+    // RETURN UPDATED SERVICE WITH IMAGES
+    // ================================================
+
+    return await tx.service.findUnique({
+      where: {
+        id: serviceId,
+      },
+
+      include: {
+        images: {
+          orderBy: {
+            sortOrder: "asc",
+          },
+        },
+      },
+    });
   });
+
+  // =====================================================
+  // 6. SAFETY CHECK
+  // =====================================================
+
+  if (!updatedService) {
+    throw new AppError("Service not found after update", 404);
+  }
+
+  // =====================================================
+  // 7. RESPONSE
+  // =====================================================
 
   return {
     id: updatedService.id,
+
     name: updatedService.name,
+
+    description: updatedService.description,
+
     price: Number(updatedService.price),
+
     durationMinutes: updatedService.durationMinutes,
+
+    status: updatedService.status,
+
+    images: updatedService.images.map((image) => ({
+      objectKey: image.objectKey,
+
+      isPrimary: image.isPrimary,
+
+      sortOrder: image.sortOrder,
+    })),
   };
 };
-
 const updateServiceStatus = async (
   serviceId: string,
   payload: IUpdateServiceStatusPayload,
+  userId: string,
 ) => {
   const service = await prisma.service.findUnique({
     where: {
@@ -347,14 +550,52 @@ const updateServiceStatus = async (
     throw new AppError("Service not found", 404);
   }
 
-  const updatedService = await prisma.service.update({
-    where: {
-      id: serviceId,
-    },
+  // =====================================================
+  // SAME STATUS — NO UPDATE / NO AUDIT
+  // =====================================================
 
-    data: {
-      status: payload.status,
-    },
+  if (service.status === payload.status) {
+    return {
+      id: service.id,
+      status: service.status,
+    };
+  }
+
+  // =====================================================
+  // UPDATE + AUDIT
+  // =====================================================
+
+  const updatedService = await prisma.$transaction(async (tx) => {
+    const result = await tx.service.update({
+      where: {
+        id: serviceId,
+      },
+
+      data: {
+        status: payload.status,
+      },
+    });
+
+    await auditLogService.createAuditLog(
+      {
+        userId,
+
+        action: "SERVICE_STATUS_CHANGED",
+
+        entityType: "SERVICE",
+
+        entityId: serviceId,
+
+        metadata: {
+          previousStatus: service.status,
+          newStatus: result.status,
+        },
+      },
+
+      tx,
+    );
+
+    return result;
   });
 
   return {
@@ -435,6 +676,10 @@ const getBranchServices = async (
   const page = query.page ? Number(query.page) : 1;
   const skip = (page - 1) * limit;
 
+  // =====================================================
+  // 1. CHECK BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
@@ -449,74 +694,119 @@ const getBranchServices = async (
     throw new AppError("Branch is inactive", 400);
   }
 
+  // =====================================================
+  // 2. STATUS
+  // =====================================================
+
   const status = query.status
     ? (query.status as ServiceStatus)
     : ServiceStatus.ACTIVE;
 
-  const services = await prisma.service.findMany({
-    where: {
-      status,
+  // =====================================================
+  // 3. FETCH SERVICES + COUNT
+  // =====================================================
 
-      branches: {
-        some: {
-          branchId,
+  const [services, totalServiceCount] = await Promise.all([
+    prisma.service.findMany({
+      where: {
+        status,
+
+        branches: {
+          some: {
+            branchId,
+          },
         },
       },
-    },
 
-    take: limit,
-    skip,
+      take: limit,
+      skip,
 
-    orderBy: {
-      createdAt: "desc",
-    },
+      orderBy: {
+        createdAt: "desc",
+      },
 
-    include: {
-      images: {
-        where: {
-          isPrimary: true,
-        },
-        take: 1,
-        select: {
-          objectKey: true,
+      include: {
+        images: {
+          where: {
+            isPrimary: true,
+          },
+
+          take: 1,
+
+          select: {
+            objectKey: true,
+          },
         },
       },
-    },
-  });
+    }),
 
-  const totalServiceCount = await prisma.service.count({
-    where: {
-      status,
+    prisma.service.count({
+      where: {
+        status,
 
-      branches: {
-        some: {
-          branchId,
+        branches: {
+          some: {
+            branchId,
+          },
         },
       },
-    },
-  });
+    }),
+  ]);
+
+  // =====================================================
+  // 4. GENERATE PRIMARY IMAGE URL
+  // =====================================================
+
+  const items = await Promise.all(
+    services.map(async (service) => {
+      const primaryImageObjectKey = service.images[0]?.objectKey ?? null;
+
+      const primaryImageUrl = primaryImageObjectKey
+        ? await uploadService.getImageUrl(primaryImageObjectKey)
+        : null;
+
+      return {
+        id: service.id,
+
+        name: service.name,
+
+        price: Number(service.price),
+
+        durationMinutes: service.durationMinutes,
+
+        primaryImage: primaryImageObjectKey
+          ? {
+              objectKey: primaryImageObjectKey,
+              url: primaryImageUrl,
+            }
+          : null,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 5. PAGINATION
+  // =====================================================
+
+  const totalPages = Math.ceil(totalServiceCount / limit);
+
+  // =====================================================
+  // 6. RESPONSE
+  // =====================================================
 
   return {
-    items: services.map((service) => ({
-      id: service.id,
-      name: service.name,
-      price: Number(service.price),
-      durationMinutes: service.durationMinutes,
-
-      primaryImageObjectKey: service.images[0]?.objectKey || null,
-    })),
+    items,
 
     pagination: {
       page,
       limit,
       total: totalServiceCount,
-      totalPages: Math.ceil(totalServiceCount / limit),
-      hasNextPage: page < Math.ceil(totalServiceCount / limit),
+      totalPages,
+      hasNextPage: page < totalPages,
       hasPreviousPage: page > 1,
     },
   };
 };
-
 export const serviceService = {
   createService,
   getServices,
