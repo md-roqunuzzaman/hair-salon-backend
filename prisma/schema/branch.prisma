@@ -1,23 +1,24 @@
 model Branch {
-  id             String                @id @default(uuid())
-  name           String
-  address        String
-  phone          String?
-  description    String?
-  imageObjectKey String?
-  status         BranchStatus          @default(ACTIVE)
-  bookingPolicy  BranchBookingPolicy?
-  businessHours  BranchBusinessHour[]
-  services       ServiceBranch[]
-  packages       PackageBranch[]
-  staff          StaffBranch[]
-  managers       BranchManagerBranch[]
-  staffSchedules StaffSchedule[]
-  appointments   Appointment[]
-  promotions     PromotionBranch[]
-  reviews        Review[]
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
+  id               String                 @id @default(uuid())
+  name             String
+  address          String
+  phone            String?
+  description      String?
+  imageObjectKey   String?
+  status           BranchStatus           @default(ACTIVE)
+  bookingPolicy    BranchBookingPolicy?
+  businessHours    BranchBusinessHour[]
+  hourlyCapacities BranchHourlyCapacity[]
+  services         ServiceBranch[]
+  packages         PackageBranch[]
+  staff            StaffBranch[]
+  managers         BranchManagerBranch[]
+  staffSchedules   StaffSchedule[]
+  appointments     Appointment[]
+  promotions       PromotionBranch[]
+  reviews          Review[]
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
 }
 
 model BranchBusinessHour {

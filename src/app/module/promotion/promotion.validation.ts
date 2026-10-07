@@ -20,6 +20,11 @@ const createPromotionValidationSchema = z.object({
       packageIds: z.array(z.string().uuid()).default([]),
 
       status: z.enum(["ACTIVE", "INACTIVE"]),
+      imageObjectKey: z
+        .string()
+        .trim()
+        .min(1, "Invalid promotion image object key")
+        .optional(),
     })
     .superRefine((data, ctx) => {
       const startAt = new Date(data.startAt);
@@ -89,6 +94,11 @@ const updatePromotionValidationSchema = z.object({
       serviceIds: z.array(z.string().uuid()).optional(),
 
       packageIds: z.array(z.string().uuid()).optional(),
+      imageObjectKey: z
+        .string()
+        .trim()
+        .min(1, "Invalid promotion image object key")
+        .optional(),
     })
     .refine((data) => Object.keys(data).length > 0, {
       message: "At least one field is required",

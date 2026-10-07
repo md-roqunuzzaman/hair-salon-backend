@@ -1,5 +1,6 @@
 import app from "./app.js";
 import config from "./app/config/index.js";
+import { startAppointmentExpiryJob } from "./app/jobs/appointment-expiry.job.js";
 import { prisma } from "./app/lib/prisma.js";
 import { connectRedis } from "./app/lib/redis.js";
 import { seedInitialData } from "./app/utils/seed.js";
@@ -16,6 +17,7 @@ const main = async () => {
     console.log("seed data created successfully");
     app.listen(PORT, () => {
       console.log(`Server is running on port ${PORT}`);
+      startAppointmentExpiryJob();
     });
   } catch (error) {
     console.error("Error starting the server:", error);

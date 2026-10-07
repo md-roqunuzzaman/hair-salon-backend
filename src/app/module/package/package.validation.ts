@@ -175,6 +175,11 @@ const updatePackageValidationSchema = z.object({
 
     durationMinutes: z.number().int().positive().optional(),
 
+    imageObjectKeys: z
+      .array(z.string().trim().min(1, "Invalid image object key"))
+      .min(1, "At least one package image is required")
+      .optional(),
+
     capacity: z.number().int().positive().optional(),
 
     purchaseLimitPerCustomer: z.number().int().positive().optional(),
@@ -184,7 +189,6 @@ const updatePackageValidationSchema = z.object({
     salesEndAt: z.string().datetime({ offset: true }).optional(),
   }),
 });
-
 const updatePackageStatusValidationSchema = z.object({
   body: z.object({
     status: z.enum(["ACTIVE", "INACTIVE"]),

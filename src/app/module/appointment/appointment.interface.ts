@@ -22,9 +22,14 @@ export type PaymentStatusType =
 
 export interface ICreatePayNowAppointmentPayload {
   branchId: string;
+
   serviceId?: string | null;
   packageId?: string | null;
-  staffId: string;
+
+  // Optional:
+  // absent/null = AUTO / ANY STAFF
+  staffId?: string | null;
+
   date: string;
   startTime: string;
 }
@@ -40,9 +45,14 @@ export interface IPayNowAppointmentResponse {
 
 export interface ICreateReserveAppointmentPayload {
   branchId: string;
+
   serviceId?: string | null;
   packageId?: string | null;
-  staffId: string;
+
+  // Optional:
+  // absent/null = AUTO / ANY STAFF
+  staffId?: string | null;
+
   date: string;
   startTime: string;
 }
@@ -179,9 +189,12 @@ export interface ICancelAppointmentResponse {
 export interface IRescheduleAppointmentPayload {
   date: string;
   startTime: string;
-  staffId: string;
-}
 
+  // Optional.
+  // Service layer later decides:
+  // current staff / auto-assigned staff
+  staffId?: string | null;
+}
 export interface IRescheduleAppointmentResponse {
   appointmentId: string;
   date: string;
@@ -269,7 +282,9 @@ export interface ICreateDepositAppointmentPayload {
   serviceId?: string;
   packageId?: string;
 
-  staffId: string;
+  // Optional:
+  // absent/null = AUTO / ANY STAFF
+  staffId?: string | null;
 
   date: string;
   startTime: string;

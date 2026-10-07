@@ -30,11 +30,9 @@ import {
   IUpdateStaffStatusPayload,
   IUpdateStaffUnavailabilityPayload,
 } from "./staff.interface.js";
-import {
-  IMyPaymentItem,
-  IMyPaymentsQuery,
-} from "../payment/payment.interface.js";
+
 import { auditLogService } from "../auditLog/auditLog.service.js";
+import { uploadService } from "../upload/upload.service.js";
 
 const generateTemporaryPassword = () => {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -363,9 +361,17 @@ const getStaff = async (
     role: Role;
   },
 ) => {
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
+
   const page = query.page ? Number(query.page) : 1;
   const limit = query.limit ? Number(query.limit) : 20;
   const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 2. FILTERS
+  // =====================================================
 
   const branchId = query.branchId as string | undefined;
   const status = query.status as StaffStatus | undefined;
@@ -378,11 +384,16 @@ const getStaff = async (
     });
   }
 
+  // =====================================================
+  // 3. BRANCH MANAGER SCOPE
+  // =====================================================
+
   if (requester.role === Role.BRANCH_MANAGER) {
     const managerBranches = await prisma.branchManagerBranch.findMany({
       where: {
         userId: requester.userId,
       },
+
       select: {
         branchId: true,
       },
@@ -393,6 +404,7 @@ const getStaff = async (
     if (allowedBranchIds.length === 0) {
       return {
         items: [],
+
         pagination: {
           page,
           limit,
@@ -422,6 +434,10 @@ const getStaff = async (
     });
   }
 
+  // =====================================================
+  // 4. BRAND OWNER BRANCH FILTER
+  // =====================================================
+
   if (requester.role === Role.BRAND_OWNER && branchId) {
     andConditions.push({
       branches: {
@@ -436,93 +452,134 @@ const getStaff = async (
     AND: andConditions,
   };
 
-  const staffList = await prisma.staff.findMany({
-    where,
-    skip,
-    take: limit,
+  // =====================================================
+  // 5. FETCH STAFF + COUNT
+  // =====================================================
 
-    orderBy: {
-      createdAt: "desc",
-    },
+  const [staffList, total] = await Promise.all([
+    prisma.staff.findMany({
+      where,
 
-    include: {
-      branches: {
-        include: {
-          branch: {
-            select: {
-              id: true,
-              name: true,
+      skip,
+      take: limit,
+
+      orderBy: {
+        createdAt: "desc",
+      },
+
+      include: {
+        branches: {
+          include: {
+            branch: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+
+        services: {
+          include: {
+            service: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+
+        packages: {
+          include: {
+            package: {
+              select: {
+                id: true,
+                name: true,
+                type: true,
+              },
             },
           },
         },
       },
+    }),
 
-      services: {
-        include: {
-          service: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-        },
-      },
+    prisma.staff.count({
+      where,
+    }),
+  ]);
 
-      packages: {
-        include: {
-          package: {
-            select: {
-              id: true,
-              name: true,
-              type: true,
-            },
-          },
-        },
-      },
-    },
-  });
+  // =====================================================
+  // 6. GENERATE SIGNED AVATAR URLS
+  // =====================================================
 
-  const total = await prisma.staff.count({
-    where,
-  });
+  const items = await Promise.all(
+    staffList.map(async (staff) => {
+      const avatarUrl = staff.avatarObjectKey
+        ? await uploadService.getImageUrl(staff.avatarObjectKey)
+        : null;
 
-  const totalPages = Math.ceil(total / limit);
+      return {
+        id: staff.id,
+
+        name: staff.name,
+
+        email: staff.email,
+
+        phone: staff.phone,
+
+        roleTitle: staff.roleTitle,
+
+        specialization: staff.specialization,
+
+        description: staff.description,
+
+        avatarObjectKey: staff.avatarObjectKey,
+
+        avatarUrl,
+
+        status: staff.status,
+
+        branches: staff.branches.map((item) => ({
+          id: item.branch.id,
+          name: item.branch.name,
+        })),
+
+        services: staff.services.map((item) => ({
+          id: item.service.id,
+          name: item.service.name,
+        })),
+
+        packages: staff.packages.map((item) => ({
+          id: item.package.id,
+          name: item.package.name,
+          type: item.package.type,
+        })),
+      };
+    }),
+  );
+
+  // =====================================================
+  // 7. PAGINATION
+  // =====================================================
+
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+  // =====================================================
+  // 8. RESPONSE
+  // =====================================================
 
   return {
-    items: staffList.map((staff) => ({
-      id: staff.id,
-      name: staff.name,
-      email: staff.email,
-      phone: staff.phone,
-      roleTitle: staff.roleTitle,
-      specialization: staff.specialization,
-      description: staff.description,
-      avatarObjectKey: staff.avatarObjectKey,
-      status: staff.status,
-
-      branches: staff.branches.map((item) => ({
-        id: item.branch.id,
-        name: item.branch.name,
-      })),
-
-      services: staff.services.map((item) => ({
-        id: item.service.id,
-        name: item.service.name,
-      })),
-
-      packages: staff.packages.map((item) => ({
-        id: item.package.id,
-        name: item.package.name,
-        type: item.package.type,
-      })),
-    })),
+    items,
 
     pagination: {
       page,
       limit,
       total,
       totalPages,
+
       hasNextPage: page < totalPages,
+
       hasPreviousPage: page > 1,
     },
   };
@@ -589,12 +646,16 @@ const getStaffById = async (
     throw new AppError("Staff not found", 404);
   }
 
-  // Branch Manager scope check
+  // =====================================================
+  // BRANCH MANAGER SCOPE CHECK
+  // =====================================================
+
   if (requester.role === Role.BRANCH_MANAGER) {
     const managerBranches = await prisma.branchManagerBranch.findMany({
       where: {
         userId: requester.userId,
       },
+
       select: {
         branchId: true,
       },
@@ -615,15 +676,37 @@ const getStaffById = async (
     }
   }
 
+  // =====================================================
+  // SIGNED AVATAR URL
+  // =====================================================
+
+  const avatarUrl = staff.avatarObjectKey
+    ? await uploadService.getImageUrl(staff.avatarObjectKey)
+    : null;
+
+  // =====================================================
+  // RESPONSE
+  // =====================================================
+
   return {
     id: staff.id,
+
     name: staff.name,
+
     email: staff.email,
+
     phone: staff.phone,
+
     roleTitle: staff.roleTitle,
+
     specialization: staff.specialization,
+
     description: staff.description,
+
     avatarObjectKey: staff.avatarObjectKey,
+
+    avatarUrl,
+
     status: staff.status,
 
     branches: staff.branches.map((item) => ({
@@ -651,6 +734,7 @@ const getStaffById = async (
     })),
 
     createdAt: staff.createdAt,
+
     updatedAt: staff.updatedAt,
   };
 };
@@ -663,6 +747,10 @@ const updateStaff = async (
     role: Role;
   },
 ) => {
+  // =====================================================
+  // 1. FIND STAFF
+  // =====================================================
+
   const staff = await prisma.staff.findUnique({
     where: {
       id: staffId,
@@ -680,6 +768,10 @@ const updateStaff = async (
   if (!staff) {
     throw new AppError("Staff not found", 404);
   }
+
+  // =====================================================
+  // 2. BRANCH MANAGER SCOPE CHECK
+  // =====================================================
 
   if (requester.role === Role.BRANCH_MANAGER) {
     const managerBranches = await prisma.branchManagerBranch.findMany({
@@ -707,6 +799,25 @@ const updateStaff = async (
       );
     }
   }
+
+  // =====================================================
+  // 3. AVATAR R2 VALIDATION
+  // =====================================================
+
+  if (payload.avatarObjectKey !== undefined) {
+    const expectedPrefix = `staff/${staffId}/`;
+
+    if (!payload.avatarObjectKey.startsWith(expectedPrefix)) {
+      throw new AppError("Invalid staff avatar object key", 400);
+    }
+
+    // Confirm object really exists in R2.
+    await uploadService.verifyImageExists(payload.avatarObjectKey);
+  }
+
+  // =====================================================
+  // 4. UPDATE STAFF + USER PROFILE
+  // =====================================================
 
   const updatedStaff = await prisma.$transaction(async (tx) => {
     const updated = await tx.staff.update({
@@ -741,7 +852,7 @@ const updateStaff = async (
       },
     });
 
-    // Keep User profile consistent
+    // Keep linked User profile consistent.
     await tx.user.update({
       where: {
         id: staff.userId,
@@ -761,14 +872,35 @@ const updateStaff = async (
     return updated;
   });
 
+  // =====================================================
+  // 5. SIGNED AVATAR URL
+  // =====================================================
+
+  const avatarUrl = updatedStaff.avatarObjectKey
+    ? await uploadService.getImageUrl(updatedStaff.avatarObjectKey)
+    : null;
+
+  // =====================================================
+  // 6. RESPONSE
+  // =====================================================
+
   return {
     id: updatedStaff.id,
+
     name: updatedStaff.name,
+
     phone: updatedStaff.phone,
+
     roleTitle: updatedStaff.roleTitle,
+
     specialization: updatedStaff.specialization,
+
     description: updatedStaff.description,
+
     avatarObjectKey: updatedStaff.avatarObjectKey,
+
+    avatarUrl,
+
     status: updatedStaff.status,
   };
 };
@@ -1480,10 +1612,15 @@ const assignStaffPackages = async (
 };
 
 const getBranchStaff = async (branchId: string) => {
+  // =====================================================
+  // 1. CHECK BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
     },
+
     select: {
       id: true,
       status: true,
@@ -1497,6 +1634,10 @@ const getBranchStaff = async (branchId: string) => {
   if (branch.status !== BranchStatus.ACTIVE) {
     throw new AppError("Branch is not active", 400);
   }
+
+  // =====================================================
+  // 2. FETCH ACTIVE STAFF OF BRANCH
+  // =====================================================
 
   const staff = await prisma.staff.findMany({
     where: {
@@ -1522,28 +1663,53 @@ const getBranchStaff = async (branchId: string) => {
     },
   });
 
-  return {
-    items: staff.map((item) => ({
-      id: item.id,
-      name: item.name,
-      roleTitle: item.roleTitle,
-      specialization: item.specialization,
+  // =====================================================
+  // 3. GENERATE SIGNED AVATAR URLS
+  // =====================================================
 
-      // Temporary until Cloudflare R2 URL generation is implemented
-      avatarObjectKey: item.avatarObjectKey,
-    })),
+  const items = await Promise.all(
+    staff.map(async (item) => {
+      const avatarUrl = item.avatarObjectKey
+        ? await uploadService.getImageUrl(item.avatarObjectKey)
+        : null;
+
+      return {
+        id: item.id,
+
+        name: item.name,
+
+        roleTitle: item.roleTitle,
+
+        specialization: item.specialization,
+
+        avatarObjectKey: item.avatarObjectKey,
+
+        avatarUrl,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
+
+  return {
+    items,
   };
 };
-
 const getEligibleStaffForService = async (
   branchId: string,
   serviceId: string,
 ) => {
-  // Check branch
+  // =====================================================
+  // 1. CHECK BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
     },
+
     select: {
       id: true,
       status: true,
@@ -1558,11 +1724,15 @@ const getEligibleStaffForService = async (
     throw new AppError("Branch is not active", 400);
   }
 
-  // Check service
+  // =====================================================
+  // 2. CHECK SERVICE
+  // =====================================================
+
   const service = await prisma.service.findUnique({
     where: {
       id: serviceId,
     },
+
     select: {
       id: true,
       status: true,
@@ -1571,6 +1741,7 @@ const getEligibleStaffForService = async (
         where: {
           branchId,
         },
+
         select: {
           branchId: true,
         },
@@ -1586,16 +1757,20 @@ const getEligibleStaffForService = async (
     throw new AppError("Service is not active", 400);
   }
 
-  // Important:
-  // Service must actually belong to the selected branch
+  // Service must actually belong to selected branch.
   if (service.branches.length === 0) {
     throw new AppError("Service is not available in this branch", 400);
   }
 
-  // Staff must satisfy ALL:
+  // =====================================================
+  // 3. FETCH ELIGIBLE STAFF
+  //
+  // Staff must satisfy:
   // 1. ACTIVE
   // 2. assigned to selected branch
   // 3. assigned to selected service
+  // =====================================================
+
   const staff = await prisma.staff.findMany({
     where: {
       status: StaffStatus.ACTIVE,
@@ -1626,27 +1801,53 @@ const getEligibleStaffForService = async (
     },
   });
 
-  return {
-    items: staff.map((item) => ({
-      id: item.id,
-      name: item.name,
-      roleTitle: item.roleTitle,
-      specialization: item.specialization,
+  // =====================================================
+  // 4. GENERATE SIGNED AVATAR URLS
+  // =====================================================
 
-      // Temporary until R2 URL generation
-      avatarObjectKey: item.avatarObjectKey,
-    })),
+  const items = await Promise.all(
+    staff.map(async (item) => {
+      const avatarUrl = item.avatarObjectKey
+        ? await uploadService.getImageUrl(item.avatarObjectKey)
+        : null;
+
+      return {
+        id: item.id,
+
+        name: item.name,
+
+        roleTitle: item.roleTitle,
+
+        specialization: item.specialization,
+
+        avatarObjectKey: item.avatarObjectKey,
+
+        avatarUrl,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 5. RESPONSE
+  // =====================================================
+
+  return {
+    items,
   };
 };
-
 const getEligibleStaffForPackage = async (
   branchId: string,
   packageId: string,
 ) => {
+  // =====================================================
+  // 1. CHECK BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
     },
+
     select: {
       id: true,
       status: true,
@@ -1660,6 +1861,10 @@ const getEligibleStaffForPackage = async (
   if (branch.status !== BranchStatus.ACTIVE) {
     throw new AppError("Branch is not active", 400);
   }
+
+  // =====================================================
+  // 2. CHECK PACKAGE
+  // =====================================================
 
   const packageData = await prisma.package.findUnique({
     where: {
@@ -1676,6 +1881,7 @@ const getEligibleStaffForPackage = async (
         where: {
           branchId,
         },
+
         select: {
           branchId: true,
         },
@@ -1705,7 +1911,15 @@ const getEligibleStaffForPackage = async (
     throw new AppError("Package is not available in this branch", 400);
   }
 
+  // =====================================================
+  // 3. REQUIRED SERVICES
+  // =====================================================
+
   const requiredServiceIds = packageData.services.map((item) => item.serviceId);
+
+  // =====================================================
+  // 4. FETCH PACKAGE-ASSIGNED STAFF
+  // =====================================================
 
   const staffList = await prisma.staff.findMany({
     where: {
@@ -1737,6 +1951,10 @@ const getEligibleStaffForPackage = async (
     },
   });
 
+  // =====================================================
+  // 5. STAFF MUST SUPPORT ALL PACKAGE SERVICES
+  // =====================================================
+
   const eligibleStaff = staffList.filter((staff) => {
     const staffServiceIds = new Set(
       staff.services.map((item) => item.serviceId),
@@ -1747,14 +1965,38 @@ const getEligibleStaffForPackage = async (
     );
   });
 
+  // =====================================================
+  // 6. GENERATE SIGNED AVATAR URLS
+  // =====================================================
+
+  const items = await Promise.all(
+    eligibleStaff.map(async (staff) => {
+      const avatarUrl = staff.avatarObjectKey
+        ? await uploadService.getImageUrl(staff.avatarObjectKey)
+        : null;
+
+      return {
+        id: staff.id,
+
+        name: staff.name,
+
+        roleTitle: staff.roleTitle,
+
+        specialization: staff.specialization,
+
+        avatarObjectKey: staff.avatarObjectKey,
+
+        avatarUrl,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 7. RESPONSE
+  // =====================================================
+
   return {
-    items: eligibleStaff.map((staff) => ({
-      id: staff.id,
-      name: staff.name,
-      roleTitle: staff.roleTitle,
-      specialization: staff.specialization,
-      avatarObjectKey: staff.avatarObjectKey,
-    })),
+    items,
   };
 };
 

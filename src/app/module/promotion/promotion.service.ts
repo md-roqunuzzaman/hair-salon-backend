@@ -1,6 +1,7 @@
 import { PromotionStatus, Role } from "../../../../generated/prisma/enums.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { uploadService } from "../upload/upload.service.js";
 
 import {
   ICreatePromotionPayload,
@@ -162,6 +163,8 @@ const getPromotions = async (role: Role) => {
       endAt: true,
       status: true,
 
+      imageObjectKey: true,
+
       branches: {
         select: {
           branchId: true,
@@ -182,27 +185,42 @@ const getPromotions = async (role: Role) => {
     },
   });
 
+  const items = await Promise.all(
+    promotions.map(async (promotion) => {
+      const imageUrl = promotion.imageObjectKey
+        ? await uploadService.getImageUrl(promotion.imageObjectKey)
+        : null;
+
+      return {
+        id: promotion.id,
+
+        name: promotion.name,
+
+        minimumTopup: Number(promotion.minimumTopup),
+
+        bonusAmount: Number(promotion.bonusAmount),
+
+        startAt: promotion.startAt.toISOString(),
+
+        endAt: promotion.endAt.toISOString(),
+
+        status: promotion.status,
+
+        imageObjectKey: promotion.imageObjectKey,
+
+        imageUrl,
+
+        branchIds: promotion.branches.map((item) => item.branchId),
+
+        serviceIds: promotion.services.map((item) => item.serviceId),
+
+        packageIds: promotion.packages.map((item) => item.packageId),
+      };
+    }),
+  );
+
   return {
-    items: promotions.map((promotion) => ({
-      id: promotion.id,
-      name: promotion.name,
-
-      minimumTopup: Number(promotion.minimumTopup),
-
-      bonusAmount: Number(promotion.bonusAmount),
-
-      startAt: promotion.startAt.toISOString(),
-
-      endAt: promotion.endAt.toISOString(),
-
-      status: promotion.status,
-
-      branchIds: promotion.branches.map((item) => item.branchId),
-
-      serviceIds: promotion.services.map((item) => item.serviceId),
-
-      packageIds: promotion.packages.map((item) => item.packageId),
-    })),
+    items,
   };
 };
 
@@ -214,12 +232,20 @@ const getPromotionById = async (promotionId: string) => {
 
     select: {
       id: true,
+
       name: true,
+
       minimumTopup: true,
+
       bonusAmount: true,
+
       startAt: true,
+
       endAt: true,
+
       status: true,
+
+      imageObjectKey: true,
 
       branches: {
         select: {
@@ -238,6 +264,10 @@ const getPromotionById = async (promotionId: string) => {
           packageId: true,
         },
       },
+
+      createdAt: true,
+
+      updatedAt: true,
     },
   });
 
@@ -245,8 +275,21 @@ const getPromotionById = async (promotionId: string) => {
     throw new AppError("PROMOTION_NOT_FOUND", 404);
   }
 
+  // =====================================================
+  // SIGNED PROMOTION IMAGE URL
+  // =====================================================
+
+  const imageUrl = promotion.imageObjectKey
+    ? await uploadService.getImageUrl(promotion.imageObjectKey)
+    : null;
+
+  // =====================================================
+  // RESPONSE
+  // =====================================================
+
   return {
     id: promotion.id,
+
     name: promotion.name,
 
     minimumTopup: Number(promotion.minimumTopup),
@@ -259,11 +302,19 @@ const getPromotionById = async (promotionId: string) => {
 
     status: promotion.status,
 
+    imageObjectKey: promotion.imageObjectKey,
+
+    imageUrl,
+
     branchIds: promotion.branches.map((item) => item.branchId),
 
     serviceIds: promotion.services.map((item) => item.serviceId),
 
     packageIds: promotion.packages.map((item) => item.packageId),
+
+    createdAt: promotion.createdAt,
+
+    updatedAt: promotion.updatedAt,
   };
 };
 
@@ -271,6 +322,10 @@ const updatePromotion = async (
   promotionId: string,
   payload: IUpdatePromotionPayload,
 ) => {
+  // =====================================================
+  // 1. FIND PROMOTION
+  // =====================================================
+
   const existingPromotion = await prisma.promotion.findUnique({
     where: {
       id: promotionId,
@@ -280,6 +335,7 @@ const updatePromotion = async (
       id: true,
       startAt: true,
       endAt: true,
+      imageObjectKey: true,
     },
   });
 
@@ -288,26 +344,42 @@ const updatePromotion = async (
   }
 
   // =====================================================
-  // VALIDATE FINAL DATE RANGE
+  // 2. VALIDATE PROMOTION IMAGE
   // =====================================================
 
-  const finalStartAt = payload.startAt
-    ? new Date(payload.startAt)
-    : existingPromotion.startAt;
+  if (payload.imageObjectKey !== undefined) {
+    const expectedPrefix = `promotions/${promotionId}/`;
 
-  const finalEndAt = payload.endAt
-    ? new Date(payload.endAt)
-    : existingPromotion.endAt;
+    if (!payload.imageObjectKey.startsWith(expectedPrefix)) {
+      throw new AppError("Invalid promotion image object key", 400);
+    }
+
+    await uploadService.verifyImageExists(payload.imageObjectKey);
+  }
+
+  // =====================================================
+  // 3. VALIDATE FINAL DATE RANGE
+  // =====================================================
+
+  const finalStartAt =
+    payload.startAt !== undefined
+      ? new Date(payload.startAt)
+      : existingPromotion.startAt;
+
+  const finalEndAt =
+    payload.endAt !== undefined
+      ? new Date(payload.endAt)
+      : existingPromotion.endAt;
 
   if (finalStartAt.getTime() >= finalEndAt.getTime()) {
     throw new AppError("endAt must be after startAt", 400);
   }
 
   // =====================================================
-  // VALIDATE BRANCH IDS
+  // 4. VALIDATE BRANCH IDS
   // =====================================================
 
-  if (payload.branchIds) {
+  if (payload.branchIds !== undefined) {
     const branches = await prisma.branch.findMany({
       where: {
         id: {
@@ -326,10 +398,10 @@ const updatePromotion = async (
   }
 
   // =====================================================
-  // VALIDATE SERVICE IDS
+  // 5. VALIDATE SERVICE IDS
   // =====================================================
 
-  if (payload.serviceIds) {
+  if (payload.serviceIds !== undefined) {
     const services = await prisma.service.findMany({
       where: {
         id: {
@@ -348,10 +420,10 @@ const updatePromotion = async (
   }
 
   // =====================================================
-  // VALIDATE PACKAGE IDS
+  // 6. VALIDATE PACKAGE IDS
   // =====================================================
 
-  if (payload.packageIds) {
+  if (payload.packageIds !== undefined) {
     const packages = await prisma.package.findMany({
       where: {
         id: {
@@ -370,127 +442,177 @@ const updatePromotion = async (
   }
 
   // =====================================================
-  // UPDATE ATOMICALLY
+  // 7. UPDATE ATOMICALLY
   // =====================================================
 
-  const result = await prisma.$transaction(async (tx) => {
-    if (payload.branchIds) {
-      await tx.promotionBranch.deleteMany({
+  const result = await prisma.$transaction(
+    async (tx) => {
+      if (payload.branchIds !== undefined) {
+        await tx.promotionBranch.deleteMany({
+          where: {
+            promotionId,
+          },
+        });
+      }
+
+      if (payload.serviceIds !== undefined) {
+        await tx.promotionService.deleteMany({
+          where: {
+            promotionId,
+          },
+        });
+      }
+
+      if (payload.packageIds !== undefined) {
+        await tx.promotionPackage.deleteMany({
+          where: {
+            promotionId,
+          },
+        });
+      }
+
+      return tx.promotion.update({
         where: {
-          promotionId,
+          id: promotionId,
         },
-      });
-    }
 
-    if (payload.serviceIds) {
-      await tx.promotionService.deleteMany({
-        where: {
-          promotionId,
+        data: {
+          ...(payload.name !== undefined && {
+            name: payload.name.trim(),
+          }),
+
+          ...(payload.minimumTopup !== undefined && {
+            minimumTopup: payload.minimumTopup,
+          }),
+
+          ...(payload.bonusAmount !== undefined && {
+            bonusAmount: payload.bonusAmount,
+          }),
+
+          ...(payload.startAt !== undefined && {
+            startAt: new Date(payload.startAt),
+          }),
+
+          ...(payload.endAt !== undefined && {
+            endAt: new Date(payload.endAt),
+          }),
+
+          ...(payload.imageObjectKey !== undefined && {
+            imageObjectKey: payload.imageObjectKey,
+          }),
+
+          ...(payload.branchIds !== undefined && {
+            branches: {
+              create: payload.branchIds.map((branchId) => ({
+                branchId,
+              })),
+            },
+          }),
+
+          ...(payload.serviceIds !== undefined && {
+            services: {
+              create: payload.serviceIds.map((serviceId) => ({
+                serviceId,
+              })),
+            },
+          }),
+
+          ...(payload.packageIds !== undefined && {
+            packages: {
+              create: payload.packageIds.map((packageId) => ({
+                packageId,
+              })),
+            },
+          }),
         },
-      });
-    }
 
-    if (payload.packageIds) {
-      await tx.promotionPackage.deleteMany({
-        where: {
-          promotionId,
-        },
-      });
-    }
+        select: {
+          id: true,
 
-    return tx.promotion.update({
-      where: {
-        id: promotionId,
-      },
+          name: true,
 
-      data: {
-        ...(payload.name !== undefined && {
-          name: payload.name,
-        }),
+          minimumTopup: true,
 
-        ...(payload.minimumTopup !== undefined && {
-          minimumTopup: payload.minimumTopup,
-        }),
+          bonusAmount: true,
 
-        ...(payload.bonusAmount !== undefined && {
-          bonusAmount: payload.bonusAmount,
-        }),
+          startAt: true,
 
-        ...(payload.startAt !== undefined && {
-          startAt: new Date(payload.startAt),
-        }),
+          endAt: true,
 
-        ...(payload.endAt !== undefined && {
-          endAt: new Date(payload.endAt),
-        }),
+          status: true,
 
-        ...(payload.branchIds !== undefined && {
+          imageObjectKey: true,
+
           branches: {
-            create: payload.branchIds.map((branchId) => ({
-              branchId,
-            })),
+            select: {
+              branchId: true,
+            },
           },
-        }),
 
-        ...(payload.serviceIds !== undefined && {
           services: {
-            create: payload.serviceIds.map((serviceId) => ({
-              serviceId,
-            })),
+            select: {
+              serviceId: true,
+            },
           },
-        }),
 
-        ...(payload.packageIds !== undefined && {
           packages: {
-            create: payload.packageIds.map((packageId) => ({
-              packageId,
-            })),
+            select: {
+              packageId: true,
+            },
           },
-        }),
-      },
 
-      select: {
-        id: true,
-        name: true,
-        minimumTopup: true,
-        bonusAmount: true,
-        startAt: true,
-        endAt: true,
+          createdAt: true,
 
-        branches: {
-          select: {
-            branchId: true,
-          },
+          updatedAt: true,
         },
+      });
+    },
+    {
+      maxWait: 5000,
+      timeout: 15000,
+    },
+  );
 
-        services: {
-          select: {
-            serviceId: true,
-          },
-        },
+  // =====================================================
+  // 8. SIGNED IMAGE URL
+  // =====================================================
 
-        packages: {
-          select: {
-            packageId: true,
-          },
-        },
-      },
-    });
-  });
+  const imageUrl = result.imageObjectKey
+    ? await uploadService.getImageUrl(result.imageObjectKey)
+    : null;
+
+  // =====================================================
+  // 9. RESPONSE
+  // =====================================================
 
   return {
     id: result.id,
+
     name: result.name,
+
     minimumTopup: Number(result.minimumTopup),
+
     bonusAmount: Number(result.bonusAmount),
+
     startAt: result.startAt.toISOString(),
+
     endAt: result.endAt.toISOString(),
+
+    status: result.status,
+
+    imageObjectKey: result.imageObjectKey,
+
+    imageUrl,
 
     branchIds: result.branches.map((item) => item.branchId),
 
     serviceIds: result.services.map((item) => item.serviceId),
 
     packageIds: result.packages.map((item) => item.packageId),
+
+    createdAt: result.createdAt,
+
+    updatedAt: result.updatedAt,
   };
 };
 

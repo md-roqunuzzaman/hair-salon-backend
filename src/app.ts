@@ -27,6 +27,7 @@ import { DashboardRoutes } from "./app/module/dashboard/dashboard.route.js";
 import { ReportRoutes } from "./app/module/report/report.route.js";
 import { AuditLogRoutes } from "./app/module/auditLog/auditLog.route.js";
 import { UploadRoutes } from "./app/module/upload/upload.route.js";
+import { BranchHourlyCapacityRoutes } from "./app/module/branch-hourly-capacity/branch-hourly-capacity.route.js";
 
 const app: Application = express();
 
@@ -56,6 +57,7 @@ app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", UserRoutes);
 app.use("/api/v1/brand", BrandRoutes);
 app.use("/api/v1/branches", BranchRoutes);
+app.use("/api/v1/branches", BranchHourlyCapacityRoutes);
 app.use("/api/v1/services", ServiceRoutes);
 app.use("/api/v1/packages", PackageRoutes);
 app.use("/api/v1/group-purchases", GroupPurchaseRoutes);

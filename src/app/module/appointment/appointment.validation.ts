@@ -9,7 +9,7 @@ const createPayNowValidationSchema = z.object({
 
       packageId: z.uuid("Invalid packageId").nullable().optional(),
 
-      staffId: z.uuid("Invalid staffId"),
+      staffId: z.uuid("Invalid staffId").nullable().optional(),
 
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
 
@@ -19,6 +19,7 @@ const createPayNowValidationSchema = z.object({
     })
     .superRefine((data, ctx) => {
       const hasService = Boolean(data.serviceId);
+
       const hasPackage = Boolean(data.packageId);
 
       if (hasService === hasPackage) {
@@ -53,7 +54,7 @@ const createReserveValidationSchema = z.object({
 
       packageId: z.uuid("Invalid packageId").nullable().optional(),
 
-      staffId: z.uuid("Invalid staffId"),
+      staffId: z.uuid("Invalid staffId").nullable().optional(),
 
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
 
@@ -63,6 +64,7 @@ const createReserveValidationSchema = z.object({
     })
     .superRefine((data, ctx) => {
       const hasService = Boolean(data.serviceId);
+
       const hasPackage = Boolean(data.packageId);
 
       if (hasService === hasPackage) {
@@ -128,7 +130,7 @@ const rescheduleAppointmentValidationSchema = z.object({
       .string()
       .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "startTime must be HH:mm"),
 
-    staffId: z.uuid("Invalid staffId"),
+    staffId: z.uuid("Invalid staffId").nullable().optional(),
   }),
 });
 
@@ -179,7 +181,7 @@ const getBranchAppointmentsValidationSchema = z.object({
 
     staffId: z.uuid("Invalid staffId").optional(),
 
-    bookingMethod: z.enum(["PAY_NOW", "RESERVE_NOW"]).optional(),
+    bookingMethod: z.enum(["PAY_NOW", "RESERVE_NOW", "DEPOSIT"]).optional(),
 
     appointmentStatus: z
       .enum([
@@ -197,6 +199,7 @@ const getBranchAppointmentsValidationSchema = z.object({
       .enum([
         "UNPAID",
         "PENDING",
+        "PARTIALLY_PAID",
         "PAID",
         "FAILED",
         "REFUNDED",
@@ -227,7 +230,7 @@ const getAllAppointmentsValidationSchema = z.object({
 
       packageId: z.uuid("Invalid packageId").optional(),
 
-      bookingMethod: z.enum(["PAY_NOW", "RESERVE_NOW"]).optional(),
+      bookingMethod: z.enum(["PAY_NOW", "RESERVE_NOW", "DEPOSIT"]).optional(),
 
       appointmentStatus: z
         .enum([
@@ -245,6 +248,7 @@ const getAllAppointmentsValidationSchema = z.object({
         .enum([
           "UNPAID",
           "PENDING",
+          "PARTIALLY_PAID",
           "PAID",
           "FAILED",
           "REFUNDED",
@@ -282,7 +286,7 @@ const createDepositAppointmentValidationSchema = z.object({
 
       packageId: z.string().uuid("Invalid packageId").optional(),
 
-      staffId: z.string().uuid("Invalid staffId"),
+      staffId: z.string().uuid("Invalid staffId").nullable().optional(),
 
       date: z
         .string()

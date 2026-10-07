@@ -355,9 +355,25 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       throw new AppError("Payment not found", 404);
     }
 
-    await prisma.$transaction(async (tx) => {
+    // ===================================================
+    // LATE APPOINTMENT PAYMENT TYPE
+    // ===================================================
+
+    type LateAppointmentPayment = {
+      paymentId: string;
+      appointmentId: string;
+      customerId: string;
+      amount: number;
+      providerPaymentId: string;
+    };
+
+    // ===================================================
+    // LOCAL SUCCESS TRANSACTION
+    // ===================================================
+
+    const transactionResult = await prisma.$transaction(async (tx) => {
       // -----------------------------------------------
-      // Re-check idempotency inside transaction
+      // Re-check webhook idempotency inside transaction
       // -----------------------------------------------
 
       const existingEvent = await tx.stripeWebhookEvent.findUnique({
@@ -367,47 +383,75 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       });
 
       if (existingEvent) {
-        return;
+        return {
+          alreadyProcessed: true,
+          lateAppointmentPayment: null as LateAppointmentPayment | null,
+        };
+      }
+
+      // -----------------------------------------------
+      // Re-read payment inside transaction
+      // -----------------------------------------------
+
+      const currentPayment = await tx.payment.findUnique({
+        where: {
+          id: payment.id,
+        },
+      });
+
+      if (!currentPayment) {
+        throw new AppError("Payment not found", 404);
       }
 
       // -----------------------------------------------
       // PAYMENT -> PAID
+      //
+      // Do NOT overwrite REFUNDED /
+      // PARTIALLY_REFUNDED on webhook retry.
       // -----------------------------------------------
 
-      if (payment.status !== PaymentStatus.PAID) {
+      if (
+        currentPayment.status === PaymentStatus.PENDING ||
+        currentPayment.status === PaymentStatus.FAILED
+      ) {
         await tx.payment.update({
           where: {
-            id: payment.id,
+            id: currentPayment.id,
           },
 
           data: {
             status: PaymentStatus.PAID,
-
             paidAt: new Date(),
+            failedAt: null,
           },
         });
       }
 
-      // =================================================
-      // APPOINTMENT PAYMENT
-      // =================================================
+      let lateAppointmentPayment: LateAppointmentPayment | null = null;
 
       // =================================================
       // APPOINTMENT PAYMENT
       // =================================================
 
-      if (payment.appointmentId) {
+      if (currentPayment.appointmentId) {
         const appointment = await tx.appointment.findUnique({
           where: {
-            id: payment.appointmentId,
+            id: currentPayment.appointmentId,
           },
 
           select: {
             id: true,
             customerId: true,
+
             bookingMethod: true,
+
             appointmentStatus: true,
             paymentStatus: true,
+
+            // IMPORTANT:
+            // required for late-payment protection
+            holdExpiresAt: true,
+
             qrToken: true,
           },
         });
@@ -416,18 +460,34 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           throw new AppError("Appointment not found", 404);
         }
 
+        const now = new Date();
+
         // =================================================
         // PAY NOW PAYMENT
         // =================================================
 
-        if (payment.purpose === PaymentPurpose.APPOINTMENT) {
+        if (currentPayment.purpose === PaymentPurpose.APPOINTMENT) {
           if (appointment.bookingMethod !== BookingMethod.PAY_NOW) {
             throw new AppError("Invalid appointment payment purpose", 409);
           }
 
-          if (
-            appointment.appointmentStatus === AppointmentStatus.PENDING_PAYMENT
-          ) {
+          // ---------------------------------------------
+          // Normal payment is allowed ONLY while
+          // payment hold is still valid.
+          // ---------------------------------------------
+
+          const holdIsStillActive =
+            appointment.appointmentStatus ===
+              AppointmentStatus.PENDING_PAYMENT &&
+            appointment.paymentStatus === PaymentStatus.PENDING &&
+            Boolean(appointment.holdExpiresAt) &&
+            appointment.holdExpiresAt! > now;
+
+          // ---------------------------------------------
+          // NORMAL PAY NOW SUCCESS
+          // ---------------------------------------------
+
+          if (holdIsStillActive) {
             await tx.appointment.update({
               where: {
                 id: appointment.id,
@@ -435,7 +495,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
               data: {
                 appointmentStatus: AppointmentStatus.CONFIRMED,
+
                 paymentStatus: PaymentStatus.PAID,
+
                 holdExpiresAt: null,
               },
             });
@@ -443,23 +505,81 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             await notificationService.createNotification(
               {
                 userId: appointment.customerId,
+
                 type: "BOOKING_CONFIRMED",
+
                 title: "Booking confirmed",
+
                 message: "Your appointment has been confirmed successfully.",
               },
+
               tx,
             );
-          } else if (appointment.paymentStatus !== PaymentStatus.PAID) {
+          }
+
+          // ---------------------------------------------
+          // IDEMPOTENT NORMAL SUCCESS
+          //
+          // Useful if local success already happened
+          // but webhook event marker was not persisted.
+          // Do NOT classify this as late payment.
+          // ---------------------------------------------
+          else if (
+            appointment.appointmentStatus === AppointmentStatus.CONFIRMED &&
+            appointment.paymentStatus === PaymentStatus.PAID
+          ) {
+            // Already correctly processed.
+            // No appointment mutation required.
+          }
+
+          // ---------------------------------------------
+          // LATE PAY NOW PAYMENT
+          //
+          // Examples:
+          // - cron already marked EXPIRED
+          // - hold time passed before cron ran
+          // - appointment no longer payable
+          //
+          // NEVER revive the booking.
+          // ---------------------------------------------
+          else {
+            const lateAppointmentStatus =
+              appointment.appointmentStatus ===
+              AppointmentStatus.PENDING_PAYMENT
+                ? AppointmentStatus.EXPIRED
+                : appointment.appointmentStatus;
+
             await tx.appointment.update({
               where: {
                 id: appointment.id,
               },
 
               data: {
-                paymentStatus: PaymentStatus.PAID,
+                appointmentStatus: lateAppointmentStatus,
+
+                // Do not overwrite a refund from an
+                // earlier successful retry.
+                ...(appointment.paymentStatus !== PaymentStatus.REFUNDED
+                  ? {
+                      paymentStatus: PaymentStatus.PAID,
+                    }
+                  : {}),
+
                 holdExpiresAt: null,
               },
             });
+
+            lateAppointmentPayment = {
+              paymentId: currentPayment.id,
+
+              appointmentId: appointment.id,
+
+              customerId: appointment.customerId,
+
+              amount: Number(currentPayment.amount),
+
+              providerPaymentId: paymentIntent.id,
+            };
           }
         }
 
@@ -467,14 +587,23 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         // DEPOSIT PAYMENT
         // =================================================
 
-        if (payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT) {
+        if (currentPayment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT) {
           if (appointment.bookingMethod !== BookingMethod.DEPOSIT) {
             throw new AppError("Invalid deposit payment purpose", 409);
           }
 
-          if (
-            appointment.appointmentStatus === AppointmentStatus.PENDING_PAYMENT
-          ) {
+          const holdIsStillActive =
+            appointment.appointmentStatus ===
+              AppointmentStatus.PENDING_PAYMENT &&
+            appointment.paymentStatus === PaymentStatus.PENDING &&
+            Boolean(appointment.holdExpiresAt) &&
+            appointment.holdExpiresAt! > now;
+
+          // ---------------------------------------------
+          // NORMAL DEPOSIT SUCCESS
+          // ---------------------------------------------
+
+          if (holdIsStillActive) {
             const qrToken =
               appointment.qrToken ?? crypto.randomBytes(32).toString("hex");
 
@@ -485,11 +614,15 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
               data: {
                 appointmentStatus: AppointmentStatus.RESERVED,
+
                 paymentStatus: PaymentStatus.PARTIALLY_PAID,
+
                 holdExpiresAt: null,
 
                 qrToken,
+
                 qrVerifiedAt: null,
+
                 qrVerifiedBy: null,
               },
             });
@@ -497,13 +630,69 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             await notificationService.createNotification(
               {
                 userId: appointment.customerId,
+
                 type: "BOOKING_CONFIRMED",
+
                 title: "Deposit received",
+
                 message:
                   "Your deposit has been received and your appointment is reserved.",
               },
+
               tx,
             );
+          }
+
+          // ---------------------------------------------
+          // IDEMPOTENT NORMAL DEPOSIT SUCCESS
+          // ---------------------------------------------
+          else if (
+            (appointment.appointmentStatus === AppointmentStatus.RESERVED ||
+              appointment.appointmentStatus === AppointmentStatus.CONFIRMED) &&
+            appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID
+          ) {
+            // Already correctly processed.
+          }
+
+          // ---------------------------------------------
+          // LATE DEPOSIT PAYMENT
+          // ---------------------------------------------
+          else {
+            const lateAppointmentStatus =
+              appointment.appointmentStatus ===
+              AppointmentStatus.PENDING_PAYMENT
+                ? AppointmentStatus.EXPIRED
+                : appointment.appointmentStatus;
+
+            await tx.appointment.update({
+              where: {
+                id: appointment.id,
+              },
+
+              data: {
+                appointmentStatus: lateAppointmentStatus,
+
+                ...(appointment.paymentStatus !== PaymentStatus.REFUNDED
+                  ? {
+                      paymentStatus: PaymentStatus.PAID,
+                    }
+                  : {}),
+
+                holdExpiresAt: null,
+              },
+            });
+
+            lateAppointmentPayment = {
+              paymentId: currentPayment.id,
+
+              appointmentId: appointment.id,
+
+              customerId: appointment.customerId,
+
+              amount: Number(currentPayment.amount),
+
+              providerPaymentId: paymentIntent.id,
+            };
           }
         }
       }
@@ -512,10 +701,10 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       // WALLET TOP-UP PAYMENT
       // =================================================
 
-      if (payment.walletTopupId) {
+      if (currentPayment.walletTopupId) {
         const topup = await tx.walletTopup.findUnique({
           where: {
-            id: payment.walletTopupId,
+            id: currentPayment.walletTopupId,
           },
         });
 
@@ -525,7 +714,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
         if (topup.status !== WalletTopupStatus.PAID) {
           // ---------------------------------------------
-          // CREDIT WALLET
+          // CREDIT PAID BALANCE + BONUS
           // ---------------------------------------------
 
           await tx.wallet.update({
@@ -600,28 +789,296 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
           await notificationService.createNotification(
             {
-              userId: payment.customerId,
+              userId: currentPayment.customerId,
+
               type: "WALLET_TOPUP_SUCCESS",
+
               title: "Wallet top-up successful",
+
               message: "Your wallet top-up has been completed successfully.",
             },
+
             tx,
           );
         }
       }
 
       // =================================================
-      // MARK WEBHOOK EVENT PROCESSED
-      // MUST BE LAST
+      // NORMAL PAYMENT:
+      // MARK WEBHOOK EVENT PROCESSED INSIDE SAME TX
+      //
+      // Late appointment payment is NOT marked processed
+      // yet because automatic refund must succeed first.
       // =================================================
 
-      await tx.stripeWebhookEvent.create({
-        data: {
-          id: event.id,
-          type: event.type,
+      if (!lateAppointmentPayment) {
+        await tx.stripeWebhookEvent.create({
+          data: {
+            id: event.id,
+            type: event.type,
+          },
+        });
+      }
+
+      return {
+        alreadyProcessed: false,
+        lateAppointmentPayment,
+      };
+    });
+
+    // ===================================================
+    // TRANSACTION WAS ALREADY PROCESSED
+    // ===================================================
+
+    if (transactionResult.alreadyProcessed) {
+      return {
+        received: true as const,
+      };
+    }
+
+    const latePayment = transactionResult.lateAppointmentPayment;
+
+    // ===================================================
+    // LATE APPOINTMENT PAYMENT AUTO-REFUND
+    // ===================================================
+
+    if (latePayment) {
+      // -----------------------------------------------
+      // Find previous automatic refund attempt
+      // -----------------------------------------------
+
+      let localRefund = await prisma.refund.findFirst({
+        where: {
+          paymentId: latePayment.paymentId,
+
+          reason: "LATE_PAYMENT_AFTER_APPOINTMENT_EXPIRY",
+        },
+
+        orderBy: {
+          createdAt: "desc",
         },
       });
-    });
+
+      // -----------------------------------------------
+      // If refund already succeeded on an earlier retry,
+      // just normalize local states + mark webhook event.
+      // -----------------------------------------------
+
+      if (localRefund?.status === RefundStatus.SUCCEEDED) {
+        await prisma.$transaction(async (tx) => {
+          await tx.payment.update({
+            where: {
+              id: latePayment.paymentId,
+            },
+
+            data: {
+              status: PaymentStatus.REFUNDED,
+
+              refundedAt: localRefund!.refundedAt ?? new Date(),
+            },
+          });
+
+          await tx.appointment.update({
+            where: {
+              id: latePayment.appointmentId,
+            },
+
+            data: {
+              // Appointment remains EXPIRED /
+              // cancelled / otherwise unchanged.
+              paymentStatus: PaymentStatus.REFUNDED,
+
+              holdExpiresAt: null,
+            },
+          });
+
+          await tx.stripeWebhookEvent.upsert({
+            where: {
+              id: event.id,
+            },
+
+            update: {},
+
+            create: {
+              id: event.id,
+              type: event.type,
+            },
+          });
+        });
+
+        return {
+          received: true as const,
+        };
+      }
+
+      // -----------------------------------------------
+      // Create or reopen local refund attempt
+      // -----------------------------------------------
+
+      if (!localRefund) {
+        localRefund = await prisma.refund.create({
+          data: {
+            paymentId: latePayment.paymentId,
+
+            amount: latePayment.amount,
+
+            reason: "LATE_PAYMENT_AFTER_APPOINTMENT_EXPIRY",
+
+            status: RefundStatus.PENDING,
+          },
+        });
+      } else if (localRefund.status === RefundStatus.FAILED) {
+        localRefund = await prisma.refund.update({
+          where: {
+            id: localRefund.id,
+          },
+
+          data: {
+            status: RefundStatus.PENDING,
+          },
+        });
+      }
+
+      try {
+        // =================================================
+        // STRIPE AUTO REFUND
+        // =================================================
+
+        const stripeRefund = await stripe.refunds.create(
+          {
+            payment_intent: latePayment.providerPaymentId,
+
+            amount: Math.round(latePayment.amount * 100),
+
+            metadata: {
+              paymentId: latePayment.paymentId,
+
+              appointmentId: latePayment.appointmentId,
+
+              refundId: localRefund.id,
+
+              reason: "LATE_PAYMENT_AFTER_APPOINTMENT_EXPIRY",
+            },
+          },
+
+          {
+            // Stable key makes webhook retry safe.
+            idempotencyKey: `late-payment-refund-${latePayment.paymentId}`,
+          },
+        );
+
+        // =================================================
+        // FINALIZE REFUND LOCALLY
+        // =================================================
+
+        await prisma.$transaction(async (tx) => {
+          const refundedAt = new Date();
+
+          await tx.refund.update({
+            where: {
+              id: localRefund.id,
+            },
+
+            data: {
+              providerRefundId: stripeRefund.id,
+
+              status: RefundStatus.SUCCEEDED,
+
+              refundedAt,
+            },
+          });
+
+          await tx.payment.update({
+            where: {
+              id: latePayment.paymentId,
+            },
+
+            data: {
+              status: PaymentStatus.REFUNDED,
+
+              refundedAt,
+            },
+          });
+
+          // IMPORTANT:
+          // Do NOT restore/reserve/confirm the
+          // appointment.
+          await tx.appointment.update({
+            where: {
+              id: latePayment.appointmentId,
+            },
+
+            data: {
+              paymentStatus: PaymentStatus.REFUNDED,
+
+              holdExpiresAt: null,
+            },
+          });
+
+          await notificationService.createNotification(
+            {
+              userId: latePayment.customerId,
+
+              type: "REFUND_COMPLETED",
+
+              title: "Payment refunded",
+
+              message:
+                "Your payment was received after the booking hold expired and has been refunded automatically.",
+            },
+
+            tx,
+          );
+
+          // ---------------------------------------------
+          // Mark webhook event processed ONLY after
+          // refund completed successfully.
+          // ---------------------------------------------
+
+          await tx.stripeWebhookEvent.upsert({
+            where: {
+              id: event.id,
+            },
+
+            update: {},
+
+            create: {
+              id: event.id,
+              type: event.type,
+            },
+          });
+        });
+      } catch (error) {
+        // =================================================
+        // AUTO REFUND FAILED
+        //
+        // Keep appointment unbooked.
+        // Payment stays PAID so operations can clearly
+        // see money was received and refund is pending.
+        //
+        // Webhook event remains unprocessed so Stripe can
+        // retry.
+        // =================================================
+
+        await prisma.refund.update({
+          where: {
+            id: localRefund.id,
+          },
+
+          data: {
+            status: RefundStatus.FAILED,
+          },
+        });
+
+        console.error("[Late Payment Refund] Automatic refund failed", error);
+
+        throw new AppError("Late payment automatic refund failed", 502);
+      }
+    }
+
+    // ===================================================
+    // NORMAL SUCCESS
+    // ===================================================
 
     return {
       received: true as const,
@@ -653,11 +1110,14 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           return;
         }
 
-        // -----------------------------------------------
+        // ---------------------------------------------
         // PAYMENT -> FAILED
-        // -----------------------------------------------
+        //
+        // Only pending payment attempts should become
+        // failed. Never overwrite PAID / REFUNDED.
+        // ---------------------------------------------
 
-        if (payment.status !== PaymentStatus.PAID) {
+        if (payment.status === PaymentStatus.PENDING) {
           await tx.payment.update({
             where: {
               id: payment.id,
@@ -697,9 +1157,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           }
         }
 
-        // -----------------------------------------------
+        // ---------------------------------------------
         // MARK EVENT PROCESSED
-        // -----------------------------------------------
+        // ---------------------------------------------
 
         await tx.stripeWebhookEvent.create({
           data: {
@@ -737,7 +1197,6 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
     received: true as const,
   };
 };
-
 const getPaymentById = async (
   paymentId: string,
   userId: string,

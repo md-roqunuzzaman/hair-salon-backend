@@ -11,6 +11,8 @@ model Promotion {
 
   status PromotionStatus @default(ACTIVE)
 
+  imageObjectKey String?
+
   branches PromotionBranch[]
   services PromotionService[]
   packages PromotionPackage[]

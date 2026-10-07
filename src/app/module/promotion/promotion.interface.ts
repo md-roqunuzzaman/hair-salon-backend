@@ -10,6 +10,8 @@ export interface ICreatePromotionPayload {
   serviceIds: string[];
   packageIds: string[];
   status: PromotionStatus;
+
+  imageObjectKey?: string;
 }
 
 export interface IUpdatePromotionPayload {
@@ -21,4 +23,6 @@ export interface IUpdatePromotionPayload {
   branchIds?: string[];
   serviceIds?: string[];
   packageIds?: string[];
+
+  imageObjectKey?: string;
 }

@@ -8,6 +8,7 @@ import {
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
+import { uploadService } from "../upload/upload.service.js";
 
 import {
   ICreateBranchPayload,
@@ -87,6 +88,10 @@ const createBranch = async (payload: ICreateBranchPayload) => {
 // =====================================================
 
 const getBranches = async (query: Record<string, any>) => {
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
+
   const limit = query.limit ? Number(query.limit) : 20;
 
   const page = query.page ? Number(query.page) : 1;
@@ -97,6 +102,10 @@ const getBranches = async (query: Record<string, any>) => {
 
   const sortOrder = query.sortOrder ? query.sortOrder : "desc";
 
+  // =====================================================
+  // 2. FILTERS
+  // =====================================================
+
   const andConditions: Prisma.BranchWhereInput[] = [];
 
   if (query.status) {
@@ -105,31 +114,99 @@ const getBranches = async (query: Record<string, any>) => {
     });
   }
 
-  const branches = await prisma.branch.findMany({
-    where: {
-      AND: andConditions,
-    },
+  // =====================================================
+  // 3. FETCH BRANCHES + COUNT
+  // =====================================================
 
-    take: limit,
+  const [branches, totalBranchCount] = await Promise.all([
+    prisma.branch.findMany({
+      where: {
+        AND: andConditions,
+      },
 
-    skip,
+      take: limit,
 
-    orderBy: {
-      [sortBy]: sortOrder,
-    },
-  });
+      skip,
 
-  const totalBranchCount = await prisma.branch.count({
-    where: {
-      AND: andConditions,
-    },
-  });
+      orderBy: {
+        [sortBy]: sortOrder,
+      },
+
+      select: {
+        id: true,
+
+        name: true,
+
+        address: true,
+
+        phone: true,
+
+        description: true,
+
+        imageObjectKey: true,
+
+        status: true,
+
+        createdAt: true,
+
+        updatedAt: true,
+      },
+    }),
+
+    prisma.branch.count({
+      where: {
+        AND: andConditions,
+      },
+    }),
+  ]);
+
+  // =====================================================
+  // 4. GENERATE SIGNED IMAGE URLS
+  // =====================================================
+
+  const items = await Promise.all(
+    branches.map(async (branch) => {
+      const imageUrl = branch.imageObjectKey
+        ? await uploadService.getImageUrl(branch.imageObjectKey)
+        : null;
+
+      return {
+        id: branch.id,
+
+        name: branch.name,
+
+        address: branch.address,
+
+        phone: branch.phone,
+
+        description: branch.description,
+
+        imageObjectKey: branch.imageObjectKey,
+
+        imageUrl,
+
+        status: branch.status,
+
+        createdAt: branch.createdAt,
+
+        updatedAt: branch.updatedAt,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 5. PAGINATION
+  // =====================================================
 
   const totalPages =
     totalBranchCount === 0 ? 0 : Math.ceil(totalBranchCount / limit);
 
+  // =====================================================
+  // 6. RESPONSE
+  // =====================================================
+
   return {
-    items: branches,
+    items,
 
     pagination: {
       page,
@@ -152,9 +229,25 @@ const getBranches = async (query: Record<string, any>) => {
 // =====================================================
 
 const getBranchById = async (branchId: string) => {
+  // =====================================================
+  // 1. FIND BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
+    },
+
+    select: {
+      id: true,
+      name: true,
+      address: true,
+      phone: true,
+      description: true,
+      imageObjectKey: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
     },
   });
 
@@ -162,7 +255,39 @@ const getBranchById = async (branchId: string) => {
     throw new AppError("Branch not found", 404);
   }
 
-  return branch;
+  // =====================================================
+  // 2. GENERATE SIGNED IMAGE URL
+  // =====================================================
+
+  const imageUrl = branch.imageObjectKey
+    ? await uploadService.getImageUrl(branch.imageObjectKey)
+    : null;
+
+  // =====================================================
+  // 3. RESPONSE
+  // =====================================================
+
+  return {
+    id: branch.id,
+
+    name: branch.name,
+
+    address: branch.address,
+
+    phone: branch.phone,
+
+    description: branch.description,
+
+    imageObjectKey: branch.imageObjectKey,
+
+    imageUrl,
+
+    status: branch.status,
+
+    createdAt: branch.createdAt,
+
+    updatedAt: branch.updatedAt,
+  };
 };
 
 // =====================================================
@@ -173,6 +298,10 @@ const updateBranch = async (
   branchId: string,
   payload: IUpdateBranchPayload,
 ) => {
+  // =====================================================
+  // 1. FIND BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
@@ -182,6 +311,10 @@ const updateBranch = async (
   if (!branch) {
     throw new AppError("Branch not found", 404);
   }
+
+  // =====================================================
+  // 2. DUPLICATE BRANCH NAME
+  // =====================================================
 
   if (payload.name) {
     const existingBranch = await prisma.branch.findFirst({
@@ -202,25 +335,86 @@ const updateBranch = async (
     }
   }
 
+  // =====================================================
+  // 3. IMAGE VALIDATION
+  // =====================================================
+
+  if (payload.imageObjectKey !== undefined) {
+    const expectedPrefix = `branches/${branchId}/`;
+
+    if (!payload.imageObjectKey.startsWith(expectedPrefix)) {
+      throw new AppError("Invalid branch image object key", 400);
+    }
+
+    // Verify that the image really exists in R2.
+    await uploadService.verifyImageExists(payload.imageObjectKey);
+  }
+
+  // =====================================================
+  // 4. UPDATE BRANCH
+  // =====================================================
+
   const updatedBranch = await prisma.branch.update({
     where: {
       id: branchId,
     },
 
     data: {
-      name: payload.name?.trim(),
+      ...(payload.name !== undefined && {
+        name: payload.name.trim(),
+      }),
 
-      address: payload.address?.trim(),
+      ...(payload.address !== undefined && {
+        address: payload.address.trim(),
+      }),
 
-      phone: payload.phone?.trim(),
+      ...(payload.phone !== undefined && {
+        phone: payload.phone.trim(),
+      }),
 
-      description: payload.description?.trim(),
+      ...(payload.description !== undefined && {
+        description: payload.description.trim(),
+      }),
 
-      imageObjectKey: payload.imageObjectKey,
+      ...(payload.imageObjectKey !== undefined && {
+        imageObjectKey: payload.imageObjectKey,
+      }),
     },
   });
 
-  return updatedBranch;
+  // =====================================================
+  // 5. GENERATE SIGNED IMAGE URL
+  // =====================================================
+
+  const imageUrl = updatedBranch.imageObjectKey
+    ? await uploadService.getImageUrl(updatedBranch.imageObjectKey)
+    : null;
+
+  // =====================================================
+  // 6. RESPONSE
+  // =====================================================
+
+  return {
+    id: updatedBranch.id,
+
+    name: updatedBranch.name,
+
+    address: updatedBranch.address,
+
+    phone: updatedBranch.phone,
+
+    description: updatedBranch.description,
+
+    imageObjectKey: updatedBranch.imageObjectKey,
+
+    imageUrl,
+
+    status: updatedBranch.status,
+
+    createdAt: updatedBranch.createdAt,
+
+    updatedAt: updatedBranch.updatedAt,
+  };
 };
 
 // =====================================================

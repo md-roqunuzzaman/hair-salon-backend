@@ -8,17 +8,22 @@ import {
 } from "./user.interface.js";
 import { invalidateUserRefreshSessions } from "../auth/auth.service.js";
 import { AppError } from "../../utils/app-error.js";
+import { uploadService } from "../upload/upload.service.js";
 
 const getMe = async (userId: string) => {
   const user = await prisma.user.findUnique({
     where: {
       id: userId,
     },
+
     select: {
       id: true,
       name: true,
       email: true,
       phone: true,
+
+      avatarObjectKey: true,
+
       role: true,
       status: true,
       createdAt: true,
@@ -30,10 +35,57 @@ const getMe = async (userId: string) => {
     throw new AppError("User not found", 404);
   }
 
-  return user;
+  const avatarUrl = user.avatarObjectKey
+    ? await uploadService.getImageUrl(user.avatarObjectKey)
+    : null;
+
+  return {
+    id: user.id,
+
+    name: user.name,
+
+    email: user.email,
+
+    phone: user.phone,
+
+    avatarObjectKey: user.avatarObjectKey,
+
+    avatarUrl,
+
+    role: user.role,
+
+    status: user.status,
+
+    createdAt: user.createdAt,
+
+    updatedAt: user.updatedAt,
+  };
 };
 
 const updateMe = async (userId: string, payload: IUpdateProfilePayload) => {
+  // =====================================================
+  // 1. CHECK USER
+  // =====================================================
+
+  const user = await prisma.user.findUnique({
+    where: {
+      id: userId,
+    },
+
+    select: {
+      id: true,
+      avatarObjectKey: true,
+    },
+  });
+
+  if (!user) {
+    throw new AppError("User not found", 404);
+  }
+
+  // =====================================================
+  // 2. PHONE VALIDATION
+  // =====================================================
+
   const phone = payload.phone?.trim();
 
   if (phone) {
@@ -48,17 +100,40 @@ const updateMe = async (userId: string, payload: IUpdateProfilePayload) => {
     }
   }
 
+  // =====================================================
+  // 3. AVATAR R2 VALIDATION
+  // =====================================================
+
+  if (payload.avatarObjectKey !== undefined) {
+    const expectedPrefix = `users/${userId}/`;
+
+    if (!payload.avatarObjectKey.startsWith(expectedPrefix)) {
+      throw new AppError("Invalid user avatar object key", 400);
+    }
+
+    await uploadService.verifyImageExists(payload.avatarObjectKey);
+  }
+
+  // =====================================================
+  // 4. UPDATE USER
+  // =====================================================
+
   const updatedUser = await prisma.user.update({
     where: {
       id: userId,
     },
+
     data: {
-      ...(payload.name && {
+      ...(payload.name !== undefined && {
         name: payload.name.trim(),
       }),
 
       ...(phone !== undefined && {
         phone,
+      }),
+
+      ...(payload.avatarObjectKey !== undefined && {
+        avatarObjectKey: payload.avatarObjectKey,
       }),
     },
 
@@ -67,6 +142,9 @@ const updateMe = async (userId: string, payload: IUpdateProfilePayload) => {
       name: true,
       email: true,
       phone: true,
+
+      avatarObjectKey: true,
+
       role: true,
       status: true,
       createdAt: true,
@@ -74,9 +152,40 @@ const updateMe = async (userId: string, payload: IUpdateProfilePayload) => {
     },
   });
 
-  return updatedUser;
-};
+  // =====================================================
+  // 5. SIGNED AVATAR URL
+  // =====================================================
 
+  const avatarUrl = updatedUser.avatarObjectKey
+    ? await uploadService.getImageUrl(updatedUser.avatarObjectKey)
+    : null;
+
+  // =====================================================
+  // 6. RESPONSE
+  // =====================================================
+
+  return {
+    id: updatedUser.id,
+
+    name: updatedUser.name,
+
+    email: updatedUser.email,
+
+    phone: updatedUser.phone,
+
+    avatarObjectKey: updatedUser.avatarObjectKey,
+
+    avatarUrl,
+
+    role: updatedUser.role,
+
+    status: updatedUser.status,
+
+    createdAt: updatedUser.createdAt,
+
+    updatedAt: updatedUser.updatedAt,
+  };
+};
 const changePassword = async (
   userId: string,
   payload: IChangePasswordPayload,

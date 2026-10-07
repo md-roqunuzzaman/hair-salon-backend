@@ -1,0 +1,16 @@
+model BranchHourlyCapacity {
+  id String @id @default(uuid())
+
+  branchId String
+  day      DayOfWeek
+
+  maxBookingsPerHour Int
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([branchId, day])
+  @@index([branchId])
+}

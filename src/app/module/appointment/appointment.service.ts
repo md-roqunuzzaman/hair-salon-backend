@@ -1,6 +1,7 @@
 import {
   AppointmentStatus,
   BookingMethod,
+  DayOfWeek,
   PackageStatus,
   PaymentProvider,
   PaymentPurpose,
@@ -48,6 +49,60 @@ import { auditLogService } from "../auditLog/auditLog.service.js";
 const PAY_NOW_HOLD_MINUTES = 2;
 const MAX_TRANSACTION_RETRIES = 3;
 
+// =====================================================
+// EXPIRED PAYMENT HOLD LIFECYCLE
+// =====================================================
+
+const expirePendingAppointmentIfNeeded = async (appointmentId: string) => {
+  const now = new Date();
+
+  await prisma.appointment.updateMany({
+    where: {
+      id: appointmentId,
+
+      appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
+      paymentStatus: PaymentStatus.PENDING,
+
+      holdExpiresAt: {
+        lte: now,
+      },
+    },
+
+    data: {
+      appointmentStatus: AppointmentStatus.EXPIRED,
+
+      paymentStatus: PaymentStatus.FAILED,
+    },
+  });
+};
+
+const expirePendingAppointments = async () => {
+  const now = new Date();
+
+  const result = await prisma.appointment.updateMany({
+    where: {
+      appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
+      paymentStatus: PaymentStatus.PENDING,
+
+      holdExpiresAt: {
+        lte: now,
+      },
+    },
+
+    data: {
+      appointmentStatus: AppointmentStatus.EXPIRED,
+
+      paymentStatus: PaymentStatus.FAILED,
+    },
+  });
+
+  return {
+    expiredCount: result.count,
+  };
+};
+
 const timeToMinutes = (time: string) => {
   const [hour, minute] = time.split(":").map(Number);
 
@@ -70,6 +125,214 @@ const intervalsOverlap = (
   return startA < endB && endA > startB;
 };
 
+const getDayOfWeek = (date: string): DayOfWeek => {
+  const value = new Date(`${date}T00:00:00.000Z`);
+
+  const days: DayOfWeek[] = [
+    DayOfWeek.SUNDAY,
+    DayOfWeek.MONDAY,
+    DayOfWeek.TUESDAY,
+    DayOfWeek.WEDNESDAY,
+    DayOfWeek.THURSDAY,
+    DayOfWeek.FRIDAY,
+    DayOfWeek.SATURDAY,
+  ];
+
+  return days[value.getUTCDay()];
+};
+
+// =====================================================
+// FINAL STAFF CONFLICT CHECK
+// =====================================================
+
+const assertStaffSlotAvailable = async (
+  tx: Prisma.TransactionClient,
+  staffId: string,
+  dateOnly: Date,
+  requestedStart: number,
+  requestedEnd: number,
+  now: Date,
+  excludeAppointmentId?: string,
+) => {
+  const blockingAppointments = await tx.appointment.findMany({
+    where: {
+      ...(excludeAppointmentId
+        ? {
+            id: {
+              not: excludeAppointmentId,
+            },
+          }
+        : {}),
+
+      staffId,
+      date: dateOnly,
+
+      OR: [
+        {
+          appointmentStatus: {
+            in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
+          },
+        },
+
+        {
+          appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
+          holdExpiresAt: {
+            gt: now,
+          },
+        },
+      ],
+    },
+
+    select: {
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  const hasConflict = blockingAppointments.some((appointment) => {
+    const existingStart = timeToMinutes(appointment.startTime);
+
+    const existingEnd = timeToMinutes(appointment.endTime);
+
+    return intervalsOverlap(
+      requestedStart,
+      requestedEnd,
+      existingStart,
+      existingEnd,
+    );
+  });
+
+  if (hasConflict) {
+    throw new AppError(
+      "The selected staff is no longer available for this time slot",
+      409,
+    );
+  }
+};
+
+// =====================================================
+// FINAL BRANCH HOURLY CAPACITY CHECK
+// =====================================================
+
+const assertBranchHourlyCapacityAvailable = async (
+  tx: Prisma.TransactionClient,
+  branchId: string,
+  date: string,
+  dateOnly: Date,
+  requestedStart: number,
+  requestedEnd: number,
+  now: Date,
+  excludeAppointmentId?: string,
+) => {
+  const day = getDayOfWeek(date);
+
+  // ---------------------------------------------
+  // Capacity configuration for this day
+  // ---------------------------------------------
+
+  const hourlyCapacity = await tx.branchHourlyCapacity.findUnique({
+    where: {
+      branchId_day: {
+        branchId,
+        day,
+      },
+    },
+
+    select: {
+      maxBookingsPerHour: true,
+    },
+  });
+
+  if (!hourlyCapacity) {
+    throw new AppError(
+      "Branch hourly capacity is not configured for this day",
+      409,
+    );
+  }
+
+  const maxBookingsPerHour = hourlyCapacity.maxBookingsPerHour;
+
+  // ---------------------------------------------
+  // All branch-wide blocking appointments
+  // ---------------------------------------------
+
+  const branchBlockingAppointments = await tx.appointment.findMany({
+    where: {
+      ...(excludeAppointmentId
+        ? {
+            id: {
+              not: excludeAppointmentId,
+            },
+          }
+        : {}),
+
+      branchId,
+      date: dateOnly,
+
+      OR: [
+        {
+          appointmentStatus: {
+            in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
+          },
+        },
+
+        {
+          appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
+          holdExpiresAt: {
+            gt: now,
+          },
+        },
+      ],
+    },
+
+    select: {
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  // ---------------------------------------------
+  // Check every clock-hour bucket touched by
+  // the requested appointment.
+  //
+  // Example:
+  // 10:30–12:00
+  // checks:
+  // 10:00–11:00
+  // 11:00–12:00
+  // ---------------------------------------------
+
+  let hourStart = Math.floor(requestedStart / 60) * 60;
+
+  while (hourStart < requestedEnd) {
+    const hourEnd = hourStart + 60;
+
+    const used = branchBlockingAppointments.filter((appointment) => {
+      const appointmentStart = timeToMinutes(appointment.startTime);
+
+      const appointmentEnd = timeToMinutes(appointment.endTime);
+
+      return intervalsOverlap(
+        appointmentStart,
+        appointmentEnd,
+        hourStart,
+        hourEnd,
+      );
+    }).length;
+
+    if (used >= maxBookingsPerHour) {
+      throw new AppError(
+        "Branch hourly booking capacity has been reached",
+        409,
+      );
+    }
+
+    hourStart += 60;
+  }
+};
+
 const createPayNowAppointment = async (
   customerId: string,
   payload: ICreatePayNowAppointmentPayload,
@@ -77,41 +340,69 @@ const createPayNowAppointment = async (
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
   // =====================================================
-  // 1. FIRST AVAILABILITY CHECK
+  // 1. FIRST HYBRID AVAILABILITY CHECK
   // =====================================================
 
   const availability = await AvailabilityService.getAvailableSlots({
     branchId,
-    ...(serviceId ? { serviceId } : {}),
-    ...(packageId ? { packageId } : {}),
-    staffId,
+
+    ...(serviceId
+      ? {
+          serviceId,
+        }
+      : {}),
+
+    ...(packageId
+      ? {
+          packageId,
+        }
+      : {}),
+
+    ...(staffId
+      ? {
+          staffId,
+        }
+      : {}),
+
     date,
   });
 
   const requestedSlot = availability.slots.find(
     (slot) =>
-      slot.staffId === staffId &&
       slot.startTime === startTime &&
-      slot.available,
+      slot.available &&
+      (!staffId || slot.staffId === staffId),
   );
 
   if (!requestedSlot) {
     throw new AppError("The selected time slot is no longer available", 409);
   }
 
+  // =====================================================
+  // 2. RESOLVE STAFF
+  //
+  // Specific staff:
+  // → use customer-selected staff
+  //
+  // Any Staff:
+  // → use candidate returned by availability engine
+  // =====================================================
+
+  const resolvedStaffId = staffId ?? requestedSlot.staffId;
+
   const dateOnly = new Date(`${date}T00:00:00.000Z`);
 
   // =====================================================
-  // 2. SERIALIZABLE TRANSACTION WITH RETRY
+  // 3. SERIALIZABLE TRANSACTION WITH RETRY
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
     try {
       const result = await prisma.$transaction(
         async (tx) => {
-          // ---------------------------------------------
-          // Booking target snapshot
-          // ---------------------------------------------
+          // =============================================
+          // 4. BOOKING TARGET SNAPSHOT
+          // =============================================
 
           let itemName: string;
           let durationMinutes: number;
@@ -122,6 +413,7 @@ const createPayNowAppointment = async (
               where: {
                 id: serviceId,
               },
+
               select: {
                 id: true,
                 name: true,
@@ -133,6 +425,7 @@ const createPayNowAppointment = async (
                   where: {
                     branchId,
                   },
+
                   select: {
                     branchId: true,
                   },
@@ -156,13 +449,16 @@ const createPayNowAppointment = async (
             }
 
             itemName = service.name;
+
             durationMinutes = service.durationMinutes;
+
             price = service.price;
           } else {
             const packageData = await tx.package.findUnique({
               where: {
                 id: packageId!,
               },
+
               select: {
                 id: true,
                 name: true,
@@ -174,6 +470,7 @@ const createPayNowAppointment = async (
                   where: {
                     branchId,
                   },
+
                   select: {
                     branchId: true,
                   },
@@ -197,9 +494,15 @@ const createPayNowAppointment = async (
             }
 
             itemName = packageData.name;
+
             durationMinutes = packageData.durationMinutes;
+
             price = packageData.packagePrice;
           }
+
+          // =============================================
+          // 5. REQUESTED TIME RANGE
+          // =============================================
 
           const requestedStart = timeToMinutes(startTime);
 
@@ -209,76 +512,57 @@ const createPayNowAppointment = async (
 
           const now = new Date();
 
-          // ---------------------------------------------
-          // Atomic booking/hold conflict recheck
-          // ---------------------------------------------
+          // =============================================
+          // 6. FINAL STAFF AVAILABILITY RECHECK
+          // =============================================
 
-          const blockingAppointments = await tx.appointment.findMany({
-            where: {
-              staffId,
-              date: dateOnly,
+          await assertStaffSlotAvailable(
+            tx,
+            resolvedStaffId,
+            dateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+          );
 
-              OR: [
-                {
-                  appointmentStatus: {
-                    in: [
-                      AppointmentStatus.RESERVED,
-                      AppointmentStatus.CONFIRMED,
-                    ],
-                  },
-                },
+          // =============================================
+          // 7. FINAL BRANCH CAPACITY RECHECK
+          // =============================================
 
-                {
-                  appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+          await assertBranchHourlyCapacityAvailable(
+            tx,
+            branchId,
+            date,
+            dateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+          );
 
-                  holdExpiresAt: {
-                    gt: now,
-                  },
-                },
-              ],
-            },
-
-            select: {
-              startTime: true,
-              endTime: true,
-            },
-          });
-
-          const hasConflict = blockingAppointments.some((appointment) => {
-            const existingStart = timeToMinutes(appointment.startTime);
-
-            const existingEnd = timeToMinutes(appointment.endTime);
-
-            return intervalsOverlap(
-              requestedStart,
-              requestedEnd,
-              existingStart,
-              existingEnd,
-            );
-          });
-
-          if (hasConflict) {
-            throw new AppError(
-              "The selected time slot is no longer available",
-              409,
-            );
-          }
+          // =============================================
+          // 8. TEMPORARY PAY-NOW HOLD
+          // =============================================
 
           const holdExpiresAt = new Date(
             now.getTime() + PAY_NOW_HOLD_MINUTES * 60 * 1000,
           );
 
-          // ---------------------------------------------
-          // Create temporary booking hold
-          // ---------------------------------------------
+          // =============================================
+          // 9. CREATE APPOINTMENT
+          // =============================================
 
           const appointment = await tx.appointment.create({
             data: {
               customerId,
+
               branchId,
-              staffId,
+
+              // Specific staff OR
+              // backend-resolved Any Staff
+              staffId: resolvedStaffId,
 
               serviceId: serviceId ?? null,
+
               packageId: packageId ?? null,
 
               bookingMethod: BookingMethod.PAY_NOW,
@@ -295,21 +579,30 @@ const createPayNowAppointment = async (
               itemName,
               durationMinutes,
               price,
+
               currency: "HKD",
 
               holdExpiresAt,
 
-              // Pay Now has no reservation QR
+              // PAY_NOW has no reservation QR
               qrToken: null,
+
               qrVerifiedAt: null,
+
               qrVerifiedBy: null,
             },
 
             select: {
               id: true,
+
+              staffId: true,
+
               bookingMethod: true,
+
               appointmentStatus: true,
+
               paymentStatus: true,
+
               holdExpiresAt: true,
             },
           });
@@ -320,17 +613,27 @@ const createPayNowAppointment = async (
 
           return appointment;
         },
+
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         },
       );
 
+      // ===================================================
+      // 10. RESPONSE
+      // ===================================================
+
       return {
         appointmentId: result.id,
+
         bookingMethod: "PAY_NOW",
+
         appointmentStatus: "PENDING_PAYMENT",
+
         paymentStatus: "PENDING",
+
         holdExpiresAt: result.holdExpiresAt!,
+
         qrAvailable: false,
       };
     } catch (error) {
@@ -363,7 +666,7 @@ const createDepositAppointment = async (
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
   // =====================================================
-  // 1. FIRST AVAILABILITY CHECK
+  // 1. FIRST HYBRID AVAILABILITY CHECK
   // =====================================================
 
   const availability = await AvailabilityService.getAvailableSlots({
@@ -381,25 +684,36 @@ const createDepositAppointment = async (
         }
       : {}),
 
-    staffId,
+    ...(staffId
+      ? {
+          staffId,
+        }
+      : {}),
+
     date,
   });
 
   const requestedSlot = availability.slots.find(
     (slot) =>
-      slot.staffId === staffId &&
       slot.startTime === startTime &&
-      slot.available,
+      slot.available &&
+      (!staffId || slot.staffId === staffId),
   );
 
   if (!requestedSlot) {
     throw new AppError("The selected time slot is no longer available", 409);
   }
 
+  // =====================================================
+  // 2. RESOLVE STAFF
+  // =====================================================
+
+  const resolvedStaffId = staffId ?? requestedSlot.staffId;
+
   const dateOnly = new Date(`${date}T00:00:00.000Z`);
 
   // =====================================================
-  // 2. SERIALIZABLE TRANSACTION WITH RETRY
+  // 3. SERIALIZABLE TRANSACTION WITH RETRY
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
@@ -407,7 +721,7 @@ const createDepositAppointment = async (
       const result = await prisma.$transaction(
         async (tx) => {
           // =================================================
-          // 3. BRANCH + DEPOSIT POLICY
+          // 4. BRANCH + DEPOSIT POLICY
           // =================================================
 
           const branch = await tx.branch.findUnique({
@@ -448,7 +762,7 @@ const createDepositAppointment = async (
           }
 
           // =================================================
-          // 4. BOOKING TARGET SNAPSHOT
+          // 5. BOOKING TARGET SNAPSHOT
           // =================================================
 
           let itemName: string;
@@ -496,9 +810,7 @@ const createDepositAppointment = async (
             }
 
             itemName = service.name;
-
             durationMinutes = service.durationMinutes;
-
             price = service.price;
           } else {
             const packageData = await tx.package.findUnique({
@@ -548,7 +860,7 @@ const createDepositAppointment = async (
           }
 
           // =================================================
-          // 5. DEPOSIT CALCULATION
+          // 6. DEPOSIT CALCULATION
           // =================================================
 
           const depositAmount = price
@@ -559,7 +871,7 @@ const createDepositAppointment = async (
           const remainingAmount = price.sub(depositAmount).toDecimalPlaces(2);
 
           // =================================================
-          // 6. REQUESTED TIME RANGE
+          // 7. REQUESTED TIME RANGE
           // =================================================
 
           const requestedStart = timeToMinutes(startTime);
@@ -571,62 +883,34 @@ const createDepositAppointment = async (
           const now = new Date();
 
           // =================================================
-          // 7. FINAL ATOMIC CONFLICT RECHECK
+          // 8. FINAL STAFF AVAILABILITY RECHECK
           // =================================================
 
-          const blockingAppointments = await tx.appointment.findMany({
-            where: {
-              staffId,
-              date: dateOnly,
-
-              OR: [
-                {
-                  appointmentStatus: {
-                    in: [
-                      AppointmentStatus.RESERVED,
-                      AppointmentStatus.CONFIRMED,
-                    ],
-                  },
-                },
-
-                {
-                  appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
-
-                  holdExpiresAt: {
-                    gt: now,
-                  },
-                },
-              ],
-            },
-
-            select: {
-              startTime: true,
-              endTime: true,
-            },
-          });
-
-          const hasConflict = blockingAppointments.some((appointment) => {
-            const existingStart = timeToMinutes(appointment.startTime);
-
-            const existingEnd = timeToMinutes(appointment.endTime);
-
-            return intervalsOverlap(
-              requestedStart,
-              requestedEnd,
-              existingStart,
-              existingEnd,
-            );
-          });
-
-          if (hasConflict) {
-            throw new AppError(
-              "The selected time slot is no longer available",
-              409,
-            );
-          }
+          await assertStaffSlotAvailable(
+            tx,
+            resolvedStaffId,
+            dateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+          );
 
           // =================================================
-          // 8. TEMPORARY DEPOSIT PAYMENT HOLD
+          // 9. FINAL BRANCH CAPACITY RECHECK
+          // =================================================
+
+          await assertBranchHourlyCapacityAvailable(
+            tx,
+            branchId,
+            date,
+            dateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+          );
+
+          // =================================================
+          // 10. TEMPORARY DEPOSIT PAYMENT HOLD
           // =================================================
 
           const holdExpiresAt = new Date(
@@ -634,14 +918,18 @@ const createDepositAppointment = async (
           );
 
           // =================================================
-          // 9. CREATE DEPOSIT APPOINTMENT
+          // 11. CREATE DEPOSIT APPOINTMENT
           // =================================================
 
           const appointment = await tx.appointment.create({
             data: {
               customerId,
+
               branchId,
-              staffId,
+
+              // Specific staff OR
+              // auto-selected staff
+              staffId: resolvedStaffId,
 
               serviceId: serviceId ?? null,
 
@@ -664,24 +952,26 @@ const createDepositAppointment = async (
               price,
               currency: "HKD",
 
-              // Deposit snapshot
               depositPercentage,
               depositAmount,
               remainingAmount,
 
-              // Hold slot while customer
-              // completes deposit payment
+              // Temporary payment hold
               holdExpiresAt,
 
-              // QR is generated only AFTER
-              // successful deposit verification
+              // QR generated after
+              // successful deposit payment verification
               qrToken: null,
+
               qrVerifiedAt: null,
+
               qrVerifiedBy: null,
             },
 
             select: {
               id: true,
+
+              staffId: true,
 
               bookingMethod: true,
 
@@ -692,7 +982,9 @@ const createDepositAppointment = async (
               price: true,
 
               depositPercentage: true,
+
               depositAmount: true,
+
               remainingAmount: true,
 
               holdExpiresAt: true,
@@ -712,7 +1004,7 @@ const createDepositAppointment = async (
       );
 
       // =====================================================
-      // 10. RESPONSE
+      // 12. RESPONSE
       // =====================================================
 
       return {
@@ -765,41 +1057,63 @@ const createReserveAppointment = async (
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
   // =====================================================
-  // 1. FIRST AVAILABILITY CHECK
+  // 1. FIRST HYBRID AVAILABILITY CHECK
   // =====================================================
 
   const availability = await AvailabilityService.getAvailableSlots({
     branchId,
-    ...(serviceId ? { serviceId } : {}),
-    ...(packageId ? { packageId } : {}),
-    staffId,
+
+    ...(serviceId
+      ? {
+          serviceId,
+        }
+      : {}),
+
+    ...(packageId
+      ? {
+          packageId,
+        }
+      : {}),
+
+    ...(staffId
+      ? {
+          staffId,
+        }
+      : {}),
+
     date,
   });
 
   const requestedSlot = availability.slots.find(
     (slot) =>
-      slot.staffId === staffId &&
       slot.startTime === startTime &&
-      slot.available,
+      slot.available &&
+      (!staffId || slot.staffId === staffId),
   );
 
   if (!requestedSlot) {
     throw new AppError("The selected time slot is no longer available", 409);
   }
 
+  // =====================================================
+  // 2. RESOLVE STAFF
+  // =====================================================
+
+  const resolvedStaffId = staffId ?? requestedSlot.staffId;
+
   const dateOnly = new Date(`${date}T00:00:00.000Z`);
 
   // =====================================================
-  // 2. SERIALIZABLE TRANSACTION WITH RETRY
+  // 3. SERIALIZABLE TRANSACTION WITH RETRY
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
     try {
       const result = await prisma.$transaction(
         async (tx) => {
-          // ---------------------------------------------
-          // Booking target snapshot
-          // ---------------------------------------------
+          // =============================================
+          // 4. BOOKING TARGET SNAPSHOT
+          // =============================================
 
           let itemName: string;
           let durationMinutes: number;
@@ -822,6 +1136,7 @@ const createReserveAppointment = async (
                   where: {
                     branchId,
                   },
+
                   select: {
                     branchId: true,
                   },
@@ -864,6 +1179,7 @@ const createReserveAppointment = async (
                   where: {
                     branchId,
                   },
+
                   select: {
                     branchId: true,
                   },
@@ -891,6 +1207,10 @@ const createReserveAppointment = async (
             price = packageData.packagePrice;
           }
 
+          // =============================================
+          // 5. REQUESTED TIME RANGE
+          // =============================================
+
           const requestedStart = timeToMinutes(startTime);
 
           const requestedEnd = requestedStart + durationMinutes;
@@ -899,82 +1219,53 @@ const createReserveAppointment = async (
 
           const now = new Date();
 
-          // ---------------------------------------------
-          // 3. FINAL CONFLICT RECHECK
-          // ---------------------------------------------
-          // Staff may work across branches.
-          // Therefore conflict check is intentionally
-          // staff + date, NOT branch + staff + date.
-          // ---------------------------------------------
+          // =============================================
+          // 6. FINAL STAFF AVAILABILITY RECHECK
+          // =============================================
 
-          const blockingAppointments = await tx.appointment.findMany({
-            where: {
-              staffId,
-              date: dateOnly,
+          await assertStaffSlotAvailable(
+            tx,
+            resolvedStaffId,
+            dateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+          );
 
-              OR: [
-                {
-                  appointmentStatus: {
-                    in: [
-                      AppointmentStatus.RESERVED,
-                      AppointmentStatus.CONFIRMED,
-                    ],
-                  },
-                },
+          // =============================================
+          // 7. FINAL BRANCH CAPACITY RECHECK
+          // =============================================
 
-                {
-                  appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+          await assertBranchHourlyCapacityAvailable(
+            tx,
+            branchId,
+            date,
+            dateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+          );
 
-                  holdExpiresAt: {
-                    gt: now,
-                  },
-                },
-              ],
-            },
-
-            select: {
-              startTime: true,
-              endTime: true,
-            },
-          });
-
-          const hasConflict = blockingAppointments.some((appointment) => {
-            const existingStart = timeToMinutes(appointment.startTime);
-
-            const existingEnd = timeToMinutes(appointment.endTime);
-
-            return intervalsOverlap(
-              requestedStart,
-              requestedEnd,
-              existingStart,
-              existingEnd,
-            );
-          });
-
-          if (hasConflict) {
-            throw new AppError(
-              "The selected time slot is no longer available",
-              409,
-            );
-          }
-
-          // ---------------------------------------------
-          // 4. SECURE SINGLE-USE RESERVATION QR TOKEN
-          // ---------------------------------------------
+          // =============================================
+          // 8. SECURE QR TOKEN
+          // =============================================
 
           const qrToken = crypto.randomBytes(32).toString("hex");
 
-          // ---------------------------------------------
-          // 5. CREATE RESERVED APPOINTMENT
-          // ---------------------------------------------
+          // =============================================
+          // 9. CREATE RESERVED APPOINTMENT
+          // =============================================
 
           const appointment = await tx.appointment.create({
             data: {
               customerId,
+
               branchId,
-              staffId,
+
+              staffId: resolvedStaffId,
 
               serviceId: serviceId ?? null,
+
               packageId: packageId ?? null,
 
               bookingMethod: BookingMethod.RESERVE_NOW,
@@ -991,19 +1282,24 @@ const createReserveAppointment = async (
               itemName,
               durationMinutes,
               price,
+
               currency: "HKD",
 
-              // Reserve Now is not a temporary
-              // payment hold.
+              // Reserve Now is not a temporary hold
               holdExpiresAt: null,
 
               qrToken,
+
               qrVerifiedAt: null,
+
               qrVerifiedBy: null,
             },
 
             select: {
               id: true,
+
+              staffId: true,
+
               qrToken: true,
             },
           });
@@ -1014,15 +1310,23 @@ const createReserveAppointment = async (
 
           return appointment;
         },
+
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         },
       );
 
+      // ===================================================
+      // 10. RESPONSE
+      // ===================================================
+
       return {
         appointmentId: result.id,
+
         bookingMethod: "RESERVE_NOW",
+
         appointmentStatus: "RESERVED",
+
         paymentStatus: "UNPAID",
 
         qr: {
@@ -1057,6 +1361,16 @@ const getMyAppointments = async (
   customerId: string,
   query: IMyAppointmentsQuery,
 ): Promise<IMyAppointmentsResult> => {
+  // =====================================================
+  // 0. EXPIRE OLD PAYMENT HOLDS
+  // =====================================================
+
+  await expirePendingAppointments();
+
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
+
   const page = Number(query.page ?? 1);
   const limit = Number(query.limit ?? 20);
 
@@ -1071,7 +1385,7 @@ const getMyAppointments = async (
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 1. APPOINTMENT TYPE FILTER
+  // 2. APPOINTMENT TYPE FILTER
   // =====================================================
 
   const statusFilter =
@@ -1093,7 +1407,7 @@ const getMyAppointments = async (
         };
 
   // =====================================================
-  // 2. FETCH OWN APPOINTMENTS ONLY
+  // 3. FETCH OWN APPOINTMENTS ONLY
   // =====================================================
 
   const where: Prisma.AppointmentWhereInput = {
@@ -1176,7 +1490,7 @@ const getMyAppointments = async (
   ]);
 
   // =====================================================
-  // 3. RESPONSE DTO
+  // 4. RESPONSE DTO
   // =====================================================
 
   const items = appointments.map((appointment) => {
@@ -1204,6 +1518,12 @@ const getMyAppointments = async (
     } else if (appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID) {
       amountPaid = depositAmount;
       amountDue = remainingAmount;
+    } else if (appointment.paymentStatus === PaymentStatus.REFUNDED) {
+      amountPaid = 0;
+      amountDue = 0;
+    } else if (appointment.paymentStatus === PaymentStatus.FAILED) {
+      amountPaid = 0;
+      amountDue = price;
     }
 
     return {
@@ -1271,6 +1591,16 @@ const getAppointmentById = async (
   userId: string,
   role: Role,
 ): Promise<IAppointmentDetails> => {
+  // =====================================================
+  // 0. EXPIRE PAYMENT HOLD IF NEEDED
+  // =====================================================
+
+  await expirePendingAppointmentIfNeeded(appointmentId);
+
+  // =====================================================
+  // 1. FIND APPOINTMENT
+  // =====================================================
+
   const appointment = await prisma.appointment.findUnique({
     where: {
       id: appointmentId,
@@ -1299,7 +1629,7 @@ const getAppointmentById = async (
   }
 
   // =====================================================
-  // RBAC / RESOURCE SCOPE
+  // 2. RBAC / RESOURCE SCOPE
   // =====================================================
 
   if (role === Role.CUSTOMER) {
@@ -1332,7 +1662,7 @@ const getAppointmentById = async (
   // BRAND_OWNER can access any appointment.
 
   // =====================================================
-  // QR STATE
+  // 3. QR STATE
   // =====================================================
 
   const qrAvailable =
@@ -1345,14 +1675,14 @@ const getAppointmentById = async (
   const qrVerified = Boolean(appointment.qrVerifiedAt);
 
   // =====================================================
-  // REVIEW STATE
+  // 4. REVIEW STATE
   // =====================================================
 
   const reviewAllowed =
     appointment.appointmentStatus === AppointmentStatus.COMPLETED;
 
   // =====================================================
-  // FINANCIAL STATE
+  // 5. FINANCIAL STATE
   // =====================================================
 
   const price = Number(appointment.price);
@@ -1372,10 +1702,17 @@ const getAppointmentById = async (
   } else if (appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID) {
     amountPaid = depositAmount;
     amountDue = remainingAmount;
+  } else if (appointment.paymentStatus === PaymentStatus.REFUNDED) {
+    amountPaid = 0;
+    amountDue = 0;
+  } else if (appointment.paymentStatus === PaymentStatus.FAILED) {
+    amountPaid = 0;
+    amountDue = price;
   }
 
   // =====================================================
-  // RESPONSE DTO
+  // 6. RESPONSE DTO
+  // =====================================================
   // IMPORTANT:
   // Use booking-time snapshot values.
   // Do NOT read current service/package name or duration.
@@ -1710,8 +2047,6 @@ const rescheduleAppointment = async (
     );
   }
 
-  // Reserve Now QR already verified means customer has
-  // already arrived/checked in.
   if (
     (appointment.bookingMethod === BookingMethod.RESERVE_NOW ||
       appointment.bookingMethod === BookingMethod.DEPOSIT) &&
@@ -1725,7 +2060,7 @@ const rescheduleAppointment = async (
   }
 
   // =====================================================
-  // 4. RESCHEDULE CUTOFF POLICY
+  // 4. RESCHEDULE CUTOFF
   // =====================================================
 
   const currentAppointmentDate = appointment.date.toISOString().slice(0, 10);
@@ -1749,10 +2084,7 @@ const rescheduleAppointment = async (
   }
 
   // =====================================================
-  // 5. CHECK NEW SLOT USING EXISTING AVAILABILITY ENGINE
-  // =====================================================
-  // Booking target does NOT change during reschedule.
-  // Only date/time/staff may change.
+  // 5. HYBRID AVAILABILITY CHECK
   // =====================================================
 
   const availability = await AvailabilityService.getAvailableSlots({
@@ -1770,20 +2102,33 @@ const rescheduleAppointment = async (
         }
       : {}),
 
-    staffId,
+    ...(staffId
+      ? {
+          staffId,
+        }
+      : {}),
+
     date,
+
+    excludeAppointmentId: appointmentId,
   });
 
   const selectedSlot = availability.slots.find(
     (slot) =>
-      slot.staffId === staffId &&
       slot.startTime === startTime &&
-      slot.available,
+      slot.available &&
+      (!staffId || slot.staffId === staffId),
   );
 
   if (!selectedSlot) {
     throw new AppError("The selected time slot is no longer available", 409);
   }
+
+  // =====================================================
+  // 6. RESOLVE STAFF
+  // =====================================================
+
+  const resolvedStaffId = staffId ?? selectedSlot.staffId;
 
   const newDateOnly = new Date(`${date}T00:00:00.000Z`);
 
@@ -1794,15 +2139,13 @@ const rescheduleAppointment = async (
   const endTime = minutesToTime(requestedEnd);
 
   // =====================================================
-  // 6. TRANSACTION + FINAL CONFLICT RECHECK
+  // 7. TRANSACTION + FINAL HYBRID RECHECK
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
     try {
       const result = await prisma.$transaction(
         async (tx) => {
-          // Re-read current appointment so stale
-          // status cannot be updated.
           const current = await tx.appointment.findUnique({
             where: {
               id: appointmentId,
@@ -1811,6 +2154,7 @@ const rescheduleAppointment = async (
             select: {
               id: true,
               customerId: true,
+              branchId: true,
               appointmentStatus: true,
               qrVerifiedAt: true,
               bookingMethod: true,
@@ -1845,69 +2189,28 @@ const rescheduleAppointment = async (
 
           const now = new Date();
 
-          // ---------------------------------------------
-          // FINAL BOOKING CONFLICT CHECK
-          // Exclude current appointment itself.
-          // ---------------------------------------------
+          // final staff check
+          await assertStaffSlotAvailable(
+            tx,
+            resolvedStaffId,
+            newDateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+            appointmentId,
+          );
 
-          const blockingAppointments = await tx.appointment.findMany({
-            where: {
-              id: {
-                not: appointmentId,
-              },
-
-              staffId,
-              date: newDateOnly,
-
-              OR: [
-                {
-                  appointmentStatus: {
-                    in: [
-                      AppointmentStatus.RESERVED,
-                      AppointmentStatus.CONFIRMED,
-                    ],
-                  },
-                },
-
-                {
-                  appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
-
-                  holdExpiresAt: {
-                    gt: now,
-                  },
-                },
-              ],
-            },
-
-            select: {
-              startTime: true,
-              endTime: true,
-            },
-          });
-
-          const hasConflict = blockingAppointments.some((existing) => {
-            const existingStart = timeToMinutes(existing.startTime);
-
-            const existingEnd = timeToMinutes(existing.endTime);
-
-            return intervalsOverlap(
-              requestedStart,
-              requestedEnd,
-              existingStart,
-              existingEnd,
-            );
-          });
-
-          if (hasConflict) {
-            throw new AppError(
-              "The selected time slot is no longer available",
-              409,
-            );
-          }
-
-          // ---------------------------------------------
-          // UPDATE SAME APPOINTMENT
-          // ---------------------------------------------
+          // final branch capacity check
+          await assertBranchHourlyCapacityAvailable(
+            tx,
+            current.branchId,
+            date,
+            newDateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+            appointmentId,
+          );
 
           const updatedAppointment = await tx.appointment.update({
             where: {
@@ -1915,7 +2218,7 @@ const rescheduleAppointment = async (
             },
 
             data: {
-              staffId,
+              staffId: resolvedStaffId,
               date: newDateOnly,
               startTime,
               endTime,
@@ -1949,9 +2252,7 @@ const rescheduleAppointment = async (
 
       return {
         appointmentId: result.id,
-
         date: result.date.toISOString().slice(0, 10),
-
         startTime: result.startTime,
         endTime: result.endTime,
       };
@@ -2638,6 +2939,12 @@ const getBranchAppointments = async (
   query: IBranchAppointmentsQuery,
 ) => {
   // =====================================================
+  // 0. EXPIRE OLD PAYMENT HOLDS
+  // =====================================================
+
+  await expirePendingAppointments();
+
+  // =====================================================
   // 1. BRANCH EXISTS
   // =====================================================
 
@@ -2895,6 +3202,12 @@ const getBranchAppointments = async (
 };
 
 const getAllAppointments = async (query: IAllAppointmentsQuery) => {
+  // =====================================================
+  // 0. EXPIRE OLD PAYMENT HOLDS
+  // =====================================================
+
+  await expirePendingAppointments();
+
   // =====================================================
   // 1. PAGINATION
   // =====================================================
@@ -3297,4 +3610,6 @@ export const appointmentService = {
   getBranchAppointments,
   getAllAppointments,
   recordRemainingPayment,
+  expirePendingAppointmentIfNeeded,
+  expirePendingAppointments,
 };
