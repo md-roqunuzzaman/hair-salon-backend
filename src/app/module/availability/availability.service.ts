@@ -101,6 +101,7 @@ const getAvailableSlots = async (
     excludeAppointmentId,
   } = query;
 
+  console.log("🔥 AVAILABILITY FUNCTION CALLED", query);
   // =====================================================
   // AUTO STAFF MODE
   // =====================================================
@@ -291,6 +292,12 @@ const getAvailableSlots = async (
 
   // Fail closed.
   // Branch is open, but no capacity config exists.
+  console.log("CAPACITY DEBUG", {
+    date,
+    day,
+    branchId,
+    hourlyCapacity,
+  });
   if (!hourlyCapacity) {
     return {
       date,
@@ -442,6 +449,12 @@ const getAvailableSlots = async (
   // 7. STAFF SCHEDULES
   // =====================================================
 
+  console.log("BEFORE SCHEDULE QUERY", {
+    date,
+    day,
+    staffIds,
+  });
+
   const schedules = await prisma.staffSchedule.findMany({
     where: {
       staffId: {
@@ -463,7 +476,14 @@ const getAvailableSlots = async (
       },
     ],
   });
-
+  console.log("AVAILABILITY DEBUG", {
+    date,
+    day,
+    branchId,
+    staffIds,
+    hourlyCapacity,
+    schedules,
+  });
   if (schedules.length === 0) {
     return {
       date,

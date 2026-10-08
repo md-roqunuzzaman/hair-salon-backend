@@ -1,6 +1,10 @@
 import { SalonPaymentMethod } from "../../../../generated/prisma/enums.js";
 
-export type BookingMethodType = "PAY_NOW" | "RESERVE_NOW" | "DEPOSIT";
+export type BookingMethodType =
+  | "PAY_NOW"
+  | "RESERVE_NOW"
+  | "DEPOSIT"
+  | "GROUP_PURCHASE";
 
 export type AppointmentStatusType =
   | "PENDING_PAYMENT"

@@ -61,6 +61,7 @@ app.use("/api/v1/branches", BranchHourlyCapacityRoutes);
 app.use("/api/v1/services", ServiceRoutes);
 app.use("/api/v1/packages", PackageRoutes);
 app.use("/api/v1/group-purchases", GroupPurchaseRoutes);
+
 app.use("/api/v1/staff", StaffRoutes);
 app.use("/api/v1/availability", AvailabilityRoutes);
 app.use("/api/v1/appointments", AppointmentRoutes);

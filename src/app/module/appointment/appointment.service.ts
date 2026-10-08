@@ -103,13 +103,13 @@ const expirePendingAppointments = async () => {
   };
 };
 
-const timeToMinutes = (time: string) => {
+export const timeToMinutes = (time: string) => {
   const [hour, minute] = time.split(":").map(Number);
 
   return hour * 60 + minute;
 };
 
-const minutesToTime = (minutes: number) => {
+export const minutesToTime = (minutes: number) => {
   const hour = Math.floor(minutes / 60);
   const minute = minutes % 60;
 
@@ -145,7 +145,7 @@ const getDayOfWeek = (date: string): DayOfWeek => {
 // FINAL STAFF CONFLICT CHECK
 // =====================================================
 
-const assertStaffSlotAvailable = async (
+export const assertStaffSlotAvailable = async (
   tx: Prisma.TransactionClient,
   staffId: string,
   dateOnly: Date,
@@ -215,7 +215,7 @@ const assertStaffSlotAvailable = async (
 // FINAL BRANCH HOURLY CAPACITY CHECK
 // =====================================================
 
-const assertBranchHourlyCapacityAvailable = async (
+export const assertBranchHourlyCapacityAvailable = async (
   tx: Prisma.TransactionClient,
   branchId: string,
   date: string,
@@ -2625,6 +2625,22 @@ const completeAppointment = async (
   role: Role,
   payload: ICompleteAppointmentPayload,
 ): Promise<ICompleteAppointmentResponse> => {
+  // =====================================================
+  // 1. ROLE VALIDATION
+  // =====================================================
+
+  if (
+    role !== Role.STAFF &&
+    role !== Role.BRANCH_MANAGER &&
+    role !== Role.BRAND_OWNER
+  ) {
+    throw new AppError("You are not allowed to complete appointments", 403);
+  }
+
+  // =====================================================
+  // 2. FIND APPOINTMENT
+  // =====================================================
+
   const appointment = await prisma.appointment.findUnique({
     where: {
       id: appointmentId,
@@ -2644,7 +2660,7 @@ const completeAppointment = async (
   }
 
   // =====================================================
-  // 1. ROLE / RESOURCE SCOPE
+  // 3. ROLE / RESOURCE SCOPE
   // =====================================================
 
   if (role === Role.STAFF) {
@@ -2677,7 +2693,7 @@ const completeAppointment = async (
   // BRAND_OWNER = brand-wide access.
 
   // =====================================================
-  // 2. VALID STATUS
+  // 4. VALID APPOINTMENT STATUS
   // =====================================================
 
   if (appointment.appointmentStatus !== AppointmentStatus.CONFIRMED) {
@@ -2688,13 +2704,76 @@ const completeAppointment = async (
   }
 
   // =====================================================
-  // 3. COMPLETE TRANSACTIONALLY
+  // 5. APPOINTMENT END TIME VALIDATION
+  // =====================================================
+
+  const allowEarlyCompletion =
+    process.env.NODE_ENV === "development" &&
+    process.env.ALLOW_EARLY_APPOINTMENT_COMPLETION === "true";
+
+  if (!allowEarlyCompletion) {
+    // Assumption:
+    // appointment.date represents the booking calendar date
+    // stored at UTC midnight.
+
+    const appointmentDate = appointment.date.toISOString().slice(0, 10);
+
+    const endTime = appointment.endTime;
+
+    // Validate HH:mm format.
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(endTime)) {
+      throw new AppError("Invalid appointment end time", 500);
+    }
+
+    // Hong Kong local time is UTC+08:00.
+    const appointmentEndDateTime = new Date(
+      `${appointmentDate}T${endTime}:00+08:00`,
+    );
+
+    if (Number.isNaN(appointmentEndDateTime.getTime())) {
+      throw new AppError("Invalid appointment end datetime", 500);
+    }
+
+    if (new Date() < appointmentEndDateTime) {
+      throw new AppError(
+        "Appointment cannot be completed before its scheduled end time",
+        409,
+      );
+    }
+  }
+
+  // =====================================================
+  // 6. COMPLETE TRANSACTIONALLY
   // =====================================================
 
   const completedAt = new Date();
+  const completionNotes = payload.notes?.trim() || null;
 
   const result = await prisma.$transaction(async (tx) => {
-    const current = await tx.appointment.findUnique({
+    // Conditional update prevents concurrent requests from
+    // completing the same appointment more than once.
+
+    const updateResult = await tx.appointment.updateMany({
+      where: {
+        id: appointmentId,
+        appointmentStatus: AppointmentStatus.CONFIRMED,
+      },
+
+      data: {
+        appointmentStatus: AppointmentStatus.COMPLETED,
+        completedAt,
+        completionNotes,
+      },
+    });
+
+    if (updateResult.count !== 1) {
+      throw new AppError(
+        "Appointment cannot be completed in its current status",
+        409,
+      );
+    }
+
+    const updatedAppointment = await tx.appointment.findUniqueOrThrow({
       where: {
         id: appointmentId,
       },
@@ -2703,43 +2782,17 @@ const completeAppointment = async (
         id: true,
         customerId: true,
         appointmentStatus: true,
-      },
-    });
-
-    if (!current) {
-      throw new AppError("Appointment not found", 404);
-    }
-
-    if (current.appointmentStatus !== AppointmentStatus.CONFIRMED) {
-      throw new AppError(
-        "Appointment cannot be completed in its current status",
-        409,
-      );
-    }
-
-    const updatedAppointment = await tx.appointment.update({
-      where: {
-        id: appointmentId,
-      },
-
-      data: {
-        appointmentStatus: AppointmentStatus.COMPLETED,
-
-        completedAt,
-
-        completionNotes: payload.notes?.trim() || null,
-      },
-
-      select: {
-        id: true,
-        appointmentStatus: true,
         completedAt: true,
       },
     });
 
+    // =====================================================
+    // 7. CUSTOMER NOTIFICATION
+    // =====================================================
+
     await notificationService.createNotification(
       {
-        userId: current.customerId,
+        userId: updatedAppointment.customerId,
         type: "SERVICE_COMPLETED",
         title: "Service completed",
         message: "Your appointment is complete. You can now leave a review.",
@@ -2748,7 +2801,7 @@ const completeAppointment = async (
     );
 
     // =====================================================
-    // AUDIT LOG
+    // 8. AUDIT LOG
     // =====================================================
 
     await auditLogService.createAuditLog(
@@ -2759,13 +2812,13 @@ const completeAppointment = async (
 
         entityType: "APPOINTMENT",
 
-        entityId: current.id,
+        entityId: updatedAppointment.id,
 
         metadata: {
-          previousStatus: current.appointmentStatus,
+          previousStatus: AppointmentStatus.CONFIRMED,
           newStatus: AppointmentStatus.COMPLETED,
           completedAt: completedAt.toISOString(),
-          notes: payload.notes?.trim() || null,
+          notes: completionNotes,
           performedByRole: role,
         },
       },
@@ -2774,6 +2827,10 @@ const completeAppointment = async (
 
     return updatedAppointment;
   });
+
+  // =====================================================
+  // 9. FINAL RESPONSE
+  // =====================================================
 
   if (!result.completedAt) {
     throw new AppError("Appointment completion failed", 500);
@@ -2786,7 +2843,6 @@ const completeAppointment = async (
     reviewEnabled: true,
   };
 };
-
 const markNoShow = async (
   appointmentId: string,
   userId: string,

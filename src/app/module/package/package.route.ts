@@ -19,7 +19,11 @@ router.post(
   packageController.createPackage,
 );
 
-router.get("/", auth(Role.BRAND_OWNER), packageController.getPackages);
+router.get(
+  "/",
+  auth(Role.BRAND_OWNER, Role.CUSTOMER, Role.BRANCH_MANAGER, Role.STAFF),
+  packageController.getPackages,
+);
 
 router.get("/:packageId", packageController.getPackageById);
 

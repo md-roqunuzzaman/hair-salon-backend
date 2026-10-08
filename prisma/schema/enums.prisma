@@ -75,6 +75,7 @@ enum BookingMethod {
   PAY_NOW
   RESERVE_NOW
   DEPOSIT
+  GROUP_PURCHASE
 }
 
 enum AppointmentStatus {
@@ -90,6 +91,7 @@ enum AppointmentStatus {
 enum PaymentProvider {
   STRIPE
   SALON
+  WALLET
 }
 
 enum PaymentPurpose {

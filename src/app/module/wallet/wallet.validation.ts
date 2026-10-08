@@ -57,8 +57,15 @@ const payAppointmentWithWalletValidationSchema = z.object({
   }),
 });
 
+const payGroupPurchaseWithWalletValidationSchema = z.object({
+  body: z.object({
+    useBonus: z.boolean(),
+  }),
+});
+
 export const walletValidation = {
   getWalletTransactionsValidationSchema,
   createWalletTopupValidationSchema,
   payAppointmentWithWalletValidationSchema,
+  payGroupPurchaseWithWalletValidationSchema,
 };

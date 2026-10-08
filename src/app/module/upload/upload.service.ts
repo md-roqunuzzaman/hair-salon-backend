@@ -21,10 +21,22 @@ import {
   ImagePurpose,
   IConfirmImageUploadPayload,
   IConfirmImageUploadResponse,
+  IDeleteImagePayload,
   IPresignImageUploadPayload,
   IPresignImageUploadResponse,
-  IDeleteImagePayload,
 } from "./upload.interface.js";
+
+// =====================================================
+// CONSTANTS
+// =====================================================
+
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+
+const PRESIGNED_UPLOAD_EXPIRY_SECONDS = 300;
+
+const SIGNED_GET_EXPIRY_SECONDS = 3600;
+
+const ALLOWED_IMAGE_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 // =====================================================
 // PURPOSE -> FOLDER
@@ -55,6 +67,41 @@ const getPurposeFolder = (purpose: ImagePurpose): string => {
 
     case "PROMOTION_IMAGE":
       return "promotions";
+
+    default:
+      throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+  }
+};
+
+// =====================================================
+// FOLDER -> PURPOSE
+// =====================================================
+
+const getPurposeFromFolder = (folder: string): ImagePurpose => {
+  switch (folder) {
+    case "users":
+      return "USER_AVATAR";
+
+    case "brands":
+      return "BRAND_LOGO";
+
+    case "branches":
+      return "BRANCH_IMAGE";
+
+    case "services":
+      return "SERVICE_IMAGE";
+
+    case "packages":
+      return "PACKAGE_IMAGE";
+
+    case "staff":
+      return "STAFF_IMAGE";
+
+    case "reviews":
+      return "REVIEW_IMAGE";
+
+    case "promotions":
+      return "PROMOTION_IMAGE";
 
     default:
       throw new AppError("UPLOAD_NOT_ALLOWED", 403);
@@ -95,6 +142,34 @@ const getFileExtension = (contentType: string): string => {
 };
 
 // =====================================================
+// STRICT OBJECT KEY PARSER
+// =====================================================
+
+const parseObjectKey = (objectKey: string) => {
+  const parts = objectKey.split("/");
+
+  if (parts.length !== 3) {
+    throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+  }
+
+  const [folder, entityId, fileName] = parts;
+
+  if (!folder || !entityId || !fileName) {
+    throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+  }
+
+  if (fileName.includes("/") || fileName === "." || fileName === "..") {
+    throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+  }
+
+  return {
+    folder,
+    entityId,
+    fileName,
+  };
+};
+
+// =====================================================
 // PURPOSE / ENTITY / ROLE AUTHORIZATION
 // =====================================================
 
@@ -108,7 +183,7 @@ const validateImageUploadAccess = async (
 ) => {
   // ===================================================
   // USER_AVATAR
-  // Any authenticated user can upload own avatar.
+  // Any authenticated user can manage own avatar.
   // ===================================================
 
   if (purpose === "USER_AVATAR") {
@@ -306,10 +381,8 @@ const validateImageUploadAccess = async (
 
   // ===================================================
   // REVIEW_IMAGE
-  // CUSTOMER can upload only for themselves.
-  //
-  // Review images are uploaded before review creation.
-  // Therefore entityId = customer userId.
+  // CUSTOMER can manage only own review images.
+  // entityId = customer userId
   // ===================================================
 
   if (purpose === "REVIEW_IMAGE") {
@@ -351,12 +424,125 @@ const validateImageUploadAccess = async (
 };
 
 // =====================================================
+// CHECK IF IMAGE IS STILL REFERENCED BY DATABASE
+//
+// Public delete endpoint must not be able to delete an
+// image that an entity is actively using.
+//
+// Replacement/delete flows should first update/delete
+// the database reference and then remove the old object.
+// =====================================================
+
+const isImageReferenced = async (objectKey: string): Promise<boolean> => {
+  const [
+    user,
+    brand,
+    branch,
+    staff,
+    promotion,
+    serviceImage,
+    packageImage,
+    reviewImage,
+  ] = await Promise.all([
+    prisma.user.findFirst({
+      where: {
+        avatarObjectKey: objectKey,
+      },
+
+      select: {
+        id: true,
+      },
+    }),
+
+    prisma.brand.findFirst({
+      where: {
+        logoObjectKey: objectKey,
+      },
+
+      select: {
+        id: true,
+      },
+    }),
+
+    prisma.branch.findFirst({
+      where: {
+        imageObjectKey: objectKey,
+      },
+
+      select: {
+        id: true,
+      },
+    }),
+
+    prisma.staff.findFirst({
+      where: {
+        avatarObjectKey: objectKey,
+      },
+
+      select: {
+        id: true,
+      },
+    }),
+
+    prisma.promotion.findFirst({
+      where: {
+        imageObjectKey: objectKey,
+      },
+
+      select: {
+        id: true,
+      },
+    }),
+
+    prisma.serviceImage.findFirst({
+      where: {
+        objectKey,
+      },
+
+      select: {
+        id: true,
+      },
+    }),
+
+    prisma.packageImage.findFirst({
+      where: {
+        objectKey,
+      },
+
+      select: {
+        id: true,
+      },
+    }),
+
+    prisma.reviewImage.findFirst({
+      where: {
+        objectKey,
+      },
+
+      select: {
+        id: true,
+      },
+    }),
+  ]);
+
+  return Boolean(
+    user ||
+    brand ||
+    branch ||
+    staff ||
+    promotion ||
+    serviceImage ||
+    packageImage ||
+    reviewImage,
+  );
+};
+
+// =====================================================
 // PRESIGN IMAGE UPLOAD
 // =====================================================
 
 const presignImageUpload = async (
   payload: IPresignImageUploadPayload,
-
   requester: {
     userId: string;
     role: Role;
@@ -369,19 +555,26 @@ const presignImageUpload = async (
   await validateImageUploadAccess(payload.purpose, payload.entityId, requester);
 
   // ===================================================
-  // 2. DETERMINE FOLDER
+  // 2. DEFENSE-IN-DEPTH SIZE CHECK
+  //
+  // Zod already performs this check.
+  // Service keeps it too in case called elsewhere.
+  // ===================================================
+
+  if (payload.fileSize <= 0 || payload.fileSize > MAX_IMAGE_SIZE_BYTES) {
+    throw new AppError("IMAGE_TOO_LARGE", 400);
+  }
+
+  // ===================================================
+  // 3. DETERMINE FOLDER / EXTENSION
   // ===================================================
 
   const folder = getPurposeFolder(payload.purpose);
 
-  // ===================================================
-  // 3. DETERMINE FILE EXTENSION
-  // ===================================================
-
   const extension = getFileExtension(payload.contentType);
 
   // ===================================================
-  // 4. GENERATE OBJECT KEY
+  // 4. GENERATE RANDOM OBJECT KEY
   // ===================================================
 
   const fileId = crypto.randomUUID();
@@ -389,7 +582,7 @@ const presignImageUpload = async (
   const objectKey = `${folder}/${payload.entityId}/${fileId}.${extension}`;
 
   // ===================================================
-  // 5. CREATE R2 PUT COMMAND
+  // 5. CREATE PUT COMMAND
   // ===================================================
 
   const command = new PutObjectCommand({
@@ -401,47 +594,56 @@ const presignImageUpload = async (
   });
 
   // ===================================================
-  // 6. PRESIGNED URL EXPIRY
-  // ===================================================
-
-  const expiresInSeconds = 300;
-
-  // ===================================================
-  // 7. GENERATE PRESIGNED URL
+  // 6. SIGN PUT URL
   // ===================================================
 
   const uploadUrl = await getSignedUrl(r2Client, command, {
-    expiresIn: expiresInSeconds,
+    expiresIn: PRESIGNED_UPLOAD_EXPIRY_SECONDS,
   });
-
-  // ===================================================
-  // 8. RESPONSE
-  // ===================================================
 
   return {
     uploadUrl,
     objectKey,
-    expiresInSeconds,
+
+    expiresInSeconds: PRESIGNED_UPLOAD_EXPIRY_SECONDS,
   };
 };
 
 // =====================================================
-// CONFIRM IMAGE UPLOAD
+// VERIFY IMAGE EXISTS
 // =====================================================
+
 const verifyImageExists = async (objectKey: string): Promise<void> => {
   try {
     const command = new HeadObjectCommand({
       Bucket: config.r2.bucketName,
+
       Key: objectKey,
     });
 
     const object = await r2Client.send(command);
 
+    // =================================================
+    // 1. CONTENT TYPE
+    // =================================================
+
     if (
-      object.ContentType &&
-      !["image/jpeg", "image/png", "image/webp"].includes(object.ContentType)
+      !object.ContentType ||
+      !ALLOWED_IMAGE_CONTENT_TYPES.includes(object.ContentType)
     ) {
       throw new AppError("INVALID_IMAGE_TYPE", 400);
+    }
+
+    // =================================================
+    // 2. ACTUAL FILE SIZE
+    // =================================================
+
+    if (typeof object.ContentLength !== "number" || object.ContentLength <= 0) {
+      throw new AppError("INVALID_IMAGE_SIZE", 400);
+    }
+
+    if (object.ContentLength > MAX_IMAGE_SIZE_BYTES) {
+      throw new AppError("IMAGE_TOO_LARGE", 400);
     }
   } catch (error) {
     if (error instanceof AppError) {
@@ -452,9 +654,12 @@ const verifyImageExists = async (objectKey: string): Promise<void> => {
   }
 };
 
+// =====================================================
+// CONFIRM IMAGE UPLOAD
+// =====================================================
+
 const confirmImageUpload = async (
   payload: IConfirmImageUploadPayload,
-
   requester: {
     userId: string;
     role: Role;
@@ -467,7 +672,19 @@ const confirmImageUpload = async (
   await validateImageUploadAccess(payload.purpose, payload.entityId, requester);
 
   // ===================================================
-  // 2. VERIFY OBJECT KEY BELONGS TO PURPOSE / ENTITY
+  // 2. STRICT KEY STRUCTURE
+  // ===================================================
+
+  const { folder, entityId } = parseObjectKey(payload.objectKey);
+
+  const derivedPurpose = getPurposeFromFolder(folder);
+
+  if (derivedPurpose !== payload.purpose || entityId !== payload.entityId) {
+    throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+  }
+
+  // ===================================================
+  // 3. EXPECTED PREFIX
   // ===================================================
 
   const expectedPrefix = getExpectedObjectPrefix(
@@ -480,14 +697,13 @@ const confirmImageUpload = async (
   }
 
   // ===================================================
-  // 3. VERIFY OBJECT ACTUALLY EXISTS IN R2
+  // 4. VERIFY OBJECT
   // ===================================================
 
   await verifyImageExists(payload.objectKey);
 
   // ===================================================
-  // 4. GENERATE TEMPORARY SIGNED GET URL
-  // Private R2 bucket
+  // 5. GENERATE SIGNED GET URL
   // ===================================================
 
   const getCommand = new GetObjectCommand({
@@ -497,12 +713,8 @@ const confirmImageUpload = async (
   });
 
   const url = await getSignedUrl(r2Client, getCommand, {
-    expiresIn: 3600,
+    expiresIn: SIGNED_GET_EXPIRY_SECONDS,
   });
-
-  // ===================================================
-  // 5. RESPONSE
-  // ===================================================
 
   return {
     objectKey: payload.objectKey,
@@ -510,6 +722,11 @@ const confirmImageUpload = async (
     url,
   };
 };
+
+// =====================================================
+// DELETE IMAGE
+// =====================================================
+
 const deleteImage = async (
   payload: IDeleteImagePayload,
   requester: {
@@ -518,81 +735,51 @@ const deleteImage = async (
   },
 ) => {
   // ===================================================
-  // 1. DERIVE PURPOSE + ENTITY FROM OBJECT KEY
+  // 1. PARSE STRICT OBJECT KEY
   // ===================================================
 
-  const parts = payload.objectKey.split("/");
-
-  if (parts.length < 3) {
-    throw new AppError("UPLOAD_NOT_ALLOWED", 403);
-  }
-
-  const folder = parts[0];
-  const entityId = parts[1];
-
-  let purpose: ImagePurpose;
-
-  switch (folder) {
-    case "users":
-      purpose = "USER_AVATAR";
-      break;
-
-    case "brands":
-      purpose = "BRAND_LOGO";
-      break;
-
-    case "branches":
-      purpose = "BRANCH_IMAGE";
-      break;
-
-    case "services":
-      purpose = "SERVICE_IMAGE";
-      break;
-
-    case "packages":
-      purpose = "PACKAGE_IMAGE";
-      break;
-
-    case "staff":
-      purpose = "STAFF_IMAGE";
-      break;
-
-    case "reviews":
-      purpose = "REVIEW_IMAGE";
-      break;
-
-    case "promotions":
-      purpose = "PROMOTION_IMAGE";
-      break;
-
-    default:
-      throw new AppError("UPLOAD_NOT_ALLOWED", 403);
-  }
+  const { folder, entityId } = parseObjectKey(payload.objectKey);
 
   // ===================================================
-  // 2. AUTHORIZATION
+  // 2. DERIVE PURPOSE
+  // ===================================================
+
+  const purpose = getPurposeFromFolder(folder);
+
+  // ===================================================
+  // 3. AUTHORIZATION
   // ===================================================
 
   await validateImageUploadAccess(purpose, entityId, requester);
 
   // ===================================================
-  // 3. VERIFY OBJECT EXISTS
+  // 4. VERIFY EXPECTED PREFIX
   // ===================================================
 
-  try {
-    const headCommand = new HeadObjectCommand({
-      Bucket: config.r2.bucketName,
+  const expectedPrefix = getExpectedObjectPrefix(purpose, entityId);
 
-      Key: payload.objectKey,
-    });
-
-    await r2Client.send(headCommand);
-  } catch {
-    throw new AppError("UPLOADED_IMAGE_NOT_FOUND", 404);
+  if (!payload.objectKey.startsWith(expectedPrefix)) {
+    throw new AppError("UPLOAD_NOT_ALLOWED", 403);
   }
 
   // ===================================================
-  // 4. DELETE OBJECT
+  // 5. PREVENT DELETING ACTIVE DB REFERENCES
+  // ===================================================
+
+  const referenced = await isImageReferenced(payload.objectKey);
+
+  if (referenced) {
+    throw new AppError("IMAGE_STILL_IN_USE", 409);
+  }
+
+  // ===================================================
+  // 6. VERIFY OBJECT EXISTS / TYPE / SIZE
+  // ===================================================
+
+  await verifyImageExists(payload.objectKey);
+
+  // ===================================================
+  // 7. DELETE FROM R2
   // ===================================================
 
   const deleteCommand = new DeleteObjectCommand({
@@ -606,14 +793,19 @@ const deleteImage = async (
   return null;
 };
 
+// =====================================================
+// GET SIGNED IMAGE URL
+// =====================================================
+
 const getImageUrl = async (objectKey: string): Promise<string> => {
   const command = new GetObjectCommand({
     Bucket: config.r2.bucketName,
+
     Key: objectKey,
   });
 
   return await getSignedUrl(r2Client, command, {
-    expiresIn: 3600,
+    expiresIn: SIGNED_GET_EXPIRY_SECONDS,
   });
 };
 

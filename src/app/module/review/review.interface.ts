@@ -6,12 +6,6 @@ export interface ICreateReviewPayload {
   imageObjectKeys?: string[];
 }
 
-export interface IGetReviewsQuery {
-  page?: number;
-  limit?: number;
-  rating?: number;
-}
-
 export interface IUpdateReviewPayload {
   rating?: number;
   comment?: string;

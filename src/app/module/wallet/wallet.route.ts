@@ -17,6 +17,13 @@ const queryToBody = (req: Request, res: Response, next: NextFunction) => {
 };
 router.get("/", auth(Role.CUSTOMER), walletController.getMyWallet);
 
+router.post(
+  "/:appointmentId/pay-with-wallet",
+  auth(Role.CUSTOMER),
+  validateRequest(walletValidation.payAppointmentWithWalletValidationSchema),
+  walletController.payAppointmentWithWallet,
+);
+
 router.get(
   "/transactions",
   auth(Role.CUSTOMER),

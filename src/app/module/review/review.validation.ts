@@ -1,12 +1,28 @@
 import { z } from "zod";
 
+const imageObjectKeySchema = z
+  .string()
+  .trim()
+  .min(1, "Image object key cannot be empty");
+
 const createReviewValidationSchema = z.object({
   body: z.object({
-    rating: z.number().int().min(1).max(5),
+    rating: z
+      .number()
+      .int()
+      .min(1, "Rating must be at least 1")
+      .max(5, "Rating cannot exceed 5"),
 
-    comment: z.string().trim().max(2000).optional(),
+    comment: z
+      .string()
+      .trim()
+      .max(2000, "Comment cannot exceed 2000 characters")
+      .optional(),
 
-    imageObjectKeys: z.array(z.string().trim().min(1)).max(10).default([]),
+    imageObjectKeys: z
+      .array(imageObjectKeySchema)
+      .max(10, "A maximum of 10 review images is allowed")
+      .default([]),
   }),
 });
 
@@ -23,11 +39,23 @@ const getReviewsValidationSchema = z.object({
 const updateReviewValidationSchema = z.object({
   body: z
     .object({
-      rating: z.number().int().min(1).max(5).optional(),
+      rating: z
+        .number()
+        .int()
+        .min(1, "Rating must be at least 1")
+        .max(5, "Rating cannot exceed 5")
+        .optional(),
 
-      comment: z.string().trim().max(2000).optional(),
+      comment: z
+        .string()
+        .trim()
+        .max(2000, "Comment cannot exceed 2000 characters")
+        .optional(),
 
-      imageObjectKeys: z.array(z.string().trim().min(1)).max(10).optional(),
+      imageObjectKeys: z
+        .array(imageObjectKeySchema)
+        .max(10, "A maximum of 10 review images is allowed")
+        .optional(),
     })
     .refine((data) => Object.keys(data).length > 0, {
       message: "At least one field is required",
@@ -38,7 +66,11 @@ const moderateReviewValidationSchema = z.object({
   body: z.object({
     moderationStatus: z.enum(["VISIBLE", "HIDDEN"]),
 
-    reason: z.string().trim().max(500).optional(),
+    reason: z
+      .string()
+      .trim()
+      .max(500, "Moderation reason cannot exceed 500 characters")
+      .optional(),
   }),
 });
 

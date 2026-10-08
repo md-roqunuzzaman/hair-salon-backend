@@ -59,8 +59,30 @@ const getGroupPurchaseById = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+const createGroupPurchaseAppointment = catchAsync(
+  async (req: Request, res: Response) => {
+    const customerId = req.user!.userId;
+
+    const { purchaseId } = req.params;
+
+    const result = await groupPurchaseService.createGroupPurchaseAppointment(
+      customerId,
+      purchaseId as string,
+      req.body,
+    );
+
+    sendResponse(res, {
+      statusCode: 201,
+      success: true,
+      message: "Group purchase appointment booked successfully",
+      data: result,
+    });
+  },
+);
 export const groupPurchaseController = {
   createGroupPurchase,
   getMyGroupPurchases,
   getGroupPurchaseById,
+  createGroupPurchaseAppointment,
 };

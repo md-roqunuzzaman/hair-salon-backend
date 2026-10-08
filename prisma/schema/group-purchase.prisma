@@ -16,8 +16,9 @@ model GroupPurchase {
   package  Package   @relation(fields: [packageId], references: [id], onDelete: Restrict)
   payments Payment[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  appointments Appointment[]
 
   @@index([customerId])
   @@index([packageId])

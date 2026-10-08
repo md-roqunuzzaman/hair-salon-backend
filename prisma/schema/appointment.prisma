@@ -5,8 +5,9 @@ model Appointment {
   branchId   String
   staffId    String
 
-  serviceId String?
-  packageId String?
+  serviceId       String?
+  packageId       String?
+  groupPurchaseId String?
 
   bookingMethod     BookingMethod
   appointmentStatus AppointmentStatus
@@ -35,18 +36,27 @@ model Appointment {
   noShowAt           DateTime?
   noShowReason       String?
 
-  customer User     @relation("CustomerAppointments", fields: [customerId], references: [id], onDelete: Restrict)
-  branch   Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  staff    Staff    @relation(fields: [staffId], references: [id], onDelete: Restrict)
-  service  Service? @relation(fields: [serviceId], references: [id], onDelete: Restrict)
-  package  Package? @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  customer User @relation("CustomerAppointments", fields: [customerId], references: [id], onDelete: Restrict)
 
-  verifiedByUser    User?     @relation("AppointmentQrVerifier", fields: [qrVerifiedBy], references: [id], onDelete: SetNull)
-  depositPercentage Decimal?  @db.Decimal(5, 2)
-  depositAmount     Decimal?  @db.Decimal(10, 2)
-  remainingAmount   Decimal?  @db.Decimal(10, 2)
-  payments          Payment[]
-  review            Review?
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  package Package? @relation(fields: [packageId], references: [id], onDelete: Restrict)
+
+  // Group Purchase Appointment Booking
+  groupPurchase GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
+
+  verifiedByUser User? @relation("AppointmentQrVerifier", fields: [qrVerifiedBy], references: [id], onDelete: SetNull)
+
+  depositPercentage Decimal? @db.Decimal(5, 2)
+  depositAmount     Decimal? @db.Decimal(10, 2)
+  remainingAmount   Decimal? @db.Decimal(10, 2)
+
+  payments Payment[]
+  review   Review?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -56,6 +66,7 @@ model Appointment {
   @@index([staffId])
   @@index([serviceId])
   @@index([packageId])
+  @@index([groupPurchaseId])
   @@index([date])
   @@index([staffId, date])
   @@index([appointmentStatus])

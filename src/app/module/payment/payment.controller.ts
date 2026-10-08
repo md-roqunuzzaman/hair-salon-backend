@@ -5,6 +5,7 @@ import { catchAsync } from "../../utils/catchAsync.js";
 import { sendResponse } from "../../utils/sendResponse.js";
 import { paymentService } from "./payment.service.js";
 import { AppError } from "../../utils/app-error.js";
+import { walletService } from "../wallet/wallet.service.js";
 
 const createStripeIntent = catchAsync(async (req: Request, res: Response) => {
   const customerId = req.user!.userId;
@@ -75,7 +76,12 @@ const refundPayment = catchAsync(async (req: Request, res: Response) => {
     throw new AppError("Invalid paymentId", 400);
   }
 
-  const result = await paymentService.refundPayment(paymentId, req.body);
+  const userId = req.user!.userId;
+  const result = await paymentService.refundPayment(
+    paymentId,
+    userId,
+    req.body,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

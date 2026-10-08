@@ -71,9 +71,35 @@ const payAppointmentWithWallet = catchAsync(
   },
 );
 
+const payGroupPurchaseWithWallet = catchAsync(
+  async (req: Request, res: Response) => {
+    const customerId = req.user!.userId;
+
+    const purchaseId = req.params.purchaseId;
+
+    if (typeof purchaseId !== "string" || !purchaseId.trim()) {
+      throw new AppError("INVALID_GROUP_PURCHASE_ID", 400);
+    }
+
+    const result = await walletService.payGroupPurchaseWithWallet(
+      customerId,
+      purchaseId,
+      req.body,
+    );
+
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message: "Group purchase paid with wallet successfully",
+      data: result,
+    });
+  },
+);
+
 export const walletController = {
   getMyWallet,
   getMyTransactions,
   createTopup,
   payAppointmentWithWallet,
+  payGroupPurchaseWithWallet,
 };

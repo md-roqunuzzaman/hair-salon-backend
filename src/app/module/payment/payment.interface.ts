@@ -65,6 +65,7 @@ export interface IRefundPaymentPayload {
 
 export interface IRefundPaymentResponse {
   paymentId: string;
+
   refundId: string;
   refundStatus: "SUCCEEDED";
   amount: number;

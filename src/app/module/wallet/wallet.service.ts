@@ -1,6 +1,7 @@
 import {
   AppointmentStatus,
   BalanceType,
+  PaymentProvider,
   PaymentPurpose,
   PaymentStatus,
   Prisma,
@@ -354,239 +355,479 @@ const createTopup = async (
   }
 };
 
+type WalletPaymentType = "APPOINTMENT_PAYMENT" | "GROUP_PURCHASE_PAYMENT";
+
+const deductWalletBalance = async (
+  tx: Prisma.TransactionClient,
+  customerId: string,
+  amount: Prisma.Decimal,
+  useBonus: boolean,
+  type: WalletPaymentType,
+  referenceId: string,
+) => {
+  if (!amount.isFinite() || amount.lte(0)) {
+    throw new AppError("INVALID_PAYMENT_AMOUNT", 400);
+  }
+
+  const wallet = await tx.wallet.findUnique({
+    where: { customerId },
+  });
+
+  if (!wallet) {
+    throw new AppError("INSUFFICIENT_WALLET_BALANCE", 422);
+  }
+
+  if (wallet.currency !== "HKD") {
+    throw new AppError("UNSUPPORTED_WALLET_CURRENCY", 400);
+  }
+
+  const bonusBalanceUsed = useBonus
+    ? Prisma.Decimal.min(wallet.bonusBalance, amount)
+    : new Prisma.Decimal(0);
+
+  const paidBalanceUsed = amount.minus(bonusBalanceUsed);
+
+  if (wallet.paidBalance.lt(paidBalanceUsed)) {
+    throw new AppError("INSUFFICIENT_WALLET_BALANCE", 422);
+  }
+
+  const updated = await tx.wallet.updateMany({
+    where: {
+      id: wallet.id,
+      paidBalance: { gte: paidBalanceUsed },
+      bonusBalance: { gte: bonusBalanceUsed },
+    },
+    data: {
+      paidBalance: { decrement: paidBalanceUsed },
+      bonusBalance: { decrement: bonusBalanceUsed },
+    },
+  });
+
+  if (updated.count !== 1) {
+    throw new AppError("WALLET_BALANCE_CHANGED", 409);
+  }
+
+  if (paidBalanceUsed.gt(0)) {
+    await tx.walletTransaction.create({
+      data: {
+        walletId: wallet.id,
+        type,
+        balanceType: BalanceType.PAID,
+        amount: paidBalanceUsed.negated(),
+        referenceId,
+      },
+    });
+  }
+
+  if (bonusBalanceUsed.gt(0)) {
+    await tx.walletTransaction.create({
+      data: {
+        walletId: wallet.id,
+        type,
+        balanceType: BalanceType.BONUS,
+        amount: bonusBalanceUsed.negated(),
+        referenceId,
+      },
+    });
+  }
+
+  const updatedWallet = await tx.wallet.findUniqueOrThrow({
+    where: { id: wallet.id },
+  });
+
+  return {
+    paidBalanceUsed: Number(paidBalanceUsed),
+    bonusBalanceUsed: Number(bonusBalanceUsed),
+    remainingPaidBalance: Number(updatedWallet.paidBalance),
+    remainingBonusBalance: Number(updatedWallet.bonusBalance),
+  };
+};
+
 const payAppointmentWithWallet = async (
   customerId: string,
   appointmentId: string,
   payload: IPayAppointmentWithWalletPayload,
 ): Promise<IPayAppointmentWithWalletResponse> => {
-  return await prisma.$transaction(
-    async (tx) => {
-      // =================================================
-      // 1. FIND APPOINTMENT
-      // =================================================
+  // Retry serialization conflicts (P2034)
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          // ==========================================
+          // 1. FIND APPOINTMENT
+          // ==========================================
 
-      const appointment = await tx.appointment.findUnique({
-        where: {
-          id: appointmentId,
+          const appointment = await tx.appointment.findUnique({
+            where: {
+              id: appointmentId,
+            },
+            select: {
+              id: true,
+              customerId: true,
+              appointmentStatus: true,
+              paymentStatus: true,
+              price: true,
+              holdExpiresAt: true,
+            },
+          });
+
+          if (!appointment) {
+            throw new AppError("APPOINTMENT_NOT_FOUND", 404);
+          }
+
+          // ==========================================
+          // 2. OWNERSHIP
+          // ==========================================
+
+          if (appointment.customerId !== customerId) {
+            throw new AppError(
+              "You are not allowed to pay for this appointment",
+              403,
+            );
+          }
+
+          // ==========================================
+          // 3. PAYMENT STATUS
+          // ==========================================
+
+          if (
+            appointment.paymentStatus === PaymentStatus.PAID ||
+            appointment.appointmentStatus === AppointmentStatus.CONFIRMED ||
+            appointment.appointmentStatus === AppointmentStatus.COMPLETED
+          ) {
+            throw new AppError("PAYMENT_ALREADY_COMPLETED", 409);
+          }
+
+          if (
+            appointment.appointmentStatus !== AppointmentStatus.PENDING_PAYMENT
+          ) {
+            throw new AppError("INVALID_APPOINTMENT_STATUS", 409);
+          }
+
+          // ==========================================
+          // 4. HOLD EXPIRY
+          // ==========================================
+
+          const now = new Date();
+
+          if (appointment.holdExpiresAt && appointment.holdExpiresAt <= now) {
+            throw new AppError("SLOT_HOLD_EXPIRED", 409);
+          }
+
+          // ==========================================
+          // 5. CHECK EXISTING PAYMENTS
+          // ==========================================
+
+          const existingPayments = await tx.payment.findMany({
+            where: {
+              appointmentId: appointment.id,
+              purpose: PaymentPurpose.APPOINTMENT,
+              status: {
+                in: [PaymentStatus.PENDING, PaymentStatus.PAID],
+              },
+            },
+            select: {
+              id: true,
+              provider: true,
+              status: true,
+            },
+          });
+
+          if (
+            existingPayments.some(
+              (payment) => payment.status === PaymentStatus.PAID,
+            )
+          ) {
+            throw new AppError("PAYMENT_ALREADY_COMPLETED", 409);
+          }
+
+          // Prevent paying by wallet while a Stripe
+          // payment may still complete asynchronously.
+          if (
+            existingPayments.some(
+              (payment) =>
+                payment.provider === PaymentProvider.STRIPE &&
+                payment.status === PaymentStatus.PENDING,
+            )
+          ) {
+            throw new AppError("STRIPE_PAYMENT_ALREADY_PENDING", 409);
+          }
+
+          // ==========================================
+          // 6. ATOMIC WALLET DEDUCTION
+          // ==========================================
+
+          const walletResult = await deductWalletBalance(
+            tx,
+            customerId,
+            appointment.price,
+            payload.useBonus,
+            "APPOINTMENT_PAYMENT",
+            appointment.id,
+          );
+
+          // ==========================================
+          // 7. GUARDED APPOINTMENT UPDATE
+          // ==========================================
+
+          const updated = await tx.appointment.updateMany({
+            where: {
+              id: appointment.id,
+              customerId,
+              appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+              paymentStatus: appointment.paymentStatus,
+              ...(appointment.holdExpiresAt
+                ? { holdExpiresAt: { gt: now } }
+                : {}),
+            },
+            data: {
+              paymentStatus: PaymentStatus.PAID,
+              appointmentStatus: AppointmentStatus.CONFIRMED,
+              holdExpiresAt: null,
+            },
+          });
+
+          if (updated.count !== 1) {
+            throw new AppError("APPOINTMENT_PAYMENT_CONFLICT", 409);
+          }
+
+          // ==========================================
+          // 8. CREATE WALLET PAYMENT RECORD
+          // ==========================================
+
+          await tx.payment.create({
+            data: {
+              customerId,
+              appointmentId: appointment.id,
+              purpose: PaymentPurpose.APPOINTMENT,
+              provider: PaymentProvider.WALLET,
+              amount: appointment.price,
+              currency: "HKD",
+              status: PaymentStatus.PAID,
+              paidAt: new Date(),
+            },
+          });
+
+          // ==========================================
+          // 9. BOOKING CONFIRMED NOTIFICATION
+          // ==========================================
+
+          await notificationService.createNotification(
+            {
+              userId: customerId,
+              type: "BOOKING_CONFIRMED",
+              title: "Booking confirmed",
+              message: "Your appointment has been confirmed successfully.",
+            },
+            tx,
+          );
+
+          // ==========================================
+          // 10. RESPONSE
+          // ==========================================
+
+          return {
+            paymentStatus: "PAID" as const,
+            ...walletResult,
+          };
         },
-
-        select: {
-          id: true,
-          customerId: true,
-          appointmentStatus: true,
-          paymentStatus: true,
-          price: true,
-          holdExpiresAt: true,
-        },
-      });
-
-      if (!appointment) {
-        throw new AppError("APPOINTMENT_NOT_FOUND", 404);
-      }
-
-      // =================================================
-      // 2. OWNERSHIP
-      // =================================================
-
-      if (appointment.customerId !== customerId) {
-        throw new AppError(
-          "You are not allowed to pay for this appointment",
-          403,
-        );
-      }
-
-      // =================================================
-      // 3. ALREADY PAID
-      // =================================================
-
-      if (
-        appointment.paymentStatus === PaymentStatus.PAID ||
-        appointment.appointmentStatus === AppointmentStatus.CONFIRMED ||
-        appointment.appointmentStatus === AppointmentStatus.COMPLETED
-      ) {
-        throw new AppError("PAYMENT_ALREADY_COMPLETED", 409);
-      }
-
-      // =================================================
-      // 4. MUST BE PENDING PAYMENT
-      // =================================================
-
-      if (appointment.appointmentStatus !== AppointmentStatus.PENDING_PAYMENT) {
-        throw new AppError("INVALID_APPOINTMENT_STATUS", 409);
-      }
-
-      // =================================================
-      // 5. HOLD MUST STILL BE VALID
-      // =================================================
-
-      if (
-        appointment.holdExpiresAt &&
-        appointment.holdExpiresAt.getTime() <= Date.now()
-      ) {
-        throw new AppError("SLOT_HOLD_EXPIRED", 409);
-      }
-
-      // =================================================
-      // 6. GET WALLET
-      // =================================================
-
-      const wallet = await tx.wallet.findUnique({
-        where: {
-          customerId,
-        },
-      });
-
-      if (!wallet) {
-        throw new AppError("INSUFFICIENT_WALLET_BALANCE", 422);
-      }
-
-      const amount = Number(appointment.price);
-
-      const paidBalance = Number(wallet.paidBalance);
-
-      const bonusBalance = Number(wallet.bonusBalance);
-
-      // =================================================
-      // 7. CALCULATE USAGE
-      // =================================================
-
-      let bonusBalanceUsed = 0;
-      let paidBalanceUsed = 0;
-
-      if (payload.useBonus) {
-        bonusBalanceUsed = Math.min(bonusBalance, amount);
-
-        paidBalanceUsed = amount - bonusBalanceUsed;
-      } else {
-        paidBalanceUsed = amount;
-      }
-
-      // =================================================
-      // 8. CHECK BALANCE
-      // =================================================
-
-      if (paidBalanceUsed > paidBalance) {
-        throw new AppError("INSUFFICIENT_WALLET_BALANCE", 422);
-      }
-
-      // =================================================
-      // 9. DEDUCT WALLET
-      // =================================================
-
-      const updatedWallet = await tx.wallet.update({
-        where: {
-          id: wallet.id,
-        },
-
-        data: {
-          paidBalance: {
-            decrement: paidBalanceUsed,
-          },
-
-          bonusBalance: {
-            decrement: bonusBalanceUsed,
-          },
-        },
-      });
-
-      // =================================================
-      // 10. PAID BALANCE LEDGER
-      // =================================================
-
-      if (paidBalanceUsed > 0) {
-        await tx.walletTransaction.create({
-          data: {
-            walletId: wallet.id,
-
-            type: WalletTransactionType.APPOINTMENT_PAYMENT,
-
-            balanceType: BalanceType.PAID,
-
-            amount: -paidBalanceUsed,
-
-            referenceId: appointment.id,
-          },
-        });
-      }
-
-      // =================================================
-      // 11. BONUS BALANCE LEDGER
-      // =================================================
-
-      if (bonusBalanceUsed > 0) {
-        await tx.walletTransaction.create({
-          data: {
-            walletId: wallet.id,
-
-            type: WalletTransactionType.APPOINTMENT_PAYMENT,
-
-            balanceType: BalanceType.BONUS,
-
-            amount: -bonusBalanceUsed,
-
-            referenceId: appointment.id,
-          },
-        });
-      }
-
-      // =================================================
-      // 12. APPOINTMENT -> PAID + CONFIRMED
-      // =================================================
-
-      await tx.appointment.update({
-        where: {
-          id: appointment.id,
-        },
-
-        data: {
-          paymentStatus: PaymentStatus.PAID,
-
-          appointmentStatus: AppointmentStatus.CONFIRMED,
-
-          holdExpiresAt: null,
-        },
-      });
-
-      // =================================================
-      // 13. CREATE BOOKING CONFIRMED NOTIFICATION
-      // =================================================
-
-      await notificationService.createNotification(
         {
-          userId: customerId,
-          type: "BOOKING_CONFIRMED",
-          title: "Booking confirmed",
-          message: "Your appointment has been confirmed successfully.",
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+
+          timeout: 15000,
         },
-        tx,
       );
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034" &&
+        attempt < 3
+      ) {
+        continue;
+      }
 
-      // =================================================
-      // 14. RESPONSE
-      // =================================================
+      throw error;
+    }
+  }
 
-      return {
-        paymentStatus: "PAID" as const,
-
-        paidBalanceUsed,
-
-        bonusBalanceUsed,
-
-        remainingPaidBalance: Number(updatedWallet.paidBalance),
-
-        remainingBonusBalance: Number(updatedWallet.bonusBalance),
-      };
-    },
-
-    {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-    },
-  );
+  throw new AppError("WALLET_PAYMENT_RETRY_FAILED", 409);
 };
 
+const payGroupPurchaseWithWallet = async (
+  customerId: string,
+  purchaseId: string,
+  payload: { useBonus: boolean },
+) => {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const now = new Date();
+
+          // 1. Find purchase
+          const purchase = await tx.groupPurchase.findUnique({
+            where: { id: purchaseId },
+            select: {
+              id: true,
+              customerId: true,
+              packageId: true,
+              quantity: true,
+              amount: true,
+              paymentStatus: true,
+              reservationExpiresAt: true,
+            },
+          });
+
+          if (!purchase) {
+            throw new AppError("GROUP_PURCHASE_NOT_FOUND", 404);
+          }
+
+          // 2. Ownership
+          if (purchase.customerId !== customerId) {
+            throw new AppError("FORBIDDEN_GROUP_PURCHASE", 403);
+          }
+
+          // 3. Status validation
+          if (purchase.paymentStatus === PaymentStatus.PAID) {
+            throw new AppError("PAYMENT_ALREADY_COMPLETED", 409);
+          }
+
+          if (purchase.paymentStatus !== PaymentStatus.PENDING) {
+            throw new AppError("GROUP_PURCHASE_NOT_PAYABLE", 409);
+          }
+
+          // 4. Reservation expiry
+          if (
+            !purchase.reservationExpiresAt ||
+            purchase.reservationExpiresAt <= now
+          ) {
+            throw new AppError("GROUP_PURCHASE_RESERVATION_EXPIRED", 409);
+          }
+
+          // 5. Check existing payments
+          const existingPayments = await tx.payment.findMany({
+            where: {
+              groupPurchaseId: purchase.id,
+              purpose: PaymentPurpose.GROUP_PURCHASE,
+              status: {
+                in: [PaymentStatus.PENDING, PaymentStatus.PAID],
+              },
+            },
+            select: {
+              provider: true,
+              status: true,
+            },
+          });
+
+          if (
+            existingPayments.some(
+              (payment) => payment.status === PaymentStatus.PAID,
+            )
+          ) {
+            throw new AppError("PAYMENT_ALREADY_COMPLETED", 409);
+          }
+
+          if (
+            existingPayments.some(
+              (payment) =>
+                payment.provider === PaymentProvider.STRIPE &&
+                payment.status === PaymentStatus.PENDING,
+            )
+          ) {
+            throw new AppError("STRIPE_PAYMENT_ALREADY_PENDING", 409);
+          }
+
+          // 6. Deduct wallet
+          const walletResult = await deductWalletBalance(
+            tx,
+            customerId,
+            purchase.amount,
+            payload.useBonus,
+            "GROUP_PURCHASE_PAYMENT",
+            purchase.id,
+          );
+
+          // 7. Finalize purchase (guarded)
+          const updatedPurchase = await tx.groupPurchase.updateMany({
+            where: {
+              id: purchase.id,
+              customerId,
+              paymentStatus: PaymentStatus.PENDING,
+              reservationExpiresAt: { gt: now },
+            },
+            data: {
+              paymentStatus: PaymentStatus.PAID,
+              purchasedAt: now,
+            },
+          });
+
+          if (updatedPurchase.count !== 1) {
+            throw new AppError("GROUP_PURCHASE_PAYMENT_CONFLICT", 409);
+          }
+
+          // 8. Transfer reserved capacity to sold
+          const updatedPackage = await tx.package.updateMany({
+            where: {
+              id: purchase.packageId,
+              reservedQuantity: { gte: purchase.quantity },
+            },
+            data: {
+              reservedQuantity: { decrement: purchase.quantity },
+              soldQuantity: { increment: purchase.quantity },
+            },
+          });
+
+          if (updatedPackage.count !== 1) {
+            throw new AppError("GROUP_PURCHASE_CAPACITY_CONFLICT", 409);
+          }
+
+          // 9. Create Payment record
+          const payment = await tx.payment.create({
+            data: {
+              customerId,
+              groupPurchaseId: purchase.id,
+              purpose: PaymentPurpose.GROUP_PURCHASE,
+              provider: PaymentProvider.WALLET,
+              amount: purchase.amount,
+              currency: "HKD",
+              status: PaymentStatus.PAID,
+              paidAt: now,
+            },
+          });
+
+          return {
+            purchaseId: purchase.id,
+            paymentId: payment.id,
+            paymentStatus: "PAID" as const,
+            ...walletResult,
+          };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 15000,
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034" &&
+        attempt < 3
+      ) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError("GROUP_PURCHASE_PAYMENT_RETRY_FAILED", 409);
+};
 export const walletService = {
   getMyWallet,
   getMyTransactions,
   createTopup,
   payAppointmentWithWallet,
+  payGroupPurchaseWithWallet,
 };

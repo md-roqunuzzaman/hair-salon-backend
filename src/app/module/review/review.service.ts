@@ -9,6 +9,7 @@ import { AppError } from "../../utils/app-error.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { contentModerationService } from "../contentModeration/contentModeration.service.js";
 import { notificationService } from "../notification/notification.service.js";
+import { uploadService } from "../upload/upload.service.js";
 
 import {
   ICreateReviewPayload,
@@ -88,7 +89,56 @@ const createReview = async (
   }
 
   // =====================================================
-  // 6. AUTOMATED CONTENT MODERATION
+  // 6. VALIDATE REVIEW IMAGE OBJECT KEYS
+  // =====================================================
+
+  const imageObjectKeys = payload.imageObjectKeys ?? [];
+
+  if (new Set(imageObjectKeys).size !== imageObjectKeys.length) {
+    throw new AppError("Duplicate review images are not allowed", 400);
+  }
+
+  if (imageObjectKeys.length > 0) {
+    const expectedPrefix = `reviews/${customerId}/`;
+
+    const invalidObjectKey = imageObjectKeys.find(
+      (objectKey) => !objectKey.startsWith(expectedPrefix),
+    );
+
+    if (invalidObjectKey) {
+      throw new AppError("Invalid review image object key", 400);
+    }
+
+    // Verify every referenced image really exists in R2.
+    await Promise.all(
+      imageObjectKeys.map((objectKey) =>
+        uploadService.verifyImageExists(objectKey),
+      ),
+    );
+  }
+
+  // =====================================================
+  // 7. GENERATE TEMPORARY SIGNED IMAGE URLS
+  //
+  // Used for:
+  // - image moderation
+  // - immediate API response
+  //
+  // DB still stores objectKey only.
+  // =====================================================
+
+  const reviewImages = await Promise.all(
+    imageObjectKeys.map(async (objectKey) => ({
+      objectKey,
+
+      url: await uploadService.getImageUrl(objectKey),
+    })),
+  );
+
+  const imageUrls = reviewImages.map((image) => image.url);
+
+  // =====================================================
+  // 8. AUTOMATED TEXT + IMAGE MODERATION
   // =====================================================
 
   let moderationStatus: ReviewModerationStatus = ReviewModerationStatus.PENDING;
@@ -96,24 +146,31 @@ const createReview = async (
   let moderationReason: string | null = null;
 
   try {
-    const moderationResult = await contentModerationService.moderateText(
-      payload.comment,
-    );
+    const moderationResult =
+      await contentModerationService.moderateReviewContent(
+        payload.comment,
+        imageUrls,
+      );
 
     if (moderationResult.safe) {
       moderationStatus = ReviewModerationStatus.VISIBLE;
+
       moderationReason = null;
     } else {
       moderationStatus = ReviewModerationStatus.HIDDEN;
+
       moderationReason = moderationResult.reason ?? "Unsafe review content";
     }
-  } catch {
+  } catch (error) {
+    console.error("Review moderation failed:", error);
+
     moderationStatus = ReviewModerationStatus.PENDING;
+
     moderationReason = "Moderation service unavailable";
   }
 
   // =====================================================
-  // 7. CREATE REVIEW
+  // 9. CREATE REVIEW
   // =====================================================
 
   const review = await prisma.review.create({
@@ -135,9 +192,9 @@ const createReview = async (
       moderationReason,
 
       images:
-        payload.imageObjectKeys && payload.imageObjectKeys.length > 0
+        imageObjectKeys.length > 0
           ? {
-              create: payload.imageObjectKeys.map((objectKey, index) => ({
+              create: imageObjectKeys.map((objectKey, index) => ({
                 objectKey,
                 sortOrder: index,
               })),
@@ -147,10 +204,13 @@ const createReview = async (
 
     select: {
       id: true,
+
       rating: true,
+
       comment: true,
 
       moderationStatus: true,
+
       moderationReason: true,
 
       images: {
@@ -160,21 +220,51 @@ const createReview = async (
 
         select: {
           objectKey: true,
+          sortOrder: true,
         },
       },
+
+      createdAt: true,
     },
   });
 
   // =====================================================
-  // 8. MODERATION RESULT NOTIFICATION
+  // 10. GENERATE RESPONSE IMAGE URLS
+  //
+  // Use returned DB ordering as source of truth.
+  // =====================================================
+
+  const images = await Promise.all(
+    review.images.map(async (image) => {
+      const existingSignedImage = reviewImages.find(
+        (item) => item.objectKey === image.objectKey,
+      );
+
+      return {
+        objectKey: image.objectKey,
+
+        url:
+          existingSignedImage?.url ??
+          (await uploadService.getImageUrl(image.objectKey)),
+
+        sortOrder: image.sortOrder,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 11. MODERATION RESULT NOTIFICATION
   // =====================================================
 
   try {
     if (review.moderationStatus === ReviewModerationStatus.VISIBLE) {
       await notificationService.createNotification({
         userId: customerId,
+
         type: "REVIEW_PUBLISHED",
+
         title: "Review published",
+
         message: "Your review has been published successfully.",
       });
     }
@@ -182,8 +272,11 @@ const createReview = async (
     if (review.moderationStatus === ReviewModerationStatus.HIDDEN) {
       await notificationService.createNotification({
         userId: customerId,
+
         type: "REVIEW_NEEDS_CHANGES",
+
         title: "Review needs changes",
+
         message:
           "Your review is not public because it may contain content that does not meet our review guidelines. You can edit and resubmit it.",
       });
@@ -192,28 +285,36 @@ const createReview = async (
     if (review.moderationStatus === ReviewModerationStatus.PENDING) {
       await notificationService.createNotification({
         userId: customerId,
+
         type: "REVIEW_PENDING",
+
         title: "Review under review",
+
         message: "Your review is being checked before publication.",
       });
     }
   } catch (error) {
     console.error("Failed to create review notification:", error);
   }
+
+  // =====================================================
+  // 12. RESPONSE
+  // =====================================================
+
   return {
     id: review.id,
+
     rating: review.rating,
+
     comment: review.comment,
 
-    images: review.images.map((image) => ({
-      objectKey: image.objectKey,
-
-      // R2 is intentionally not integrated yet.
-      url: null,
-    })),
+    images,
 
     moderationStatus: review.moderationStatus,
+
     moderationReason: review.moderationReason,
+
+    createdAt: review.createdAt.toISOString(),
   };
 };
 
@@ -264,10 +365,6 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
         comment: true,
         createdAt: true,
 
-        // ==========================================
-        // SALON REPLY
-        // ==========================================
-
         replyText: true,
         repliedAt: true,
 
@@ -297,6 +394,7 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
 
           select: {
             objectKey: true,
+            sortOrder: true,
           },
         },
       },
@@ -307,54 +405,64 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
     }),
   ]);
 
+  const items = await Promise.all(
+    reviews.map(async (review) => {
+      const images = await Promise.all(
+        review.images.map(async (image) => ({
+          objectKey: image.objectKey,
+
+          url: await uploadService.getImageUrl(image.objectKey),
+
+          sortOrder: image.sortOrder,
+        })),
+      );
+
+      return {
+        id: review.id,
+
+        rating: review.rating,
+
+        comment: review.comment,
+
+        customer: {
+          id: review.customer.id,
+          name: review.customer.name,
+        },
+
+        staff: {
+          id: review.staff.id,
+          name: review.staff.user.name,
+        },
+
+        reply: review.replyText
+          ? {
+              text: review.replyText,
+
+              repliedAt: review.repliedAt
+                ? review.repliedAt.toISOString()
+                : null,
+            }
+          : null,
+
+        images,
+
+        createdAt: review.createdAt.toISOString(),
+      };
+    }),
+  );
+
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
   return {
-    items: reviews.map((review) => ({
-      id: review.id,
-
-      rating: review.rating,
-
-      comment: review.comment,
-
-      customer: {
-        id: review.customer.id,
-        name: review.customer.name,
-      },
-
-      staff: {
-        id: review.staff.id,
-        name: review.staff.user.name,
-      },
-
-      // ==========================================
-      // SALON OFFICIAL REPLY
-      // ==========================================
-
-      reply: review.replyText
-        ? {
-            text: review.replyText,
-
-            repliedAt: review.repliedAt ? review.repliedAt.toISOString() : null,
-          }
-        : null,
-
-      images: review.images.map((image) => ({
-        objectKey: image.objectKey,
-
-        // R2 is not integrated yet.
-        url: null,
-      })),
-
-      createdAt: review.createdAt.toISOString(),
-    })),
+    items,
 
     pagination: {
       page,
       limit,
       total,
+      totalPages,
 
-      totalPages: Math.ceil(total / limit),
-
-      hasNextPage: page * limit < total,
+      hasNextPage: page < totalPages,
 
       hasPreviousPage: page > 1,
     },
@@ -407,10 +515,6 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
         comment: true,
         createdAt: true,
 
-        // ==========================================
-        // SALON REPLY
-        // ==========================================
-
         replyText: true,
         repliedAt: true,
 
@@ -435,6 +539,7 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
 
           select: {
             objectKey: true,
+            sortOrder: true,
           },
         },
       },
@@ -445,54 +550,64 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
     }),
   ]);
 
+  const items = await Promise.all(
+    reviews.map(async (review) => {
+      const images = await Promise.all(
+        review.images.map(async (image) => ({
+          objectKey: image.objectKey,
+
+          url: await uploadService.getImageUrl(image.objectKey),
+
+          sortOrder: image.sortOrder,
+        })),
+      );
+
+      return {
+        id: review.id,
+
+        rating: review.rating,
+
+        comment: review.comment,
+
+        customer: {
+          id: review.customer.id,
+          name: review.customer.name,
+        },
+
+        branch: {
+          id: review.branch.id,
+          name: review.branch.name,
+        },
+
+        reply: review.replyText
+          ? {
+              text: review.replyText,
+
+              repliedAt: review.repliedAt
+                ? review.repliedAt.toISOString()
+                : null,
+            }
+          : null,
+
+        images,
+
+        createdAt: review.createdAt.toISOString(),
+      };
+    }),
+  );
+
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
   return {
-    items: reviews.map((review) => ({
-      id: review.id,
-
-      rating: review.rating,
-
-      comment: review.comment,
-
-      customer: {
-        id: review.customer.id,
-        name: review.customer.name,
-      },
-
-      branch: {
-        id: review.branch.id,
-        name: review.branch.name,
-      },
-
-      // ==========================================
-      // SALON OFFICIAL REPLY
-      // ==========================================
-
-      reply: review.replyText
-        ? {
-            text: review.replyText,
-
-            repliedAt: review.repliedAt ? review.repliedAt.toISOString() : null,
-          }
-        : null,
-
-      images: review.images.map((image) => ({
-        objectKey: image.objectKey,
-
-        // R2 not integrated yet
-        url: null,
-      })),
-
-      createdAt: review.createdAt.toISOString(),
-    })),
+    items,
 
     pagination: {
       page,
       limit,
       total,
+      totalPages,
 
-      totalPages: Math.ceil(total / limit),
-
-      hasNextPage: page * limit < total,
+      hasNextPage: page < totalPages,
 
       hasPreviousPage: page > 1,
     },
@@ -562,7 +677,6 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
             id: true,
             date: true,
             startTime: true,
-
             itemName: true,
           },
         },
@@ -574,6 +688,7 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
 
           select: {
             objectKey: true,
+            sortOrder: true,
           },
         },
       },
@@ -584,67 +699,83 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
     }),
   ]);
 
+  const items = await Promise.all(
+    reviews.map(async (review) => {
+      const images = await Promise.all(
+        review.images.map(async (image) => ({
+          objectKey: image.objectKey,
+
+          url: await uploadService.getImageUrl(image.objectKey),
+
+          sortOrder: image.sortOrder,
+        })),
+      );
+
+      return {
+        id: review.id,
+
+        rating: review.rating,
+
+        comment: review.comment,
+
+        moderationStatus: review.moderationStatus,
+
+        moderationReason: review.moderationReason,
+
+        canEdit: true,
+        canDelete: true,
+
+        branch: {
+          id: review.branch.id,
+          name: review.branch.name,
+        },
+
+        staff: {
+          id: review.staff.id,
+          name: review.staff.user.name,
+        },
+
+        appointment: {
+          id: review.appointment.id,
+
+          date: review.appointment.date.toISOString().slice(0, 10),
+
+          startTime: review.appointment.startTime,
+
+          itemName: review.appointment.itemName,
+        },
+
+        reply: review.replyText
+          ? {
+              text: review.replyText,
+
+              repliedAt: review.repliedAt
+                ? review.repliedAt.toISOString()
+                : null,
+            }
+          : null,
+
+        images,
+
+        createdAt: review.createdAt.toISOString(),
+
+        updatedAt: review.updatedAt.toISOString(),
+      };
+    }),
+  );
+
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
   return {
-    items: reviews.map((review) => ({
-      id: review.id,
-
-      rating: review.rating,
-      comment: review.comment,
-
-      moderationStatus: review.moderationStatus,
-
-      moderationReason: review.moderationReason,
-
-      canEdit: true,
-      canDelete: true,
-
-      branch: {
-        id: review.branch.id,
-        name: review.branch.name,
-      },
-
-      staff: {
-        id: review.staff.id,
-        name: review.staff.user.name,
-      },
-
-      appointment: {
-        id: review.appointment.id,
-
-        date: review.appointment.date.toISOString().slice(0, 10),
-
-        startTime: review.appointment.startTime,
-
-        itemName: review.appointment.itemName,
-      },
-
-      reply: review.replyText
-        ? {
-            text: review.replyText,
-
-            repliedAt: review.repliedAt ? review.repliedAt.toISOString() : null,
-          }
-        : null,
-
-      images: review.images.map((image) => ({
-        objectKey: image.objectKey,
-
-        // R2 later
-        url: null,
-      })),
-
-      createdAt: review.createdAt.toISOString(),
-      updatedAt: review.updatedAt.toISOString(),
-    })),
+    items,
 
     pagination: {
       page,
       limit,
       total,
+      totalPages,
 
-      totalPages: total === 0 ? 0 : Math.ceil(total / limit),
-
-      hasNextPage: page < Math.ceil(total / limit),
+      hasNextPage: page < totalPages,
 
       hasPreviousPage: page > 1,
     },
@@ -657,7 +788,7 @@ const updateReview = async (
   payload: IUpdateReviewPayload,
 ) => {
   // =====================================================
-  // 1. FIND REVIEW
+  // 1. FIND EXISTING REVIEW
   // =====================================================
 
   const existingReview = await prisma.review.findUnique({
@@ -667,8 +798,22 @@ const updateReview = async (
 
     select: {
       id: true,
+
       customerId: true,
+
+      comment: true,
+
       moderationStatus: true,
+
+      images: {
+        orderBy: {
+          sortOrder: "asc",
+        },
+
+        select: {
+          objectKey: true,
+        },
+      },
     },
   });
 
@@ -677,7 +822,7 @@ const updateReview = async (
   }
 
   // =====================================================
-  // 2. OWNERSHIP CHECK
+  // 2. OWNERSHIP
   // =====================================================
 
   if (existingReview.customerId !== customerId) {
@@ -685,113 +830,236 @@ const updateReview = async (
   }
 
   // =====================================================
-  // 3. RE-MODERATE COMMENT IF CHANGED
+  // 3. DETERMINE FINAL IMAGE SET
   // =====================================================
+
+  const finalImageObjectKeys =
+    payload.imageObjectKeys !== undefined
+      ? payload.imageObjectKeys
+      : existingReview.images.map((image) => image.objectKey);
+
+  // =====================================================
+  // 4. DUPLICATE IMAGE CHECK
+  // =====================================================
+
+  if (new Set(finalImageObjectKeys).size !== finalImageObjectKeys.length) {
+    throw new AppError("Duplicate review images are not allowed", 400);
+  }
+
+  // =====================================================
+  // 5. VALIDATE IMAGE OWNERSHIP + R2 EXISTENCE
+  // =====================================================
+
+  if (finalImageObjectKeys.length > 0) {
+    const expectedPrefix = `reviews/${customerId}/`;
+
+    const invalidObjectKey = finalImageObjectKeys.find(
+      (objectKey) => !objectKey.startsWith(expectedPrefix),
+    );
+
+    if (invalidObjectKey) {
+      throw new AppError("Invalid review image object key", 400);
+    }
+
+    await Promise.all(
+      finalImageObjectKeys.map((objectKey) =>
+        uploadService.verifyImageExists(objectKey),
+      ),
+    );
+  }
+
+  // =====================================================
+  // 6. DETERMINE FINAL COMMENT
+  // =====================================================
+
+  const finalComment =
+    payload.comment !== undefined ? payload.comment : existingReview.comment;
+
+  // =====================================================
+  // 7. SHOULD RE-MODERATE?
+  //
+  // Rating-only update does not need moderation.
+  // Comment OR image change must re-moderate.
+  // =====================================================
+
+  const requiresModeration =
+    payload.comment !== undefined || payload.imageObjectKeys !== undefined;
 
   let moderationUpdate:
     | {
         moderationStatus: ReviewModerationStatus;
+
         moderationReason: string | null;
       }
     | undefined;
 
-  if (payload.comment !== undefined) {
+  let signedImages: {
+    objectKey: string;
+    url: string;
+  }[] = [];
+
+  if (requiresModeration) {
+    // ===================================================
+    // 8. SIGN FINAL IMAGE SET
+    // ===================================================
+
+    signedImages = await Promise.all(
+      finalImageObjectKeys.map(async (objectKey) => ({
+        objectKey,
+
+        url: await uploadService.getImageUrl(objectKey),
+      })),
+    );
+
+    const imageUrls = signedImages.map((image) => image.url);
+
+    // ===================================================
+    // 9. MODERATE FINAL TEXT + IMAGES
+    // ===================================================
+
     try {
-      const moderationResult = await contentModerationService.moderateText(
-        payload.comment,
-      );
+      const moderationResult =
+        await contentModerationService.moderateReviewContent(
+          finalComment,
+          imageUrls,
+        );
 
       if (moderationResult.safe) {
         moderationUpdate = {
           moderationStatus: ReviewModerationStatus.VISIBLE,
+
           moderationReason: null,
         };
       } else {
         moderationUpdate = {
           moderationStatus: ReviewModerationStatus.HIDDEN,
+
           moderationReason: moderationResult.reason ?? "Unsafe review content",
         };
       }
-    } catch {
+    } catch (error) {
+      console.error("Review update moderation failed:", error);
+
       moderationUpdate = {
         moderationStatus: ReviewModerationStatus.PENDING,
+
         moderationReason: "Moderation service unavailable",
       };
     }
   }
 
   // =====================================================
-  // 4. UPDATE REVIEW TRANSACTIONALLY
+  // 10. UPDATE TRANSACTIONALLY
   // =====================================================
 
-  const result = await prisma.$transaction(async (tx) => {
-    if (payload.imageObjectKeys !== undefined) {
-      await tx.reviewImage.deleteMany({
+  const result = await prisma.$transaction(
+    async (tx) => {
+      if (payload.imageObjectKeys !== undefined) {
+        await tx.reviewImage.deleteMany({
+          where: {
+            reviewId,
+          },
+        });
+      }
+
+      return tx.review.update({
         where: {
-          reviewId,
+          id: reviewId,
+        },
+
+        data: {
+          ...(payload.rating !== undefined && {
+            rating: payload.rating,
+          }),
+
+          ...(payload.comment !== undefined && {
+            comment: payload.comment,
+          }),
+
+          ...(moderationUpdate && {
+            moderationStatus: moderationUpdate.moderationStatus,
+
+            moderationReason: moderationUpdate.moderationReason,
+          }),
+
+          ...(payload.imageObjectKeys !== undefined && {
+            images: {
+              create: finalImageObjectKeys.map((objectKey, index) => ({
+                objectKey,
+                sortOrder: index,
+              })),
+            },
+          }),
+        },
+
+        select: {
+          id: true,
+
+          rating: true,
+
+          comment: true,
+
+          moderationStatus: true,
+
+          moderationReason: true,
+
+          images: {
+            orderBy: {
+              sortOrder: "asc",
+            },
+
+            select: {
+              objectKey: true,
+              sortOrder: true,
+            },
+          },
+
+          updatedAt: true,
         },
       });
-    }
-
-    return tx.review.update({
-      where: {
-        id: reviewId,
-      },
-
-      data: {
-        ...(payload.rating !== undefined && {
-          rating: payload.rating,
-        }),
-
-        ...(payload.comment !== undefined && {
-          comment: payload.comment,
-        }),
-
-        ...(moderationUpdate && moderationUpdate),
-
-        ...(payload.imageObjectKeys !== undefined && {
-          images: {
-            create: payload.imageObjectKeys.map((objectKey, index) => ({
-              objectKey,
-              sortOrder: index,
-            })),
-          },
-        }),
-      },
-
-      select: {
-        id: true,
-        rating: true,
-        comment: true,
-
-        moderationStatus: true,
-        moderationReason: true,
-
-        images: {
-          orderBy: {
-            sortOrder: "asc",
-          },
-
-          select: {
-            objectKey: true,
-          },
-        },
-      },
-    });
-  });
+    },
+    {
+      maxWait: 5000,
+      timeout: 15000,
+    },
+  );
 
   // =====================================================
-  // 5. MODERATION RESULT NOTIFICATION
-  // Only if comment changed
+  // 11. SIGN RESPONSE IMAGES
   // =====================================================
 
-  if (payload.comment !== undefined && moderationUpdate) {
+  const images = await Promise.all(
+    result.images.map(async (image) => {
+      const existingSigned = signedImages.find(
+        (item) => item.objectKey === image.objectKey,
+      );
+
+      return {
+        objectKey: image.objectKey,
+
+        url:
+          existingSigned?.url ??
+          (await uploadService.getImageUrl(image.objectKey)),
+
+        sortOrder: image.sortOrder,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 12. MODERATION NOTIFICATION
+  // =====================================================
+
+  if (requiresModeration && moderationUpdate) {
     try {
       if (result.moderationStatus === ReviewModerationStatus.VISIBLE) {
         await notificationService.createNotification({
           userId: customerId,
+
           type: "REVIEW_PUBLISHED",
+
           title: "Review published",
+
           message: "Your updated review has been published successfully.",
         });
       }
@@ -799,8 +1067,11 @@ const updateReview = async (
       if (result.moderationStatus === ReviewModerationStatus.HIDDEN) {
         await notificationService.createNotification({
           userId: customerId,
+
           type: "REVIEW_NEEDS_CHANGES",
+
           title: "Review needs changes",
+
           message:
             "Your updated review is not public because it may contain content that does not meet our review guidelines. You can edit and resubmit it.",
         });
@@ -809,8 +1080,11 @@ const updateReview = async (
       if (result.moderationStatus === ReviewModerationStatus.PENDING) {
         await notificationService.createNotification({
           userId: customerId,
+
           type: "REVIEW_PENDING",
+
           title: "Review under review",
+
           message: "Your updated review is being checked before publication.",
         });
       }
@@ -820,7 +1094,7 @@ const updateReview = async (
   }
 
   // =====================================================
-  // 6. RESPONSE
+  // 13. RESPONSE
   // =====================================================
 
   return {
@@ -830,20 +1104,21 @@ const updateReview = async (
 
     comment: result.comment,
 
-    images: result.images.map((image) => ({
-      objectKey: image.objectKey,
-
-      // R2 not integrated yet
-      url: null,
-    })),
+    images,
 
     moderationStatus: result.moderationStatus,
 
     moderationReason: result.moderationReason,
+
+    updatedAt: result.updatedAt.toISOString(),
   };
 };
 
 const deleteReview = async (customerId: string, reviewId: string) => {
+  // =====================================================
+  // 1. FIND REVIEW
+  // =====================================================
+
   const review = await prisma.review.findUnique({
     where: {
       id: reviewId,
@@ -851,7 +1126,14 @@ const deleteReview = async (customerId: string, reviewId: string) => {
 
     select: {
       id: true,
+
       customerId: true,
+
+      images: {
+        select: {
+          objectKey: true,
+        },
+      },
     },
   });
 
@@ -859,15 +1141,51 @@ const deleteReview = async (customerId: string, reviewId: string) => {
     throw new AppError("REVIEW_NOT_FOUND", 404);
   }
 
+  // =====================================================
+  // 2. OWNERSHIP
+  // =====================================================
+
   if (review.customerId !== customerId) {
     throw new AppError("REVIEW_NOT_ALLOWED", 403);
   }
+
+  const imageObjectKeys = review.images.map((image) => image.objectKey);
+
+  // =====================================================
+  // 3. DELETE REVIEW FROM DB
+  //
+  // ReviewImage rows are deleted by Prisma cascade.
+  // =====================================================
 
   await prisma.review.delete({
     where: {
       id: reviewId,
     },
   });
+
+  // =====================================================
+  // 4. DELETE REVIEW IMAGES FROM R2
+  // =====================================================
+
+  if (imageObjectKeys.length > 0) {
+    try {
+      await Promise.all(
+        imageObjectKeys.map((objectKey) =>
+          uploadService.deleteImage(
+            {
+              objectKey,
+            },
+            {
+              userId: customerId,
+              role: Role.CUSTOMER,
+            },
+          ),
+        ),
+      );
+    } catch (error) {
+      console.error("Failed to cleanup review images from R2:", error);
+    }
+  }
 
   return null;
 };
