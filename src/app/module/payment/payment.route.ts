@@ -22,6 +22,16 @@ router.post(
   validateRequest(paymentValidation.createStripeIntentValidationSchema),
   paymentController.createStripeIntent,
 );
+
+router.post(
+  "/group-purchase/create-intent",
+  auth(Role.CUSTOMER),
+  validateRequest(
+    paymentValidation.createGroupPurchaseStripeIntentValidationSchema,
+  ),
+  paymentController.createGroupPurchaseStripeIntent,
+);
+
 router.get(
   "/my",
   auth(Role.CUSTOMER),

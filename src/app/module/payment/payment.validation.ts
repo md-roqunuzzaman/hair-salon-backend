@@ -36,8 +36,15 @@ const refundPaymentValidationSchema = z.object({
   }),
 });
 
+const createGroupPurchaseStripeIntentValidationSchema = z.object({
+  body: z.object({
+    purchaseId: z.string().uuid("Invalid purchaseId"),
+  }),
+});
+
 export const paymentValidation = {
   createStripeIntentValidationSchema,
   getMyPaymentsValidationSchema,
   refundPaymentValidationSchema,
+  createGroupPurchaseStripeIntentValidationSchema,
 };

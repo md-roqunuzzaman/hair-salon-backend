@@ -188,6 +188,13 @@ export interface ICancelAppointmentResponse {
   appointmentId: string;
   appointmentStatus: "CANCELLED";
   refundStatus: "NOT_REQUIRED";
+
+  groupPurchase?: {
+    purchaseId: string;
+    purchasedQuantity: number;
+    redeemedQuantity: number;
+    remainingQuantity: number;
+  };
 }
 
 export interface IRescheduleAppointmentPayload {

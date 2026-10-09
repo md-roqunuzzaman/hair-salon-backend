@@ -70,3 +70,16 @@ export interface IRefundPaymentResponse {
   refundStatus: "SUCCEEDED";
   amount: number;
 }
+
+export interface ICreateGroupPurchaseStripeIntentPayload {
+  purchaseId: string;
+}
+
+export interface ICreateGroupPurchaseStripeIntentResponse {
+  paymentId: string;
+  purchaseId: string;
+  amount: number;
+  currency: string;
+  paymentStatus: "PENDING";
+  clientSecret: string;
+}

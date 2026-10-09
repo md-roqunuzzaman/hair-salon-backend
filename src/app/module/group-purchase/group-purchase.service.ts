@@ -326,32 +326,90 @@ const getMyGroupPurchases = async (
     },
   });
 
+  // =====================================================
+  // GET REDEMPTION COUNTS FOR CURRENT PAGE
+  // =====================================================
+
+  const purchaseIds = purchases.map((purchase) => purchase.id);
+
+  const redemptionCounts =
+    purchaseIds.length > 0
+      ? await prisma.appointment.groupBy({
+          by: ["groupPurchaseId"],
+
+          where: {
+            groupPurchaseId: {
+              in: purchaseIds,
+            },
+
+            appointmentStatus: {
+              not: AppointmentStatus.CANCELLED,
+            },
+          },
+
+          _count: {
+            _all: true,
+          },
+        })
+      : [];
+
+  // Avoid separate count queries for each purchase.
+  const redemptionCountMap = new Map(
+    redemptionCounts.map((item) => [item.groupPurchaseId, item._count._all]),
+  );
+
+  // =====================================================
+  // RESPONSE
+  // =====================================================
+
   return {
-    items: purchases.map((purchase) => ({
-      id: purchase.id,
+    items: purchases.map((purchase) => {
+      const purchasedQuantity = purchase.quantity;
 
-      package: {
-        id: purchase.package.id,
-        name: purchase.package.name,
-        type: purchase.package.type,
+      const redeemedQuantity = redemptionCountMap.get(purchase.id) ?? 0;
 
-        primaryImageObjectKey: purchase.package.images[0]?.objectKey || null,
-      },
+      const remainingQuantity = Math.max(
+        0,
+        purchasedQuantity - redeemedQuantity,
+      );
 
-      quantity: purchase.quantity,
+      const canBookAppointment =
+        purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
 
-      unitPrice: Number(purchase.unitPrice),
+      return {
+        id: purchase.id,
 
-      amount: Number(purchase.amount),
+        package: {
+          id: purchase.package.id,
+          name: purchase.package.name,
+          type: purchase.package.type,
 
-      paymentStatus: purchase.paymentStatus,
+          primaryImageObjectKey: purchase.package.images[0]?.objectKey || null,
+        },
 
-      reservationExpiresAt: purchase.reservationExpiresAt,
+        quantity: purchase.quantity,
 
-      purchasedAt: purchase.purchasedAt,
+        unitPrice: Number(purchase.unitPrice),
 
-      createdAt: purchase.createdAt,
-    })),
+        amount: Number(purchase.amount),
+
+        paymentStatus: purchase.paymentStatus,
+
+        reservationExpiresAt: purchase.reservationExpiresAt,
+
+        purchasedAt: purchase.purchasedAt,
+
+        createdAt: purchase.createdAt,
+
+        // NEW
+        redemption: {
+          purchasedQuantity,
+          redeemedQuantity,
+          remainingQuantity,
+          canBookAppointment,
+        },
+      };
+    }),
 
     pagination: {
       page,
@@ -390,7 +448,6 @@ const getGroupPurchaseById = async (
             orderBy: {
               sortOrder: "asc",
             },
-
             select: {
               objectKey: true,
               isPrimary: true,
@@ -428,13 +485,43 @@ const getGroupPurchaseById = async (
     throw new AppError("Group purchase not found", 404);
   }
 
-  // Customer can only see own purchase
+  // Customer can only see own purchase.
   if (role === "CUSTOMER" && purchase.customerId !== userId) {
     throw new AppError(
       "You are not allowed to access this group purchase",
       403,
     );
   }
+
+  // =====================================================
+  // GROUP PURCHASE REDEMPTION SUMMARY
+  // =====================================================
+
+  // Keep this status filter consistent with
+  // createGroupPurchaseAppointment().
+  //
+  // CANCELLED appointments do not consume quantity.
+  // All other appointment statuses currently do.
+
+  const redeemedQuantity = await prisma.appointment.count({
+    where: {
+      groupPurchaseId: purchase.id,
+      appointmentStatus: {
+        not: AppointmentStatus.CANCELLED,
+      },
+    },
+  });
+
+  const purchasedQuantity = purchase.quantity;
+
+  const remainingQuantity = Math.max(0, purchasedQuantity - redeemedQuantity);
+
+  const canBookAppointment =
+    purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
+
+  // =====================================================
+  // EXISTING RESPONSE + REDEMPTION
+  // =====================================================
 
   return {
     id: purchase.id,
@@ -485,6 +572,14 @@ const getGroupPurchaseById = async (
     purchasedAt: purchase.purchasedAt,
 
     createdAt: purchase.createdAt,
+
+    // NEW: Customer-facing redemption information.
+    redemption: {
+      purchasedQuantity,
+      redeemedQuantity,
+      remainingQuantity,
+      canBookAppointment,
+    },
   };
 };
 

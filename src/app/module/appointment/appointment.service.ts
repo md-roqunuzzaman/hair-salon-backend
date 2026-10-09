@@ -1792,18 +1792,25 @@ const cancelAppointment = async (
   role: Role,
   payload: ICancelAppointmentPayload,
 ): Promise<ICancelAppointmentResponse> => {
+  const cancellableStatuses: AppointmentStatus[] = [
+    AppointmentStatus.RESERVED,
+    AppointmentStatus.CONFIRMED,
+  ];
+
+  // =====================================================
+  // 1. FIND APPOINTMENT
+  // =====================================================
+
   const appointment = await prisma.appointment.findUnique({
     where: {
       id: appointmentId,
     },
-
     include: {
       branch: {
         include: {
           bookingPolicy: true,
         },
       },
-
       staff: {
         select: {
           userId: true,
@@ -1817,13 +1824,11 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 1. RESOURCE SCOPE / RBAC
+  // 2. ROLE / OWNERSHIP VALIDATION
   // =====================================================
 
-  if (role === Role.CUSTOMER) {
-    if (appointment.customerId !== userId) {
-      throw new AppError("You are not allowed to cancel this appointment", 403);
-    }
+  if (role === Role.CUSTOMER && appointment.customerId !== userId) {
+    throw new AppError("You are not allowed to cancel this appointment", 403);
   }
 
   if (role === Role.BRANCH_MANAGER) {
@@ -1841,21 +1846,13 @@ const cancelAppointment = async (
     }
   }
 
-  // Contract does not allow STAFF to cancel.
   if (role === Role.STAFF) {
     throw new AppError("You are not allowed to cancel this appointment", 403);
   }
 
-  // BRAND_OWNER may cancel any appointment.
-
   // =====================================================
-  // 2. VALID STATUS TRANSITION
+  // 3. STATUS VALIDATION
   // =====================================================
-
-  const cancellableStatuses: AppointmentStatus[] = [
-    AppointmentStatus.RESERVED,
-    AppointmentStatus.CONFIRMED,
-  ];
 
   if (!cancellableStatuses.includes(appointment.appointmentStatus)) {
     throw new AppError(
@@ -1865,11 +1862,13 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 3. CUSTOMER CANCELLATION POLICY
+  // 4. CUSTOMER CANCELLATION POLICY
   // =====================================================
 
   if (role === Role.CUSTOMER) {
-    if (!appointment.branch.bookingPolicy) {
+    const policy = appointment.branch.bookingPolicy;
+
+    if (!policy) {
       throw new AppError("Branch booking policy not found", 404);
     }
 
@@ -1878,16 +1877,9 @@ const cancelAppointment = async (
       appointment.startTime,
     );
 
-    const cancellationCutoffMs =
-      appointment.branch.bookingPolicy.cancellationCutoffHours * 60 * 60 * 1000;
+    const cutoffMs = policy.cancellationCutoffHours * 60 * 60 * 1000;
 
-    const latestAllowedCancellationTime = new Date(
-      appointmentDateTime.getTime() - cancellationCutoffMs,
-    );
-
-    const now = new Date();
-
-    if (now >= latestAllowedCancellationTime) {
+    if (new Date() >= new Date(appointmentDateTime.getTime() - cutoffMs)) {
       throw new AppError(
         "Cancellation is no longer allowed for this appointment",
         422,
@@ -1896,15 +1888,24 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 4. PAID APPOINTMENT / REFUND DEPENDENCY
-  // =====================================================
-  // Do NOT fake Stripe refund.
-  // Payment/refund module is not implemented yet.
+  // 5. PAYMENT VALIDATION
   // =====================================================
 
+  const isGroupPurchase =
+    appointment.bookingMethod === BookingMethod.GROUP_PURCHASE &&
+    appointment.groupPurchaseId !== null;
+
   if (
-    appointment.paymentStatus === PaymentStatus.PAID ||
-    appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID
+    appointment.bookingMethod === BookingMethod.GROUP_PURCHASE &&
+    !appointment.groupPurchaseId
+  ) {
+    throw new AppError("Group purchase reference is missing", 409);
+  }
+
+  if (
+    !isGroupPurchase &&
+    (appointment.paymentStatus === PaymentStatus.PAID ||
+      appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID)
   ) {
     throw new AppError(
       "Paid appointment cancellation requires refund processing",
@@ -1913,82 +1914,298 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 5. CANCEL TRANSACTIONALLY
+  // 6. SERIALIZABLE TRANSACTION
   // =====================================================
 
-  const cancelledAppointment = await prisma.$transaction(async (tx) => {
-    // Re-read inside transaction so stale state is not used.
-    const current = await tx.appointment.findUnique({
-      where: {
-        id: appointmentId,
-      },
+  for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
+    try {
+      const result = await prisma.$transaction(
+        async (tx) => {
+          // ---------------------------------------------
+          // Re-read current appointment
+          // ---------------------------------------------
 
-      select: {
-        id: true,
-        customerId: true,
-        appointmentStatus: true,
-        paymentStatus: true,
-      },
-    });
+          const current = await tx.appointment.findUnique({
+            where: {
+              id: appointmentId,
+            },
+            select: {
+              id: true,
+              customerId: true,
+              branchId: true,
+              bookingMethod: true,
+              groupPurchaseId: true,
+              appointmentStatus: true,
+              paymentStatus: true,
+              date: true,
+              startTime: true,
+              branch: {
+                select: {
+                  bookingPolicy: {
+                    select: {
+                      cancellationCutoffHours: true,
+                    },
+                  },
+                },
+              },
+            },
+          });
 
-    if (!current) {
-      throw new AppError("Appointment not found", 404);
-    }
+          if (!current) {
+            throw new AppError("Appointment not found", 404);
+          }
 
-    if (!cancellableStatuses.includes(current.appointmentStatus)) {
-      throw new AppError(
-        "Appointment cannot be cancelled in its current status",
-        409,
+          // ---------------------------------------------
+          // Recheck ownership
+          // ---------------------------------------------
+
+          if (role === Role.CUSTOMER && current.customerId !== userId) {
+            throw new AppError(
+              "You are not allowed to cancel this appointment",
+              403,
+            );
+          }
+
+          // ---------------------------------------------
+          // Recheck branch manager permission
+          // ---------------------------------------------
+
+          if (role === Role.BRANCH_MANAGER) {
+            const managerBranch = await tx.branchManagerBranch.findUnique({
+              where: {
+                userId_branchId: {
+                  userId,
+                  branchId: current.branchId,
+                },
+              },
+            });
+
+            if (!managerBranch) {
+              throw new AppError(
+                "You are not allowed to cancel this appointment",
+                403,
+              );
+            }
+          }
+
+          // ---------------------------------------------
+          // Recheck status
+          // ---------------------------------------------
+
+          if (!cancellableStatuses.includes(current.appointmentStatus)) {
+            throw new AppError(
+              "Appointment cannot be cancelled in its current status",
+              409,
+            );
+          }
+
+          // ---------------------------------------------
+          // Recheck cancellation cutoff
+          // ---------------------------------------------
+
+          if (role === Role.CUSTOMER) {
+            const policy = current.branch.bookingPolicy;
+
+            if (!policy) {
+              throw new AppError("Branch booking policy not found", 404);
+            }
+
+            const appointmentDateTime = createHongKongDateTime(
+              current.date,
+              current.startTime,
+            );
+
+            const cutoffMs = policy.cancellationCutoffHours * 60 * 60 * 1000;
+
+            if (
+              new Date() >= new Date(appointmentDateTime.getTime() - cutoffMs)
+            ) {
+              throw new AppError(
+                "Cancellation is no longer allowed for this appointment",
+                422,
+              );
+            }
+          }
+
+          // ---------------------------------------------
+          // Identify Group Purchase booking
+          // ---------------------------------------------
+
+          const isCurrentGroupPurchase =
+            current.bookingMethod === BookingMethod.GROUP_PURCHASE &&
+            current.groupPurchaseId !== null;
+
+          if (
+            current.bookingMethod === BookingMethod.GROUP_PURCHASE &&
+            !current.groupPurchaseId
+          ) {
+            throw new AppError("Group purchase reference is missing", 409);
+          }
+
+          // ---------------------------------------------
+          // Preserve existing paid booking restriction
+          // ---------------------------------------------
+
+          if (
+            !isCurrentGroupPurchase &&
+            (current.paymentStatus === PaymentStatus.PAID ||
+              current.paymentStatus === PaymentStatus.PARTIALLY_PAID)
+          ) {
+            throw new AppError(
+              "Paid appointment cancellation requires refund processing",
+              422,
+            );
+          }
+
+          // ---------------------------------------------
+          // Validate linked Group Purchase
+          // ---------------------------------------------
+
+          let purchase: {
+            id: string;
+            customerId: string;
+            quantity: number;
+            paymentStatus: PaymentStatus;
+          } | null = null;
+
+          if (isCurrentGroupPurchase && current.groupPurchaseId) {
+            purchase = await tx.groupPurchase.findUnique({
+              where: {
+                id: current.groupPurchaseId,
+              },
+              select: {
+                id: true,
+                customerId: true,
+                quantity: true,
+                paymentStatus: true,
+              },
+            });
+
+            if (!purchase) {
+              throw new AppError("Associated group purchase not found", 404);
+            }
+
+            if (purchase.customerId !== current.customerId) {
+              throw new AppError("Group purchase ownership mismatch", 409);
+            }
+
+            if (purchase.paymentStatus !== PaymentStatus.PAID) {
+              throw new AppError("Group purchase is not in a paid state", 409);
+            }
+          }
+
+          // =================================================
+          // 7. CANCEL APPOINTMENT
+          // =================================================
+
+          const updated = await tx.appointment.updateMany({
+            where: {
+              id: appointmentId,
+              appointmentStatus: {
+                in: cancellableStatuses,
+              },
+            },
+            data: {
+              appointmentStatus: AppointmentStatus.CANCELLED,
+              cancelledAt: new Date(),
+              cancellationReason: payload.reason.trim(),
+            },
+          });
+
+          if (updated.count !== 1) {
+            throw new AppError(
+              "Appointment cannot be cancelled in its current status",
+              409,
+            );
+          }
+
+          // =================================================
+          // 8. CALCULATE GROUP PURCHASE QUANTITY
+          // =================================================
+
+          let groupPurchaseSummary: ICancelAppointmentResponse["groupPurchase"] =
+            undefined;
+
+          if (isCurrentGroupPurchase && purchase) {
+            const redeemedQuantity = await tx.appointment.count({
+              where: {
+                groupPurchaseId: purchase.id,
+                appointmentStatus: {
+                  not: AppointmentStatus.CANCELLED,
+                },
+              },
+            });
+
+            const remainingQuantity = Math.max(
+              0,
+              purchase.quantity - redeemedQuantity,
+            );
+
+            groupPurchaseSummary = {
+              purchaseId: purchase.id,
+              purchasedQuantity: purchase.quantity,
+              redeemedQuantity,
+              remainingQuantity,
+            };
+          }
+
+          // =================================================
+          // 9. CREATE NOTIFICATION
+          // =================================================
+
+          await notificationService.createNotification(
+            {
+              userId: current.customerId,
+              type: "BOOKING_CANCELLED",
+              title: "Booking cancelled",
+              message: "Your appointment has been cancelled.",
+            },
+            tx,
+          );
+
+          return {
+            appointmentId: current.id,
+            groupPurchase: groupPurchaseSummary,
+          };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        },
       );
+
+      // =====================================================
+      // 10. FINAL RESPONSE
+      // =====================================================
+
+      return {
+        appointmentId: result.appointmentId,
+        appointmentStatus: "CANCELLED",
+        refundStatus: "NOT_REQUIRED",
+        ...(result.groupPurchase && {
+          groupPurchase: result.groupPurchase,
+        }),
+      };
+    } catch (error) {
+      const isSerializableConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+
+      if (isSerializableConflict && attempt < MAX_TRANSACTION_RETRIES) {
+        continue;
+      }
+
+      if (isSerializableConflict) {
+        throw new AppError(
+          "Appointment cancellation conflict. Please try again",
+          409,
+        );
+      }
+
+      throw error;
     }
+  }
 
-    if (
-      current.paymentStatus === PaymentStatus.PAID ||
-      current.paymentStatus === PaymentStatus.PARTIALLY_PAID
-    ) {
-      throw new AppError(
-        "Paid appointment cancellation requires refund processing",
-        422,
-      );
-    }
-
-    const updatedAppointment = await tx.appointment.update({
-      where: {
-        id: appointmentId,
-      },
-
-      data: {
-        appointmentStatus: AppointmentStatus.CANCELLED,
-
-        cancelledAt: new Date(),
-
-        cancellationReason: payload.reason.trim(),
-      },
-
-      select: {
-        id: true,
-        appointmentStatus: true,
-      },
-    });
-
-    await notificationService.createNotification(
-      {
-        userId: current.customerId,
-        type: "BOOKING_CANCELLED",
-        title: "Booking cancelled",
-        message: "Your appointment has been cancelled.",
-      },
-      tx,
-    );
-
-    return updatedAppointment;
-  });
-
-  return {
-    appointmentId: cancelledAppointment.id,
-    appointmentStatus: "CANCELLED",
-    refundStatus: "NOT_REQUIRED",
-  };
+  throw new AppError("Unable to cancel appointment. Please try again", 409);
 };
 
 const rescheduleAppointment = async (

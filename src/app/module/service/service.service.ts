@@ -363,10 +363,6 @@ const updateService = async (
     where: {
       id: serviceId,
     },
-
-    include: {
-      images: true,
-    },
   });
 
   if (!service) {
@@ -377,14 +373,15 @@ const updateService = async (
   // 2. CHECK DUPLICATE SERVICE NAME
   // =====================================================
 
-  if (payload.name) {
+  if (payload.name !== undefined) {
+    const serviceName = payload.name.trim();
+
     const existingService = await prisma.service.findFirst({
       where: {
         name: {
-          equals: payload.name.trim(),
+          equals: serviceName,
           mode: "insensitive",
         },
-
         NOT: {
           id: serviceId,
         },
@@ -419,9 +416,9 @@ const updateService = async (
       throw new AppError("Invalid service image object key", 400);
     }
 
-    // ===================================================
-    // 4. VERIFY IMAGES ACTUALLY EXIST IN R2
-    // ===================================================
+    // =====================================================
+    // 4. VERIFY IMAGES EXIST IN CLOUDFLARE R2
+    // =====================================================
 
     await Promise.all(
       uniqueImageObjectKeys.map((objectKey) =>
@@ -460,7 +457,7 @@ const updateService = async (
     });
 
     // ================================================
-    // REPLACE SERVICE IMAGES
+    // REPLACE IMAGES ONLY WHEN PROVIDED
     // ================================================
 
     if (uniqueImageObjectKeys !== undefined) {
@@ -483,10 +480,10 @@ const updateService = async (
     }
 
     // ================================================
-    // RETURN UPDATED SERVICE WITH IMAGES
+    // FETCH UPDATED SERVICE WITH IMAGES + BRANCHES
     // ================================================
 
-    return await tx.service.findUnique({
+    return tx.service.findUnique({
       where: {
         id: serviceId,
       },
@@ -495,6 +492,25 @@ const updateService = async (
         images: {
           orderBy: {
             sortOrder: "asc",
+          },
+
+          select: {
+            id: true,
+            objectKey: true,
+            isPrimary: true,
+            sortOrder: true,
+          },
+        },
+
+        branches: {
+          select: {
+            branch: {
+              select: {
+                id: true,
+                name: true,
+                status: true,
+              },
+            },
           },
         },
       },
@@ -510,7 +526,25 @@ const updateService = async (
   }
 
   // =====================================================
-  // 7. RESPONSE
+  // 7. GENERATE CLOUDFLARE R2 SIGNED IMAGE URLS
+  // =====================================================
+
+  const images = await Promise.all(
+    updatedService.images.map(async (image) => ({
+      id: image.id,
+
+      objectKey: image.objectKey,
+
+      url: await uploadService.getImageUrl(image.objectKey),
+
+      isPrimary: image.isPrimary,
+
+      sortOrder: image.sortOrder,
+    })),
+  );
+
+  // =====================================================
+  // 8. FINAL RESPONSE
   // =====================================================
 
   return {
@@ -526,15 +560,16 @@ const updateService = async (
 
     status: updatedService.status,
 
-    images: updatedService.images.map((image) => ({
-      objectKey: image.objectKey,
+    images,
 
-      isPrimary: image.isPrimary,
-
-      sortOrder: image.sortOrder,
+    branches: updatedService.branches.map((item) => ({
+      id: item.branch.id,
+      name: item.branch.name,
+      status: item.branch.status,
     })),
   };
 };
+
 const updateServiceStatus = async (
   serviceId: string,
   payload: IUpdateServiceStatusPayload,

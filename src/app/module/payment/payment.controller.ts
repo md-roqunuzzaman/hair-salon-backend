@@ -91,10 +91,29 @@ const refundPayment = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const createGroupPurchaseStripeIntent = catchAsync(
+  async (req: Request, res: Response) => {
+    const customerId = req.user!.userId;
+
+    const result = await paymentService.createGroupPurchaseStripeIntent(
+      customerId,
+      req.body,
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.CREATED,
+      success: true,
+      message: "Group Purchase Stripe PaymentIntent created successfully",
+      data: result,
+    });
+  },
+);
+
 export const paymentController = {
   createStripeIntent,
   stripeWebhook,
   getPaymentById,
   getMyPayments,
   refundPayment,
+  createGroupPurchaseStripeIntent,
 };

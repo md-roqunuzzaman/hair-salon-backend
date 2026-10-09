@@ -74,7 +74,7 @@ const refreshToken = catchAsync(async (req: Request, res: Response) => {
     statusCode: httpStatus.OK,
     success: true,
     message: "New tokens generated successfully",
-    data: null,
+    data: { accessToken, newRefreshToken },
   });
 });
 

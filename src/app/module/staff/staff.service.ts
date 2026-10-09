@@ -9,6 +9,7 @@ import {
   PackageStatus,
   PaymentStatus,
   Prisma,
+  ReviewModerationStatus,
   Role,
   ServiceStatus,
   StaffStatus,
@@ -353,6 +354,54 @@ const createStaff = async (
     mustChangePassword: true,
   };
 };
+type ReviewSummary = {
+  averageRating: number;
+  totalReviews: number;
+  ratingBreakdown: {
+    5: number;
+    4: number;
+    3: number;
+    2: number;
+    1: number;
+  };
+};
+
+const buildReviewSummary = (
+  rows: Array<{
+    staffId: string;
+    rating: number;
+    _count: { _all: number };
+  }>,
+): ReviewSummary => {
+  const ratingBreakdown = {
+    5: 0,
+    4: 0,
+    3: 0,
+    2: 0,
+    1: 0,
+  };
+
+  let totalReviews = 0;
+  let totalRating = 0;
+
+  for (const row of rows) {
+    const rating = row.rating as 1 | 2 | 3 | 4 | 5;
+    const count = row._count._all;
+
+    if (rating >= 1 && rating <= 5) {
+      ratingBreakdown[rating] += count;
+      totalReviews += count;
+      totalRating += rating * count;
+    }
+  }
+
+  return {
+    averageRating:
+      totalReviews > 0 ? Math.round((totalRating / totalReviews) * 10) / 10 : 0,
+    totalReviews,
+    ratingBreakdown,
+  };
+};
 
 const getStaff = async (
   query: Record<string, any>,
@@ -393,7 +442,6 @@ const getStaff = async (
       where: {
         userId: requester.userId,
       },
-
       select: {
         branchId: true,
       },
@@ -404,7 +452,6 @@ const getStaff = async (
     if (allowedBranchIds.length === 0) {
       return {
         items: [],
-
         pagination: {
           page,
           limit,
@@ -459,7 +506,6 @@ const getStaff = async (
   const [staffList, total] = await Promise.all([
     prisma.staff.findMany({
       where,
-
       skip,
       take: limit,
 
@@ -510,7 +556,50 @@ const getStaff = async (
   ]);
 
   // =====================================================
-  // 6. GENERATE SIGNED AVATAR URLS
+  // 6. FETCH REVIEW SUMMARY FOR ALL STAFF
+  // =====================================================
+
+  const staffIds = staffList.map((staff) => staff.id);
+
+  const reviewGroups =
+    staffIds.length > 0
+      ? await prisma.review.groupBy({
+          by: ["staffId", "rating"],
+
+          where: {
+            staffId: {
+              in: staffIds,
+            },
+
+            moderationStatus: ReviewModerationStatus.VISIBLE,
+
+            ...(branchId && {
+              branchId,
+            }),
+          },
+
+          _count: {
+            _all: true,
+          },
+        })
+      : [];
+
+  // =====================================================
+  // 7. BUILD REVIEW SUMMARY MAP
+  // =====================================================
+
+  const reviewSummaryMap = new Map<string, ReviewSummary>();
+
+  for (const staffId of staffIds) {
+    const staffReviewGroups = reviewGroups.filter(
+      (group) => group.staffId === staffId,
+    );
+
+    reviewSummaryMap.set(staffId, buildReviewSummary(staffReviewGroups));
+  }
+
+  // =====================================================
+  // 8. GENERATE SIGNED AVATAR URLS + RESPONSE
   // =====================================================
 
   const items = await Promise.all(
@@ -540,6 +629,8 @@ const getStaff = async (
 
         status: staff.status,
 
+        reviewSummary: reviewSummaryMap.get(staff.id) ?? buildReviewSummary([]),
+
         branches: staff.branches.map((item) => ({
           id: item.branch.id,
           name: item.branch.name,
@@ -560,13 +651,13 @@ const getStaff = async (
   );
 
   // =====================================================
-  // 7. PAGINATION
+  // 9. PAGINATION
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   // =====================================================
-  // 8. RESPONSE
+  // 10. RESPONSE
   // =====================================================
 
   return {
@@ -592,6 +683,10 @@ const getStaffById = async (
     role: Role;
   },
 ) => {
+  // =====================================================
+  // 1. FIND STAFF
+  // =====================================================
+
   const staff = await prisma.staff.findUnique({
     where: {
       id: staffId,
@@ -647,7 +742,7 @@ const getStaffById = async (
   }
 
   // =====================================================
-  // BRANCH MANAGER SCOPE CHECK
+  // 2. BRANCH MANAGER SCOPE CHECK
   // =====================================================
 
   if (requester.role === Role.BRANCH_MANAGER) {
@@ -677,7 +772,27 @@ const getStaffById = async (
   }
 
   // =====================================================
-  // SIGNED AVATAR URL
+  // 3. FETCH STAFF REVIEW SUMMARY
+  // =====================================================
+
+  const reviewGroups = await prisma.review.groupBy({
+    by: ["staffId", "rating"],
+
+    where: {
+      staffId,
+
+      moderationStatus: ReviewModerationStatus.VISIBLE,
+    },
+
+    _count: {
+      _all: true,
+    },
+  });
+
+  const reviewSummary = buildReviewSummary(reviewGroups);
+
+  // =====================================================
+  // 4. SIGNED AVATAR URL
   // =====================================================
 
   const avatarUrl = staff.avatarObjectKey
@@ -685,7 +800,7 @@ const getStaffById = async (
     : null;
 
   // =====================================================
-  // RESPONSE
+  // 5. RESPONSE
   // =====================================================
 
   return {
@@ -708,6 +823,8 @@ const getStaffById = async (
     avatarUrl,
 
     status: staff.status,
+
+    reviewSummary,
 
     branches: staff.branches.map((item) => ({
       id: item.branch.id,
@@ -1664,7 +1781,59 @@ const getBranchStaff = async (branchId: string) => {
   });
 
   // =====================================================
-  // 3. GENERATE SIGNED AVATAR URLS
+  // 3. FETCH VISIBLE REVIEW SUMMARY FOR BRANCH STAFF
+  // =====================================================
+
+  const staffIds = staff.map((item) => item.id);
+
+  const reviewGroups =
+    staffIds.length > 0
+      ? await prisma.review.groupBy({
+          by: ["staffId", "rating"],
+
+          where: {
+            staffId: {
+              in: staffIds,
+            },
+
+            branchId,
+
+            moderationStatus: ReviewModerationStatus.VISIBLE,
+          },
+
+          _count: {
+            _all: true,
+          },
+        })
+      : [];
+
+  // =====================================================
+  // 4. BUILD REVIEW SUMMARY MAP
+  // =====================================================
+
+  const reviewSummaryMap = new Map<string, ReviewSummary>();
+
+  // Group review results by staffId to avoid
+  // repeatedly filtering all review groups.
+
+  const reviewGroupsByStaff = new Map<string, typeof reviewGroups>();
+
+  for (const group of reviewGroups) {
+    const existingGroups = reviewGroupsByStaff.get(group.staffId) ?? [];
+
+    existingGroups.push(group);
+
+    reviewGroupsByStaff.set(group.staffId, existingGroups);
+  }
+
+  for (const staffId of staffIds) {
+    const staffReviewGroups = reviewGroupsByStaff.get(staffId) ?? [];
+
+    reviewSummaryMap.set(staffId, buildReviewSummary(staffReviewGroups));
+  }
+
+  // =====================================================
+  // 5. GENERATE SIGNED AVATAR URLS + REVIEW SUMMARY
   // =====================================================
 
   const items = await Promise.all(
@@ -1685,12 +1854,14 @@ const getBranchStaff = async (branchId: string) => {
         avatarObjectKey: item.avatarObjectKey,
 
         avatarUrl,
+
+        reviewSummary: reviewSummaryMap.get(item.id) ?? buildReviewSummary([]),
       };
     }),
   );
 
   // =====================================================
-  // 4. RESPONSE
+  // 6. RESPONSE
   // =====================================================
 
   return {
