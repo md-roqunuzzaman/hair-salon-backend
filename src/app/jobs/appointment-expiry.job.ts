@@ -17,7 +17,7 @@ export const startAppointmentExpiryJob = () => {
         error,
       );
     }
-  });
+  }, { noOverlap: true });
 
   console.log("[Appointment Expiry Job] Started - runs every 1 minute");
 };

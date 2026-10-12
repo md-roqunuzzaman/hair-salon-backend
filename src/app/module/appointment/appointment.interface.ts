@@ -131,9 +131,7 @@ export interface IAppointmentDetails {
   id: string;
 
   bookingMethod: BookingMethodType;
-
   appointmentStatus: AppointmentStatusType;
-
   paymentStatus: PaymentStatusType;
 
   branch: {
@@ -164,14 +162,28 @@ export interface IAppointmentDetails {
 
   price: number;
   currency: string;
+
   depositPercentage: number;
   depositAmount: number;
   remainingAmount: number;
+
   amountPaid: number;
   amountDue: number;
+
+  payment: {
+    method: SalonPaymentMethod | null;
+    provider: string | null;
+    paidAt: Date | null;
+  };
+
   qr: {
     available: boolean;
     verified: boolean;
+    verifiedAt: Date | null;
+    verifiedBy: {
+      id: string;
+      name: string;
+    } | null;
   };
 
   review: {
@@ -221,11 +233,16 @@ export interface IAppointmentQrResponse {
 export interface IVerifyQrPayload {
   qrToken: string;
   branchId: string;
+  paymentMethod?: SalonPaymentMethod;
 }
 
 export interface IVerifyQrResponse {
   appointmentId: string;
+
   appointmentStatus: "CONFIRMED";
+
+  paymentStatus: PaymentStatusType;
+
   qrVerifiedAt: Date;
 
   verifiedBy: {
@@ -233,7 +250,6 @@ export interface IVerifyQrResponse {
     name: string;
   };
 }
-
 export interface ICompleteAppointmentPayload {
   notes?: string;
 }

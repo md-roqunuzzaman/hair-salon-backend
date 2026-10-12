@@ -65,6 +65,9 @@ const createPromotionValidationSchema = z.object({
     }),
 });
 
+const getPromotionsQueryValidationSchema = z.object({
+  branchId: z.string().uuid().optional(),
+});
 const updatePromotionValidationSchema = z.object({
   body: z
     .object({
@@ -161,4 +164,5 @@ export const promotionValidation = {
   createPromotionValidationSchema,
   updatePromotionValidationSchema,
   updatePromotionStatusValidationSchema,
+  getPromotionsQueryValidationSchema,
 };

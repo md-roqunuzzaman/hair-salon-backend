@@ -13,7 +13,9 @@ export default {
   redis_url: env.REDIS_URL,
   smtp_user: env.SMTP_USER,
   smtp_password: env.SMTP_PASSWORD,
-  email_sender: env.EMAIL_SENDER,
+
+  resend_api_key: process.env.RESEND_API_KEY,
+  email_sender: process.env.EMAIL_SENDER,
   brand_owner_name: process.env.BRAND_OWNER_NAME,
   brand_owner_email: process.env.BRAND_OWNER_EMAIL,
   brand_owner_password: process.env.BRAND_OWNER_PASSWORD,

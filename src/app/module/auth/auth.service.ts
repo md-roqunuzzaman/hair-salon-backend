@@ -260,6 +260,7 @@ const refreshToken = async (token: string) => {
     refreshToken: newRefreshToken,
   };
 };
+
 const logoutUser = async (userId: string, refreshToken: string) => {
   const verifiedRefreshToken = jwtUtils.verifyToken(
     refreshToken,

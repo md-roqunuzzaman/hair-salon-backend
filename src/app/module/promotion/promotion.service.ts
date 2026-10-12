@@ -1,3 +1,4 @@
+import { Prisma } from "../../../../generated/prisma/client.js";
 import { PromotionStatus, Role } from "../../../../generated/prisma/enums.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
@@ -131,24 +132,55 @@ const createPromotion = async (payload: ICreatePromotionPayload) => {
   return promotion;
 };
 
-const getPromotions = async (role: Role) => {
+// =====================================================
+// GET PROMOTIONS
+// =====================================================
+
+const getPromotions = async (role: Role, branchId?: string) => {
   const now = new Date();
 
+  // =====================================================
+  // 1. CUSTOMER MUST SELECT BRANCH
+  // =====================================================
+
+  if (role === Role.CUSTOMER && !branchId) {
+    throw new AppError("branchId is required for customers", 400);
+  }
+
+  // =====================================================
+  // 2. BUILD PROMOTION FILTER
+  // =====================================================
+
+  const where: Prisma.PromotionWhereInput = {};
+
+  // CUSTOMER: ONLY ACTIVE + CURRENTLY VALID
+  if (role === Role.CUSTOMER) {
+    where.status = PromotionStatus.ACTIVE;
+
+    where.startAt = {
+      lte: now,
+    };
+
+    where.endAt = {
+      gte: now,
+    };
+  }
+
+  // BRANCH FILTER
+  if (branchId) {
+    where.branches = {
+      some: {
+        branchId,
+      },
+    };
+  }
+
+  // =====================================================
+  // 3. FETCH PROMOTIONS
+  // =====================================================
+
   const promotions = await prisma.promotion.findMany({
-    where:
-      role === Role.CUSTOMER
-        ? {
-            status: PromotionStatus.ACTIVE,
-
-            startAt: {
-              lte: now,
-            },
-
-            endAt: {
-              gte: now,
-            },
-          }
-        : undefined,
+    where,
 
     orderBy: {
       createdAt: "desc",
@@ -185,6 +217,10 @@ const getPromotions = async (role: Role) => {
     },
   });
 
+  // =====================================================
+  // 4. GENERATE SIGNED IMAGE URLS
+  // =====================================================
+
   const items = await Promise.all(
     promotions.map(async (promotion) => {
       const imageUrl = promotion.imageObjectKey
@@ -219,30 +255,76 @@ const getPromotions = async (role: Role) => {
     }),
   );
 
+  // =====================================================
+  // 5. RESPONSE
+  // =====================================================
+
   return {
     items,
   };
 };
 
-const getPromotionById = async (promotionId: string) => {
-  const promotion = await prisma.promotion.findUnique({
-    where: {
-      id: promotionId,
-    },
+// =====================================================
+// GET SINGLE PROMOTION
+// =====================================================
+
+const getPromotionById = async (
+  promotionId: string,
+  role: Role,
+  branchId?: string,
+) => {
+  const now = new Date();
+
+  // =====================================================
+  // 1. CUSTOMER MUST SELECT BRANCH
+  // =====================================================
+
+  if (role === Role.CUSTOMER && !branchId) {
+    throw new AppError("branchId is required for customers", 400);
+  }
+
+  // =====================================================
+  // 2. BUILD FILTER
+  // =====================================================
+
+  const where: Prisma.PromotionWhereInput = {
+    id: promotionId,
+  };
+
+  if (role === Role.CUSTOMER) {
+    where.status = PromotionStatus.ACTIVE;
+
+    where.startAt = {
+      lte: now,
+    };
+
+    where.endAt = {
+      gte: now,
+    };
+  }
+
+  if (branchId) {
+    where.branches = {
+      some: {
+        branchId,
+      },
+    };
+  }
+
+  // =====================================================
+  // 3. FETCH PROMOTION
+  // =====================================================
+
+  const promotion = await prisma.promotion.findFirst({
+    where,
 
     select: {
       id: true,
-
       name: true,
-
       minimumTopup: true,
-
       bonusAmount: true,
-
       startAt: true,
-
       endAt: true,
-
       status: true,
 
       imageObjectKey: true,
@@ -264,19 +346,19 @@ const getPromotionById = async (promotionId: string) => {
           packageId: true,
         },
       },
-
-      createdAt: true,
-
-      updatedAt: true,
     },
   });
 
+  // =====================================================
+  // 4. CHECK PROMOTION
+  // =====================================================
+
   if (!promotion) {
-    throw new AppError("PROMOTION_NOT_FOUND", 404);
+    throw new AppError("Promotion not found", 404);
   }
 
   // =====================================================
-  // SIGNED PROMOTION IMAGE URL
+  // 5. GENERATE IMAGE URL
   // =====================================================
 
   const imageUrl = promotion.imageObjectKey
@@ -284,7 +366,7 @@ const getPromotionById = async (promotionId: string) => {
     : null;
 
   // =====================================================
-  // RESPONSE
+  // 6. RESPONSE
   // =====================================================
 
   return {
@@ -311,13 +393,8 @@ const getPromotionById = async (promotionId: string) => {
     serviceIds: promotion.services.map((item) => item.serviceId),
 
     packageIds: promotion.packages.map((item) => item.packageId),
-
-    createdAt: promotion.createdAt,
-
-    updatedAt: promotion.updatedAt,
   };
 };
-
 const updatePromotion = async (
   promotionId: string,
   payload: IUpdatePromotionPayload,

@@ -46,7 +46,7 @@ import {
 } from "./appointment.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 
-const PAY_NOW_HOLD_MINUTES = 2;
+const PAY_NOW_HOLD_MINUTES = 5;
 const MAX_TRANSACTION_RETRIES = 3;
 
 // =====================================================
@@ -1621,6 +1621,23 @@ const getAppointmentById = async (
           userId: true,
         },
       },
+
+      payments: {
+        where: {
+          status: PaymentStatus.PAID,
+        },
+
+        orderBy: {
+          paidAt: "desc",
+        },
+
+        select: {
+          id: true,
+          provider: true,
+          salonPaymentMethod: true,
+          paidAt: true,
+        },
+      },
     },
   });
 
@@ -1659,7 +1676,7 @@ const getAppointmentById = async (
     }
   }
 
-  // BRAND_OWNER can access any appointment.
+  // BRAND_OWNER = brand-wide access.
 
   // =====================================================
   // 3. QR STATE
@@ -1675,14 +1692,36 @@ const getAppointmentById = async (
   const qrVerified = Boolean(appointment.qrVerifiedAt);
 
   // =====================================================
-  // 4. REVIEW STATE
+  // 4. QR VERIFIED-BY USER
+  // =====================================================
+
+  let verifiedBy: {
+    id: string;
+    name: string;
+  } | null = null;
+
+  if (appointment.qrVerifiedBy) {
+    verifiedBy = await prisma.user.findUnique({
+      where: {
+        id: appointment.qrVerifiedBy,
+      },
+
+      select: {
+        id: true,
+        name: true,
+      },
+    });
+  }
+
+  // =====================================================
+  // 5. REVIEW STATE
   // =====================================================
 
   const reviewAllowed =
     appointment.appointmentStatus === AppointmentStatus.COMPLETED;
 
   // =====================================================
-  // 5. FINANCIAL STATE
+  // 6. FINANCIAL STATE
   // =====================================================
 
   const price = Number(appointment.price);
@@ -1711,7 +1750,13 @@ const getAppointmentById = async (
   }
 
   // =====================================================
-  // 6. RESPONSE DTO
+  // 7. LATEST SUCCESSFUL PAYMENT
+  // =====================================================
+
+  const latestPayment = appointment.payments[0] ?? null;
+
+  // =====================================================
+  // 8. RESPONSE DTO
   // =====================================================
   // IMPORTANT:
   // Use booking-time snapshot values.
@@ -1768,9 +1813,17 @@ const getAppointmentById = async (
     amountPaid,
     amountDue,
 
+    payment: {
+      method: latestPayment?.salonPaymentMethod ?? null,
+      provider: latestPayment?.provider ?? null,
+      paidAt: latestPayment?.paidAt ?? null,
+    },
+
     qr: {
       available: qrAvailable,
       verified: qrVerified,
+      verifiedAt: appointment.qrVerifiedAt,
+      verifiedBy,
     },
 
     review: {
@@ -1779,7 +1832,6 @@ const getAppointmentById = async (
     },
   };
 };
-
 const createHongKongDateTime = (date: Date, time: string) => {
   const datePart = date.toISOString().slice(0, 10);
 
@@ -2572,11 +2624,22 @@ const verifyQr = async (
   role: Role,
   payload: IVerifyQrPayload,
 ): Promise<IVerifyQrResponse> => {
-  // GET /appointments/:id/qr returns:
-  // reservation:<token>
-  //
-  // Contract request uses raw qrToken.
-  // For operational robustness, backend accepts either.
+  // =====================================================
+  // 0. ROLE VALIDATION
+  // =====================================================
+
+  if (
+    role !== Role.BRAND_OWNER &&
+    role !== Role.BRANCH_MANAGER &&
+    role !== Role.STAFF
+  ) {
+    throw new AppError("You are not allowed to verify appointment QR", 403);
+  }
+
+  // =====================================================
+  // 1. NORMALIZE QR TOKEN
+  // =====================================================
+
   const qrToken = payload.qrToken.startsWith("reservation:")
     ? payload.qrToken.slice("reservation:".length)
     : payload.qrToken;
@@ -2586,7 +2649,7 @@ const verifyQr = async (
   }
 
   // =====================================================
-  // 1. FIND APPOINTMENT BY QR TOKEN
+  // 2. FIND APPOINTMENT
   // =====================================================
 
   const appointment = await prisma.appointment.findFirst({
@@ -2614,15 +2677,25 @@ const verifyQr = async (
   }
 
   // =====================================================
-  // 2. PAY NOW MUST NEVER USE RESERVATION QR
+  // 3. BOOKING METHOD VALIDATION
   // =====================================================
 
   if (appointment.bookingMethod === BookingMethod.PAY_NOW) {
     throw new AppError("QR is not allowed for Pay Now appointments", 409);
   }
 
+  if (
+    appointment.bookingMethod !== BookingMethod.RESERVE_NOW &&
+    appointment.bookingMethod !== BookingMethod.DEPOSIT
+  ) {
+    throw new AppError(
+      "QR verification is not supported for this booking method",
+      409,
+    );
+  }
+
   // =====================================================
-  // 3. BRANCH MUST MATCH
+  // 4. BRANCH VALIDATION
   // =====================================================
 
   if (appointment.branchId !== payload.branchId) {
@@ -2630,7 +2703,7 @@ const verifyQr = async (
   }
 
   // =====================================================
-  // 4. AUTHORIZATION / BRANCH SCOPE
+  // 5. ROLE / BRANCH AUTHORIZATION
   // =====================================================
 
   if (role === Role.BRANCH_MANAGER) {
@@ -2652,7 +2725,6 @@ const verifyQr = async (
   }
 
   if (role === Role.STAFF) {
-    // Authorized STAFF = assigned staff for appointment.
     if (appointment.staff.userId !== userId) {
       throw new AppError(
         "You are not allowed to verify this appointment QR",
@@ -2661,10 +2733,8 @@ const verifyQr = async (
     }
   }
 
-  // BRAND_OWNER = brand-wide access.
-
   // =====================================================
-  // 5. ALREADY USED
+  // 6. QR ALREADY USED
   // =====================================================
 
   if (appointment.qrVerifiedAt) {
@@ -2672,7 +2742,7 @@ const verifyQr = async (
   }
 
   // =====================================================
-  // 6. VALID APPOINTMENT STATUS
+  // 7. APPOINTMENT STATUS
   // =====================================================
 
   if (appointment.appointmentStatus !== AppointmentStatus.RESERVED) {
@@ -2680,12 +2750,33 @@ const verifyQr = async (
   }
 
   // =====================================================
-  // 7. QR EXPIRY
+  // 8. PAYMENT VALIDATION
   // =====================================================
-  // Current booking policy:
-  // reserveExpiryRule = APPOINTMENT_TIME
-  //
-  // So reservation QR is valid only before appointment start.
+
+  if (appointment.bookingMethod === BookingMethod.RESERVE_NOW) {
+    if (!payload.paymentMethod) {
+      throw new AppError(
+        "Payment method is required for reservation verification",
+        400,
+      );
+    }
+
+    if (appointment.paymentStatus !== PaymentStatus.UNPAID) {
+      throw new AppError("Reservation payment has already been recorded", 409);
+    }
+  }
+
+  if (appointment.bookingMethod === BookingMethod.DEPOSIT) {
+    if (
+      appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID &&
+      appointment.paymentStatus !== PaymentStatus.PAID
+    ) {
+      throw new AppError("Deposit payment is not in a valid state", 409);
+    }
+  }
+
+  // =====================================================
+  // 9. QR EXPIRY
   // =====================================================
 
   const appointmentDate = appointment.date.toISOString().slice(0, 10);
@@ -2699,7 +2790,7 @@ const verifyQr = async (
   }
 
   // =====================================================
-  // 8. VERIFIED-BY USER
+  // 10. VERIFIED-BY USER
   // =====================================================
 
   const verifiedByUser = await prisma.user.findUnique({
@@ -2718,122 +2809,346 @@ const verifyQr = async (
   }
 
   // =====================================================
-  // 9. ATOMIC SINGLE-USE QR VERIFICATION
+  // 11. SERIALIZABLE TRANSACTION + RETRY
   // =====================================================
 
-  const qrVerifiedAt = new Date();
+  for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
+    try {
+      const result = await prisma.$transaction(
+        async (tx) => {
+          // =============================================
+          // 12. RECHECK CURRENT APPOINTMENT
+          // =============================================
 
-  const result = await prisma.$transaction(async (tx) => {
-    const current = await tx.appointment.findUnique({
-      where: {
-        id: appointment.id,
-      },
+          const current = await tx.appointment.findUnique({
+            where: {
+              id: appointment.id,
+            },
 
-      select: {
-        id: true,
-        customerId: true,
-        bookingMethod: true,
-        appointmentStatus: true,
-        qrVerifiedAt: true,
-        qrToken: true,
-        branchId: true,
-      },
-    });
+            select: {
+              id: true,
+              customerId: true,
+              branchId: true,
+              bookingMethod: true,
+              appointmentStatus: true,
+              paymentStatus: true,
+              qrVerifiedAt: true,
+              qrToken: true,
+              price: true,
+              currency: true,
+              date: true,
+              startTime: true,
+              staff: {
+                select: {
+                  userId: true,
+                },
+              },
+            },
+          });
 
-    if (!current || current.qrToken !== qrToken) {
-      throw new AppError("Invalid QR", 404);
-    }
+          if (!current || current.qrToken !== qrToken) {
+            throw new AppError("Invalid QR", 404);
+          }
 
-    if (current.bookingMethod === BookingMethod.PAY_NOW) {
-      throw new AppError("QR is not allowed for Pay Now appointments", 409);
-    }
+          if (
+            current.bookingMethod !== BookingMethod.RESERVE_NOW &&
+            current.bookingMethod !== BookingMethod.DEPOSIT
+          ) {
+            throw new AppError(
+              "QR verification is not supported for this booking method",
+              409,
+            );
+          }
 
-    if (current.branchId !== payload.branchId) {
-      throw new AppError("QR does not belong to this branch", 403);
-    }
+          if (current.branchId !== payload.branchId) {
+            throw new AppError("QR does not belong to this branch", 403);
+          }
 
-    if (current.qrVerifiedAt) {
-      throw new AppError("QR has already been used", 409);
-    }
+          if (current.qrVerifiedAt) {
+            throw new AppError("QR has already been used", 409);
+          }
 
-    if (current.appointmentStatus !== AppointmentStatus.RESERVED) {
-      throw new AppError("QR cannot be verified for this appointment", 409);
-    }
+          if (current.appointmentStatus !== AppointmentStatus.RESERVED) {
+            throw new AppError(
+              "QR cannot be verified for this appointment",
+              409,
+            );
+          }
 
-    const updatedAppointment = await tx.appointment.update({
-      where: {
-        id: current.id,
-      },
+          // =============================================
+          // 13. FINAL AUTHORIZATION RECHECK
+          // =============================================
 
-      data: {
-        appointmentStatus: AppointmentStatus.CONFIRMED,
+          if (role === Role.STAFF) {
+            if (current.staff.userId !== userId) {
+              throw new AppError(
+                "You are not allowed to verify this appointment QR",
+                403,
+              );
+            }
+          }
 
-        qrVerifiedAt,
+          if (role === Role.BRANCH_MANAGER) {
+            const managerBranch = await tx.branchManagerBranch.findUnique({
+              where: {
+                userId_branchId: {
+                  userId,
+                  branchId: current.branchId,
+                },
+              },
+            });
 
-        qrVerifiedBy: userId,
-      },
+            if (!managerBranch) {
+              throw new AppError(
+                "You are not allowed to verify QR for this branch",
+                403,
+              );
+            }
+          }
 
-      select: {
-        id: true,
-        appointmentStatus: true,
-        qrVerifiedAt: true,
-      },
-    });
+          // =============================================
+          // 14. FINAL QR EXPIRY CHECK
+          // =============================================
 
-    await notificationService.createNotification(
-      {
-        userId: current.customerId,
-        type: "BOOKING_CONFIRMED",
-        title: "Booking confirmed",
-        message: "Your reservation has been confirmed.",
-      },
-      tx,
-    );
+          const currentDate = current.date.toISOString().slice(0, 10);
 
-    // =====================================================
-    // AUDIT LOG
-    // =====================================================
+          const currentAppointmentDateTime = new Date(
+            `${currentDate}T${current.startTime}:00+08:00`,
+          );
 
-    await auditLogService.createAuditLog(
-      {
-        userId,
+          const qrVerifiedAt = new Date();
 
-        action: "QR_VERIFIED",
+          if (qrVerifiedAt >= currentAppointmentDateTime) {
+            throw new AppError("QR has expired", 410);
+          }
 
-        entityType: "APPOINTMENT",
+          // =============================================
+          // 15. PAYMENT STATE VALIDATION
+          // =============================================
 
-        entityId: current.id,
+          if (current.bookingMethod === BookingMethod.RESERVE_NOW) {
+            if (!payload.paymentMethod) {
+              throw new AppError(
+                "Payment method is required for reservation verification",
+                400,
+              );
+            }
 
-        metadata: {
-          previousStatus: current.appointmentStatus,
-          newStatus: AppointmentStatus.CONFIRMED,
-          branchId: current.branchId,
-          bookingMethod: current.bookingMethod,
-          qrVerifiedAt: qrVerifiedAt.toISOString(),
-          performedByRole: role,
+            if (current.paymentStatus !== PaymentStatus.UNPAID) {
+              throw new AppError(
+                "Reservation payment has already been recorded",
+                409,
+              );
+            }
+          }
+
+          if (current.bookingMethod === BookingMethod.DEPOSIT) {
+            if (
+              current.paymentStatus !== PaymentStatus.PARTIALLY_PAID &&
+              current.paymentStatus !== PaymentStatus.PAID
+            ) {
+              throw new AppError(
+                "Deposit payment is not in a valid state",
+                409,
+              );
+            }
+          }
+
+          // =============================================
+          // 16. ATOMIC SINGLE-USE QR CLAIM
+          // =============================================
+
+          const claimResult = await tx.appointment.updateMany({
+            where: {
+              id: current.id,
+              qrToken,
+              qrVerifiedAt: null,
+              appointmentStatus: AppointmentStatus.RESERVED,
+              paymentStatus: current.paymentStatus,
+            },
+
+            data: {
+              appointmentStatus: AppointmentStatus.CONFIRMED,
+
+              ...(current.bookingMethod === BookingMethod.RESERVE_NOW
+                ? {
+                    paymentStatus: PaymentStatus.PAID,
+                  }
+                : {}),
+
+              qrVerifiedAt,
+              qrVerifiedBy: userId,
+            },
+          });
+
+          if (claimResult.count !== 1) {
+            throw new AppError(
+              "QR has already been used or appointment state changed",
+              409,
+            );
+          }
+
+          // =============================================
+          // 17. RECORD FULL SALON PAYMENT
+          // =============================================
+
+          let paymentId: string | null = null;
+
+          if (current.bookingMethod === BookingMethod.RESERVE_NOW) {
+            const payment = await tx.payment.create({
+              data: {
+                customerId: current.customerId,
+
+                appointmentId: current.id,
+
+                purpose: PaymentPurpose.APPOINTMENT,
+
+                provider: PaymentProvider.SALON,
+
+                salonPaymentMethod: payload.paymentMethod!,
+
+                amount: current.price,
+
+                currency: current.currency,
+
+                status: PaymentStatus.PAID,
+
+                paidAt: qrVerifiedAt,
+              },
+            });
+
+            paymentId = payment.id;
+          }
+
+          // =============================================
+          // 18. GET UPDATED APPOINTMENT
+          // =============================================
+
+          const updatedAppointment = await tx.appointment.findUniqueOrThrow({
+            where: {
+              id: current.id,
+            },
+
+            select: {
+              id: true,
+              customerId: true,
+              appointmentStatus: true,
+              paymentStatus: true,
+              qrVerifiedAt: true,
+            },
+          });
+
+          // =============================================
+          // 19. CUSTOMER NOTIFICATION
+          // =============================================
+
+          await notificationService.createNotification(
+            {
+              userId: current.customerId,
+              type: "BOOKING_CONFIRMED",
+              title: "Booking confirmed",
+              message:
+                current.bookingMethod === BookingMethod.RESERVE_NOW
+                  ? "Your reservation has been confirmed and full payment has been recorded."
+                  : "Your deposit reservation has been confirmed.",
+            },
+            tx,
+          );
+
+          // =============================================
+          // 20. AUDIT LOG
+          // =============================================
+
+          await auditLogService.createAuditLog(
+            {
+              userId,
+
+              action: "QR_VERIFIED",
+
+              entityType: "APPOINTMENT",
+
+              entityId: current.id,
+
+              metadata: {
+                previousStatus: current.appointmentStatus,
+
+                newStatus: AppointmentStatus.CONFIRMED,
+
+                previousPaymentStatus: current.paymentStatus,
+
+                newPaymentStatus: updatedAppointment.paymentStatus,
+
+                branchId: current.branchId,
+
+                bookingMethod: current.bookingMethod,
+
+                paymentId,
+
+                paymentMethod:
+                  current.bookingMethod === BookingMethod.RESERVE_NOW
+                    ? payload.paymentMethod
+                    : null,
+
+                paymentProvider:
+                  current.bookingMethod === BookingMethod.RESERVE_NOW
+                    ? PaymentProvider.SALON
+                    : null,
+
+                qrVerifiedAt: qrVerifiedAt.toISOString(),
+
+                performedByRole: role,
+              },
+            },
+            tx,
+          );
+
+          return updatedAppointment;
         },
-      },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        },
+      );
 
-      tx,
-    );
+      // =====================================================
+      // 21. FINAL RESPONSE
+      // =====================================================
 
-    return updatedAppointment;
-  });
+      if (!result.qrVerifiedAt) {
+        throw new AppError("QR verification failed", 500);
+      }
 
-  if (!result.qrVerifiedAt) {
-    throw new AppError("QR verification failed", 500);
+      return {
+        appointmentId: result.id,
+
+        appointmentStatus: "CONFIRMED",
+
+        paymentStatus: result.paymentStatus,
+
+        qrVerifiedAt: result.qrVerifiedAt,
+
+        verifiedBy: {
+          id: verifiedByUser.id,
+          name: verifiedByUser.name,
+        },
+      };
+    } catch (error) {
+      const isSerializableConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+
+      if (isSerializableConflict && attempt < MAX_TRANSACTION_RETRIES) {
+        continue;
+      }
+
+      if (isSerializableConflict) {
+        throw new AppError("QR verification conflict. Please try again", 409);
+      }
+
+      throw error;
+    }
   }
 
-  return {
-    appointmentId: result.id,
-    appointmentStatus: "CONFIRMED",
-    qrVerifiedAt: result.qrVerifiedAt,
-
-    verifiedBy: {
-      id: verifiedByUser.id,
-      name: verifiedByUser.name,
-    },
-  };
+  throw new AppError("Unable to verify QR. Please try again", 409);
 };
 
 const completeAppointment = async (

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SalonPaymentMethod } from "../../../../generated/prisma/enums.js";
 
 const createPayNowValidationSchema = z.object({
   body: z
@@ -133,12 +134,13 @@ const rescheduleAppointmentValidationSchema = z.object({
     staffId: z.uuid("Invalid staffId").nullable().optional(),
   }),
 });
-
 const verifyQrValidationSchema = z.object({
   body: z.object({
     qrToken: z.string().trim().min(1, "QR token is required"),
 
     branchId: z.uuid("Invalid branchId"),
+
+    paymentMethod: z.enum(SalonPaymentMethod).optional(),
   }),
 });
 

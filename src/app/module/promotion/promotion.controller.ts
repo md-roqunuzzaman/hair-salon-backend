@@ -7,6 +7,8 @@ import { sendResponse } from "../../utils/sendResponse.js";
 
 import { promotionService } from "./promotion.service.js";
 import { AppError } from "../../utils/app-error.js";
+import { Role } from "../../../../generated/prisma/enums.js";
+import z from "zod";
 
 const createPromotion = catchAsync(async (req: Request, res: Response) => {
   const result = await promotionService.createPromotion(req.body);
@@ -19,36 +21,90 @@ const createPromotion = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
-const getPromotions = catchAsync(async (req: Request, res: Response) => {
-  const role = req.user!.role;
+// =====================================================
+// GET PROMOTIONS
+// =====================================================
 
-  const result = await promotionService.getPromotions(role);
+const getPromotions = catchAsync(async (req: Request, res: Response) => {
+  const role = req.user!.role as Role;
+
+  const branchId =
+    typeof req.query.branchId === "string" ? req.query.branchId : undefined;
+
+  // Validate branchId
+  if (
+    req.query.branchId !== undefined &&
+    (!branchId || !z.uuid().safeParse(branchId).success)
+  ) {
+    throw new AppError("Invalid branchId", 400);
+  }
+
+  const result = await promotionService.getPromotions(role, branchId);
 
   sendResponse(res, {
     success: true,
-    statusCode: httpStatus.OK,
-    message: "Promotions fetched successfully",
+    statusCode: 200,
+    message: "Promotions retrieved successfully",
     data: result,
   });
 });
+// =====================================================
+// GET SINGLE PROMOTION
+// =====================================================
 
 const getPromotionById = catchAsync(async (req: Request, res: Response) => {
+  const role = req.user!.role as Role;
+
+  // =====================================================
+  // 1. VALIDATE PROMOTION ID
+  // =====================================================
+
   const promotionId = req.params.promotionId;
 
-  if (!promotionId || Array.isArray(promotionId)) {
+  if (
+    typeof promotionId !== "string" ||
+    !z.string().uuid().safeParse(promotionId).success
+  ) {
     throw new AppError("Invalid promotionId", 400);
   }
 
-  const result = await promotionService.getPromotionById(promotionId);
+  // =====================================================
+  // 2. VALIDATE BRANCH ID
+  // =====================================================
+
+  const rawBranchId = req.query.branchId;
+
+  if (
+    rawBranchId !== undefined &&
+    (typeof rawBranchId !== "string" ||
+      !z.string().uuid().safeParse(rawBranchId).success)
+  ) {
+    throw new AppError("Invalid branchId", 400);
+  }
+
+  const branchId = typeof rawBranchId === "string" ? rawBranchId : undefined;
+
+  // =====================================================
+  // 3. GET PROMOTION
+  // =====================================================
+
+  const result = await promotionService.getPromotionById(
+    promotionId,
+    role,
+    branchId,
+  );
+
+  // =====================================================
+  // 4. SEND RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     success: true,
-    statusCode: httpStatus.OK,
-    message: "Promotion fetched successfully",
+    statusCode: 200,
+    message: "Promotion retrieved successfully",
     data: result,
   });
 });
-
 const updatePromotion = catchAsync(async (req: Request, res: Response) => {
   const promotionId = req.params.promotionId;
 
