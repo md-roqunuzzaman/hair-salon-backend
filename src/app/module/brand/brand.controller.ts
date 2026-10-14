@@ -3,10 +3,21 @@ import httpStatus from "http-status";
 
 import { catchAsync } from "../../utils/catchAsync.js";
 import { sendResponse } from "../../utils/sendResponse.js";
+
+import { DEFAULT_LANGUAGE, isLanguage } from "../../utils/language.js";
+
 import { brandService } from "./brand.service.js";
 
+// =====================================================
+// GET BRAND
+// =====================================================
+
 const getBrand = catchAsync(async (req: Request, res: Response) => {
-  const result = await brandService.getBrand();
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await brandService.getBrand(language);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -16,8 +27,16 @@ const getBrand = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+// =====================================================
+// UPDATE BRAND
+// =====================================================
+
 const updateBrand = catchAsync(async (req: Request, res: Response) => {
-  const result = await brandService.updateBrand(req.body);
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await brandService.updateBrand(req.body, language);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

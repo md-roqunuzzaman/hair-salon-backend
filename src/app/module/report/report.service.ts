@@ -14,6 +14,8 @@ import {
 
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { getLocalizedContent } from "../../utils/localization.js";
 
 import {
   IBookingConversionReportQuery,
@@ -29,7 +31,14 @@ import {
 
 const roundPercentage = (value: number) => Number(value.toFixed(2));
 
-const getBranchReport = async (query: IReportDateQuery) => {
+const getBranchReport = async (
+  query: IReportDateQuery,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. DATE FILTER
+  // =====================================================
+
   const appointmentDateFilter =
     query.from || query.to
       ? {
@@ -43,6 +52,10 @@ const getBranchReport = async (query: IReportDateQuery) => {
         }
       : undefined;
 
+  // =====================================================
+  // 2. FETCH BRANCHES
+  // =====================================================
+
   const branches = await prisma.branch.findMany({
     orderBy: {
       name: "asc",
@@ -51,6 +64,10 @@ const getBranchReport = async (query: IReportDateQuery) => {
     select: {
       id: true,
       name: true,
+
+      // NEW: Multilingual translations
+      translations: true,
+
       status: true,
 
       staff: {
@@ -61,8 +78,22 @@ const getBranchReport = async (query: IReportDateQuery) => {
     },
   });
 
+  // =====================================================
+  // 3. BUILD BRANCH REPORT
+  // =====================================================
+
   const items = await Promise.all(
     branches.map(async (branch) => {
+      // NEW: Localize branch name
+      // Fallback: requested language -> English -> original name
+      const localizedBranch = getLocalizedContent(
+        branch.translations,
+        language,
+        {
+          name: branch.name,
+        },
+      );
+
       const baseWhere = {
         branchId: branch.id,
 
@@ -73,18 +104,14 @@ const getBranchReport = async (query: IReportDateQuery) => {
 
       const [
         totalAppointments,
-
         payNow,
         reserveNow,
-
         confirmed,
         completed,
         cancelled,
         noShow,
-
         reserveCompleted,
         reserveNoShow,
-
         completedValue,
       ] = await Promise.all([
         prisma.appointment.count({
@@ -136,9 +163,7 @@ const getBranchReport = async (query: IReportDateQuery) => {
         prisma.appointment.count({
           where: {
             ...baseWhere,
-
             bookingMethod: BookingMethod.RESERVE_NOW,
-
             appointmentStatus: AppointmentStatus.COMPLETED,
           },
         }),
@@ -146,9 +171,7 @@ const getBranchReport = async (query: IReportDateQuery) => {
         prisma.appointment.count({
           where: {
             ...baseWhere,
-
             bookingMethod: BookingMethod.RESERVE_NOW,
-
             appointmentStatus: AppointmentStatus.NO_SHOW,
           },
         }),
@@ -156,7 +179,6 @@ const getBranchReport = async (query: IReportDateQuery) => {
         prisma.appointment.aggregate({
           where: {
             ...baseWhere,
-
             appointmentStatus: AppointmentStatus.COMPLETED,
           },
 
@@ -165,6 +187,10 @@ const getBranchReport = async (query: IReportDateQuery) => {
           },
         }),
       ]);
+
+      // =====================================================
+      // 4. CALCULATE REPORT RATES
+      // =====================================================
 
       const completionRate =
         totalAppointments === 0
@@ -191,9 +217,16 @@ const getBranchReport = async (query: IReportDateQuery) => {
           ? 0
           : roundPercentage((reserveNoShow / reserveNow) * 100);
 
+      // =====================================================
+      // 5. RESPONSE
+      // =====================================================
+
       return {
         branchId: branch.id,
-        branchName: branch.name,
+
+        // NEW: Localized branch name
+        branchName: localizedBranch.name,
+
         branchStatus: branch.status,
 
         staffCount: branch.staff.length,
@@ -226,6 +259,10 @@ const getBranchReport = async (query: IReportDateQuery) => {
     }),
   );
 
+  // =====================================================
+  // 6. FINAL RESPONSE
+  // =====================================================
+
   return {
     period: {
       from: query.from ?? null,
@@ -235,7 +272,6 @@ const getBranchReport = async (query: IReportDateQuery) => {
     items,
   };
 };
-
 const getBookingConversionReport = async (
   query: IBookingConversionReportQuery,
   userId: string,
@@ -665,7 +701,9 @@ const getBookingConversionReport = async (
   };
 };
 
-const getServiceReport = async (): Promise<IServiceReportResponse> => {
+const getServiceReport = async (
+  language: Language = DEFAULT_LANGUAGE,
+): Promise<IServiceReportResponse> => {
   // =====================================================
   // 1. FETCH SERVICE APPOINTMENT METRICS
   // =====================================================
@@ -677,9 +715,7 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
     noShowGroups,
     revenueGroups,
   ] = await Promise.all([
-    // -----------------------------------------------------
     // Total bookings per service
-    // -----------------------------------------------------
     prisma.appointment.groupBy({
       by: ["serviceId"],
 
@@ -694,9 +730,7 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
       },
     }),
 
-    // -----------------------------------------------------
     // Completed appointments per service
-    // -----------------------------------------------------
     prisma.appointment.groupBy({
       by: ["serviceId"],
 
@@ -713,9 +747,7 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
       },
     }),
 
-    // -----------------------------------------------------
     // Cancelled appointments per service
-    // -----------------------------------------------------
     prisma.appointment.groupBy({
       by: ["serviceId"],
 
@@ -732,9 +764,7 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
       },
     }),
 
-    // -----------------------------------------------------
     // No-show appointments per service
-    // -----------------------------------------------------
     prisma.appointment.groupBy({
       by: ["serviceId"],
 
@@ -751,9 +781,7 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
       },
     }),
 
-    // -----------------------------------------------------
-    // Revenue from actually completed services only
-    // -----------------------------------------------------
+    // Revenue from completed services only
     prisma.appointment.groupBy({
       by: ["serviceId"],
 
@@ -786,7 +814,7 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
   }
 
   // =====================================================
-  // 3. FETCH SERVICE NAMES
+  // 3. FETCH SERVICE NAMES + TRANSLATIONS
   // =====================================================
 
   const services = await prisma.service.findMany({
@@ -799,6 +827,9 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
     select: {
       id: true,
       name: true,
+
+      // NEW: Multilingual translations
+      translations: true,
     },
   });
 
@@ -806,8 +837,19 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
   // 4. LOOKUP MAPS
   // =====================================================
 
+  // NEW: Localized service name map
   const serviceNameMap = new Map(
-    services.map((service) => [service.id, service.name]),
+    services.map((service) => {
+      const localizedService = getLocalizedContent(
+        service.translations,
+        language,
+        {
+          name: service.name,
+        },
+      );
+
+      return [service.id, localizedService.name];
+    }),
   );
 
   const completedMap = new Map(
@@ -876,6 +918,7 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
       return {
         serviceId,
 
+        // NEW: Localized service name
         serviceName: serviceNameMap.get(serviceId) ?? "Unknown Service",
 
         bookingCount: group._count._all,
@@ -895,7 +938,9 @@ const getServiceReport = async (): Promise<IServiceReportResponse> => {
   };
 };
 
-const getPackageReport = async (): Promise<IPackageReportResponse> => {
+const getPackageReport = async (
+  language: Language = DEFAULT_LANGUAGE,
+): Promise<IPackageReportResponse> => {
   // =====================================================
   // 1. FETCH PACKAGE APPOINTMENT METRICS
   // =====================================================
@@ -1001,7 +1046,7 @@ const getPackageReport = async (): Promise<IPackageReportResponse> => {
   }
 
   // =====================================================
-  // 3. FETCH PACKAGE NAMES
+  // 3. FETCH PACKAGE NAMES + TRANSLATIONS
   // =====================================================
 
   const packages = await prisma.package.findMany({
@@ -1014,6 +1059,9 @@ const getPackageReport = async (): Promise<IPackageReportResponse> => {
     select: {
       id: true,
       name: true,
+
+      // NEW: Multilingual translations
+      translations: true,
     },
   });
 
@@ -1021,7 +1069,16 @@ const getPackageReport = async (): Promise<IPackageReportResponse> => {
   // 4. LOOKUP MAPS
   // =====================================================
 
-  const packageNameMap = new Map(packages.map((pkg) => [pkg.id, pkg.name]));
+  // NEW: Localized package name map
+  const packageNameMap = new Map(
+    packages.map((pkg) => {
+      const localizedPackage = getLocalizedContent(pkg.translations, language, {
+        name: pkg.name,
+      });
+
+      return [pkg.id, localizedPackage.name];
+    }),
+  );
 
   const completedMap = new Map(
     completedGroups
@@ -1089,6 +1146,7 @@ const getPackageReport = async (): Promise<IPackageReportResponse> => {
       return {
         packageId,
 
+        // NEW: Localized package name
         packageName: packageNameMap.get(packageId) ?? "Unknown Package",
 
         bookingCount: group._count._all,
@@ -1107,127 +1165,137 @@ const getPackageReport = async (): Promise<IPackageReportResponse> => {
     items,
   };
 };
+const getGroupPurchaseReport = async (
+  language: Language = DEFAULT_LANGUAGE,
+): Promise<IGroupPurchaseReportResponse> => {
+  // =====================================================
+  // 1. FETCH ALL GROUP PURCHASE PACKAGES
+  // =====================================================
 
-const getGroupPurchaseReport =
-  async (): Promise<IGroupPurchaseReportResponse> => {
-    // =====================================================
-    // 1. FETCH ALL GROUP PURCHASE PACKAGES
-    // =====================================================
+  const packages = await prisma.package.findMany({
+    where: {
+      type: PackageType.GROUP_PURCHASE_PACKAGE,
+    },
 
-    const packages = await prisma.package.findMany({
-      where: {
-        type: PackageType.GROUP_PURCHASE_PACKAGE,
+    select: {
+      id: true,
+      name: true,
+
+      // NEW: Multilingual translations
+      translations: true,
+
+      capacity: true,
+      soldQuantity: true,
+      listingStatus: true,
+    },
+
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  if (packages.length === 0) {
+    return {
+      items: [],
+    };
+  }
+
+  // =====================================================
+  // 2. PACKAGE IDS
+  // =====================================================
+
+  const packageIds = packages.map((pkg) => pkg.id);
+
+  // =====================================================
+  // 3. FETCH SUCCESSFULLY PAID PURCHASES
+  // =====================================================
+
+  const paidPurchases = await prisma.groupPurchase.findMany({
+    where: {
+      packageId: {
+        in: packageIds,
       },
 
-      select: {
-        id: true,
-        name: true,
-        capacity: true,
-        soldQuantity: true,
-        listingStatus: true,
-      },
+      paymentStatus: PaymentStatus.PAID,
+    },
 
-      orderBy: {
-        createdAt: "desc",
-      },
-    });
+    select: {
+      packageId: true,
+      customerId: true,
+      amount: true,
+    },
+  });
 
-    if (packages.length === 0) {
-      return {
-        items: [],
-      };
+  // =====================================================
+  // 4. BUILD SALES + CUSTOMER MAPS
+  // =====================================================
+
+  const salesAmountMap = new Map<string, number>();
+
+  const uniqueCustomerMap = new Map<string, Set<string>>();
+
+  for (const purchase of paidPurchases) {
+    const currentSales = salesAmountMap.get(purchase.packageId) ?? 0;
+
+    salesAmountMap.set(
+      purchase.packageId,
+      currentSales + Number(purchase.amount),
+    );
+
+    if (!uniqueCustomerMap.has(purchase.packageId)) {
+      uniqueCustomerMap.set(purchase.packageId, new Set<string>());
     }
 
-    // =====================================================
-    // 2. PACKAGE IDS
-    // =====================================================
+    uniqueCustomerMap.get(purchase.packageId)!.add(purchase.customerId);
+  }
 
-    const packageIds = packages.map((pkg) => pkg.id);
+  // =====================================================
+  // 5. RESPONSE DTO WITH LOCALIZATION
+  // =====================================================
 
-    // =====================================================
-    // 3. FETCH SUCCESSFULLY PAID PURCHASES
-    // =====================================================
-
-    const paidPurchases = await prisma.groupPurchase.findMany({
-      where: {
-        packageId: {
-          in: packageIds,
-        },
-
-        paymentStatus: PaymentStatus.PAID,
-      },
-
-      select: {
-        packageId: true,
-        customerId: true,
-        amount: true,
-      },
+  const items = packages.map((pkg) => {
+    // NEW: Localized package name
+    const localizedPackage = getLocalizedContent(pkg.translations, language, {
+      name: pkg.name,
     });
 
-    // =====================================================
-    // 4. BUILD SALES + CUSTOMER MAPS
-    // =====================================================
+    const capacity = pkg.capacity ?? 0;
 
-    const salesAmountMap = new Map<string, number>();
+    const soldQuantity = pkg.soldQuantity;
 
-    const uniqueCustomerMap = new Map<string, Set<string>>();
-
-    for (const purchase of paidPurchases) {
-      const currentSales = salesAmountMap.get(purchase.packageId) ?? 0;
-
-      salesAmountMap.set(
-        purchase.packageId,
-        currentSales + Number(purchase.amount),
-      );
-
-      if (!uniqueCustomerMap.has(purchase.packageId)) {
-        uniqueCustomerMap.set(purchase.packageId, new Set<string>());
-      }
-
-      uniqueCustomerMap.get(purchase.packageId)!.add(purchase.customerId);
-    }
-
-    // =====================================================
-    // 5. RESPONSE DTO
-    // =====================================================
-
-    const items = packages.map((pkg) => {
-      const capacity = pkg.capacity ?? 0;
-
-      const soldQuantity = pkg.soldQuantity;
-
-      const remainingQuantity = Math.max(capacity - soldQuantity, 0);
-
-      return {
-        packageId: pkg.id,
-
-        name: pkg.name,
-
-        capacity,
-
-        soldQuantity,
-
-        remainingQuantity,
-
-        uniqueCustomers: uniqueCustomerMap.get(pkg.id)?.size ?? 0,
-
-        salesAmount: salesAmountMap.get(pkg.id) ?? 0,
-
-        listingStatus: pkg.listingStatus,
-
-        soldOut: capacity > 0 && soldQuantity >= capacity,
-      };
-    });
+    const remainingQuantity = Math.max(capacity - soldQuantity, 0);
 
     return {
-      items,
-    };
-  };
+      packageId: pkg.id,
 
+      // NEW: Return localized name
+      name: localizedPackage.name,
+
+      capacity,
+
+      soldQuantity,
+
+      remainingQuantity,
+
+      uniqueCustomers: uniqueCustomerMap.get(pkg.id)?.size ?? 0,
+
+      salesAmount: salesAmountMap.get(pkg.id) ?? 0,
+
+      listingStatus: pkg.listingStatus,
+
+      soldOut: capacity > 0 && soldQuantity >= capacity,
+    };
+  });
+
+  return {
+    items,
+  };
+};
 const getStaffReport = async (
   userId: string,
   role: Role,
   query: IStaffReportQuery,
+  language: Language = DEFAULT_LANGUAGE,
 ): Promise<IStaffReportResponse> => {
   // =====================================================
   // 1. RESOLVE BRANCH SCOPE
@@ -1284,6 +1352,9 @@ const getStaffReport = async (
     select: {
       id: true,
       name: true,
+
+      // NEW: Multilingual translations
+      translations: true,
     },
 
     orderBy: {
@@ -1427,25 +1498,33 @@ const getStaffReport = async (
   );
 
   // =====================================================
-  // 7. RESPONSE DTO
+  // 7. RESPONSE DTO WITH LOCALIZATION
   // =====================================================
 
   return {
-    items: staff.map((item) => ({
-      staffId: item.id,
+    items: staff.map((item) => {
+      // NEW: Localized staff name
+      const localizedStaff = getLocalizedContent(item.translations, language, {
+        name: item.name,
+      });
 
-      name: item.name,
+      return {
+        staffId: item.id,
 
-      assignedAppointments: assignedMap.get(item.id) ?? 0,
+        // NEW: Return localized name
+        name: localizedStaff.name,
 
-      completedAppointments: completedMap.get(item.id) ?? 0,
+        assignedAppointments: assignedMap.get(item.id) ?? 0,
 
-      cancelled: cancelledMap.get(item.id) ?? 0,
+        completedAppointments: completedMap.get(item.id) ?? 0,
 
-      noShow: noShowMap.get(item.id) ?? 0,
+        cancelled: cancelledMap.get(item.id) ?? 0,
 
-      averageRating: Number((ratingMap.get(item.id) ?? 0).toFixed(2)),
-    })),
+        noShow: noShowMap.get(item.id) ?? 0,
+
+        averageRating: Number((ratingMap.get(item.id) ?? 0).toFixed(2)),
+      };
+    }),
   };
 };
 

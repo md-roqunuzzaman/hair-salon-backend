@@ -9,6 +9,7 @@ import { promotionService } from "./promotion.service.js";
 import { AppError } from "../../utils/app-error.js";
 import { Role } from "../../../../generated/prisma/enums.js";
 import z from "zod";
+import { DEFAULT_LANGUAGE, isLanguage } from "../../utils/language.js";
 
 const createPromotion = catchAsync(async (req: Request, res: Response) => {
   const result = await promotionService.createPromotion(req.body);
@@ -26,12 +27,19 @@ const createPromotion = catchAsync(async (req: Request, res: Response) => {
 // =====================================================
 
 const getPromotions = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. AUTHENTICATED USER ROLE
+  // =====================================================
+
   const role = req.user!.role as Role;
+
+  // =====================================================
+  // 2. VALIDATE BRANCH ID
+  // =====================================================
 
   const branchId =
     typeof req.query.branchId === "string" ? req.query.branchId : undefined;
 
-  // Validate branchId
   if (
     req.query.branchId !== undefined &&
     (!branchId || !z.uuid().safeParse(branchId).success)
@@ -39,7 +47,23 @@ const getPromotions = catchAsync(async (req: Request, res: Response) => {
     throw new AppError("Invalid branchId", 400);
   }
 
-  const result = await promotionService.getPromotions(role, branchId);
+  // =====================================================
+  // 3. GET REQUEST LANGUAGE
+  // =====================================================
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  // =====================================================
+  // 4. FETCH LOCALIZED PROMOTIONS
+  // =====================================================
+
+  const result = await promotionService.getPromotions(role, branchId, language);
+
+  // =====================================================
+  // 5. SEND RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     success: true,
@@ -48,6 +72,7 @@ const getPromotions = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
 // =====================================================
 // GET SINGLE PROMOTION
 // =====================================================
@@ -85,17 +110,26 @@ const getPromotionById = catchAsync(async (req: Request, res: Response) => {
   const branchId = typeof rawBranchId === "string" ? rawBranchId : undefined;
 
   // =====================================================
-  // 3. GET PROMOTION
+  // 3. GET REQUEST LANGUAGE
+  // =====================================================
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  // =====================================================
+  // 4. FETCH LOCALIZED PROMOTION
   // =====================================================
 
   const result = await promotionService.getPromotionById(
     promotionId,
     role,
     branchId,
+    language,
   );
 
   // =====================================================
-  // 4. SEND RESPONSE
+  // 5. SEND RESPONSE
   // =====================================================
 
   sendResponse(res, {
@@ -105,6 +139,7 @@ const getPromotionById = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
 const updatePromotion = catchAsync(async (req: Request, res: Response) => {
   const promotionId = req.params.promotionId;
 

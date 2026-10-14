@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/src/server.js",
     "typecheck": "tsc --noEmit",
-    "test:auth": "tsx --test src/app/module/auth/auth.validation.test.ts src/app/utils/jwt.test.ts",
+    "test:database": "tsx --test src/app/utils/retry-database.test.ts",
+    "test:auth": "tsx --test src/app/module/auth/auth.validation.test.ts src/app/utils/jwt.test.ts src/app/utils/auth-cookies.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio"

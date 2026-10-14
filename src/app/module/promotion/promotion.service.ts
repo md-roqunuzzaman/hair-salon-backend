@@ -2,6 +2,8 @@ import { Prisma } from "../../../../generated/prisma/client.js";
 import { PromotionStatus, Role } from "../../../../generated/prisma/enums.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { getLocalizedContent } from "../../utils/localization.js";
 import { uploadService } from "../upload/upload.service.js";
 
 import {
@@ -77,12 +79,27 @@ const createPromotion = async (payload: ICreatePromotionPayload) => {
   }
 
   // =====================================================
-  // 4. CREATE PROMOTION
+  // 4. PREPARE TRANSLATIONS
+  // =====================================================
+
+  const translations = payload.translations
+    ? Object.fromEntries(
+        Object.entries(payload.translations).filter(
+          (entry): entry is [string, { name: string }] =>
+            entry[1] !== undefined,
+        ),
+      )
+    : undefined;
+
+  // =====================================================
+  // 5. CREATE PROMOTION WITH TRANSLATIONS
   // =====================================================
 
   const promotion = await prisma.promotion.create({
     data: {
       name: payload.name,
+
+      translations,
 
       minimumTopup: payload.minimumTopup,
 
@@ -125,6 +142,7 @@ const createPromotion = async (payload: ICreatePromotionPayload) => {
     select: {
       id: true,
       name: true,
+      translations: true,
       status: true,
     },
   });
@@ -136,7 +154,11 @@ const createPromotion = async (payload: ICreatePromotionPayload) => {
 // GET PROMOTIONS
 // =====================================================
 
-const getPromotions = async (role: Role, branchId?: string) => {
+const getPromotions = async (
+  role: Role,
+  branchId?: string,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
   const now = new Date();
 
   // =====================================================
@@ -189,6 +211,10 @@ const getPromotions = async (role: Role, branchId?: string) => {
     select: {
       id: true,
       name: true,
+
+      // Required for multilingual localization
+      translations: true,
+
       minimumTopup: true,
       bonusAmount: true,
       startAt: true,
@@ -218,11 +244,21 @@ const getPromotions = async (role: Role, branchId?: string) => {
   });
 
   // =====================================================
-  // 4. GENERATE SIGNED IMAGE URLS
+  // 4. LOCALIZE PROMOTIONS + GENERATE SIGNED IMAGE URLS
   // =====================================================
 
   const items = await Promise.all(
     promotions.map(async (promotion) => {
+      // Localize promotion name
+      const localizedPromotion = getLocalizedContent(
+        promotion.translations,
+        language,
+        {
+          name: promotion.name,
+        },
+      );
+
+      // Generate signed image URL
       const imageUrl = promotion.imageObjectKey
         ? await uploadService.getImageUrl(promotion.imageObjectKey)
         : null;
@@ -230,7 +266,8 @@ const getPromotions = async (role: Role, branchId?: string) => {
       return {
         id: promotion.id,
 
-        name: promotion.name,
+        // Localized promotion name
+        name: localizedPromotion.name,
 
         minimumTopup: Number(promotion.minimumTopup),
 
@@ -272,6 +309,7 @@ const getPromotionById = async (
   promotionId: string,
   role: Role,
   branchId?: string,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
   const now = new Date();
 
@@ -291,6 +329,7 @@ const getPromotionById = async (
     id: promotionId,
   };
 
+  // CUSTOMER: ONLY ACTIVE + CURRENTLY VALID
   if (role === Role.CUSTOMER) {
     where.status = PromotionStatus.ACTIVE;
 
@@ -303,6 +342,7 @@ const getPromotionById = async (
     };
   }
 
+  // BRANCH FILTER
   if (branchId) {
     where.branches = {
       some: {
@@ -321,6 +361,10 @@ const getPromotionById = async (
     select: {
       id: true,
       name: true,
+
+      // Required for localization
+      translations: true,
+
       minimumTopup: true,
       bonusAmount: true,
       startAt: true,
@@ -358,7 +402,19 @@ const getPromotionById = async (
   }
 
   // =====================================================
-  // 5. GENERATE IMAGE URL
+  // 5. LOCALIZE PROMOTION NAME
+  // =====================================================
+
+  const localizedPromotion = getLocalizedContent(
+    promotion.translations,
+    language,
+    {
+      name: promotion.name,
+    },
+  );
+
+  // =====================================================
+  // 6. GENERATE SIGNED IMAGE URL
   // =====================================================
 
   const imageUrl = promotion.imageObjectKey
@@ -366,13 +422,14 @@ const getPromotionById = async (
     : null;
 
   // =====================================================
-  // 6. RESPONSE
+  // 7. RESPONSE
   // =====================================================
 
   return {
     id: promotion.id,
 
-    name: promotion.name,
+    // Localized promotion name
+    name: localizedPromotion.name,
 
     minimumTopup: Number(promotion.minimumTopup),
 
@@ -395,6 +452,7 @@ const getPromotionById = async (
     packageIds: promotion.packages.map((item) => item.packageId),
   };
 };
+
 const updatePromotion = async (
   promotionId: string,
   payload: IUpdatePromotionPayload,
@@ -524,6 +582,47 @@ const updatePromotion = async (
 
   const result = await prisma.$transaction(
     async (tx) => {
+      // -------------------------------------------------
+      // 7.1 MERGE EXISTING TRANSLATIONS
+      // -------------------------------------------------
+
+      let translationsUpdate: Record<string, { name: string }> | undefined;
+
+      if (payload.translations !== undefined) {
+        const currentPromotion = await tx.promotion.findUniqueOrThrow({
+          where: {
+            id: promotionId,
+          },
+
+          select: {
+            translations: true,
+          },
+        });
+
+        const existingTranslations =
+          currentPromotion.translations &&
+          typeof currentPromotion.translations === "object" &&
+          !Array.isArray(currentPromotion.translations)
+            ? currentPromotion.translations
+            : {};
+
+        const incomingTranslations = Object.fromEntries(
+          Object.entries(payload.translations).filter(
+            (entry): entry is [string, { name: string }] =>
+              entry[1] !== undefined,
+          ),
+        );
+
+        translationsUpdate = {
+          ...existingTranslations,
+          ...incomingTranslations,
+        } as Record<string, { name: string }>;
+      }
+
+      // -------------------------------------------------
+      // 7.2 REMOVE OLD BRANCH ASSOCIATIONS
+      // -------------------------------------------------
+
       if (payload.branchIds !== undefined) {
         await tx.promotionBranch.deleteMany({
           where: {
@@ -531,6 +630,10 @@ const updatePromotion = async (
           },
         });
       }
+
+      // -------------------------------------------------
+      // 7.3 REMOVE OLD SERVICE ASSOCIATIONS
+      // -------------------------------------------------
 
       if (payload.serviceIds !== undefined) {
         await tx.promotionService.deleteMany({
@@ -540,6 +643,10 @@ const updatePromotion = async (
         });
       }
 
+      // -------------------------------------------------
+      // 7.4 REMOVE OLD PACKAGE ASSOCIATIONS
+      // -------------------------------------------------
+
       if (payload.packageIds !== undefined) {
         await tx.promotionPackage.deleteMany({
           where: {
@@ -547,6 +654,10 @@ const updatePromotion = async (
           },
         });
       }
+
+      // -------------------------------------------------
+      // 7.5 UPDATE PROMOTION
+      // -------------------------------------------------
 
       return tx.promotion.update({
         where: {
@@ -556,6 +667,10 @@ const updatePromotion = async (
         data: {
           ...(payload.name !== undefined && {
             name: payload.name.trim(),
+          }),
+
+          ...(translationsUpdate !== undefined && {
+            translations: translationsUpdate,
           }),
 
           ...(payload.minimumTopup !== undefined && {
@@ -605,19 +720,15 @@ const updatePromotion = async (
 
         select: {
           id: true,
-
           name: true,
 
+          translations: true,
+
           minimumTopup: true,
-
           bonusAmount: true,
-
           startAt: true,
-
           endAt: true,
-
           status: true,
-
           imageObjectKey: true,
 
           branches: {
@@ -639,7 +750,6 @@ const updatePromotion = async (
           },
 
           createdAt: true,
-
           updatedAt: true,
         },
       });
@@ -666,6 +776,8 @@ const updatePromotion = async (
     id: result.id,
 
     name: result.name,
+
+    translations: result.translations,
 
     minimumTopup: Number(result.minimumTopup),
 

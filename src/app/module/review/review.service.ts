@@ -1,14 +1,19 @@
 import {
   AppointmentStatus,
+  Prisma,
   ReviewModerationStatus,
   Role,
 } from "../../../../generated/prisma/client.js";
 
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { getLocalizedContent } from "../../utils/localization.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { contentModerationService } from "../contentModeration/contentModeration.service.js";
+import { INotificationTranslations } from "../notification/notification.interface.js";
 import { notificationService } from "../notification/notification.service.js";
+import { notificationTemplates } from "../notification/notification.templates.js";
 import { uploadService } from "../upload/upload.service.js";
 
 import {
@@ -47,7 +52,7 @@ const createReview = async (
   }
 
   // =====================================================
-  // 2. OWNERSHIP
+  // 2. CHECK CUSTOMER OWNERSHIP
   // =====================================================
 
   if (appointment.customerId !== customerId) {
@@ -55,7 +60,7 @@ const createReview = async (
   }
 
   // =====================================================
-  // 3. MUST BE COMPLETED
+  // 3. APPOINTMENT MUST BE COMPLETED
   // =====================================================
 
   if (appointment.appointmentStatus !== AppointmentStatus.COMPLETED) {
@@ -72,6 +77,9 @@ const createReview = async (
 
   // =====================================================
   // 5. ONE REVIEW PER APPOINTMENT
+  //
+  // Early check for a clear API error.
+  // Database unique constraint is the final protection.
   // =====================================================
 
   const existingReview = await prisma.review.findUnique({
@@ -94,12 +102,16 @@ const createReview = async (
 
   const imageObjectKeys = payload.imageObjectKeys ?? [];
 
+  // Prevent duplicate images in the same review.
+
   if (new Set(imageObjectKeys).size !== imageObjectKeys.length) {
     throw new AppError("Duplicate review images are not allowed", 400);
   }
 
   if (imageObjectKeys.length > 0) {
     const expectedPrefix = `reviews/${customerId}/`;
+
+    // Validate image object key ownership.
 
     const invalidObjectKey = imageObjectKeys.find(
       (objectKey) => !objectKey.startsWith(expectedPrefix),
@@ -109,7 +121,8 @@ const createReview = async (
       throw new AppError("Invalid review image object key", 400);
     }
 
-    // Verify every referenced image really exists in R2.
+    // Verify referenced images exist in Cloudflare R2.
+
     await Promise.all(
       imageObjectKeys.map((objectKey) =>
         uploadService.verifyImageExists(objectKey),
@@ -121,10 +134,10 @@ const createReview = async (
   // 7. GENERATE TEMPORARY SIGNED IMAGE URLS
   //
   // Used for:
-  // - image moderation
-  // - immediate API response
+  // - Automated image moderation
+  // - Immediate API response
   //
-  // DB still stores objectKey only.
+  // Database stores objectKey only.
   // =====================================================
 
   const reviewImages = await Promise.all(
@@ -170,68 +183,108 @@ const createReview = async (
   }
 
   // =====================================================
-  // 9. CREATE REVIEW
+  // 9. CREATE REVIEW — CONCURRENCY SAFE
+  //
+  // Database unique constraint prevents multiple reviews
+  // for the same appointment.
+  //
+  // Prisma P2002 is converted to a meaningful API error.
   // =====================================================
 
-  const review = await prisma.review.create({
-    data: {
-      customerId,
+  const review = await (async () => {
+    try {
+      return await prisma.review.create({
+        data: {
+          customerId,
 
-      appointmentId: appointment.id,
+          appointmentId: appointment.id,
 
-      branchId: appointment.branchId,
+          branchId: appointment.branchId,
 
-      staffId: appointment.staffId,
+          staffId: appointment.staffId,
 
-      rating: payload.rating,
+          rating: payload.rating,
 
-      comment: payload.comment,
+          comment: payload.comment,
 
-      moderationStatus,
+          moderationStatus,
 
-      moderationReason,
+          moderationReason,
 
-      images:
-        imageObjectKeys.length > 0
-          ? {
-              create: imageObjectKeys.map((objectKey, index) => ({
-                objectKey,
-                sortOrder: index,
-              })),
-            }
-          : undefined,
-    },
-
-    select: {
-      id: true,
-
-      rating: true,
-
-      comment: true,
-
-      moderationStatus: true,
-
-      moderationReason: true,
-
-      images: {
-        orderBy: {
-          sortOrder: "asc",
+          images:
+            imageObjectKeys.length > 0
+              ? {
+                  create: imageObjectKeys.map((objectKey, index) => ({
+                    objectKey,
+                    sortOrder: index,
+                  })),
+                }
+              : undefined,
         },
 
         select: {
-          objectKey: true,
-          sortOrder: true,
-        },
-      },
+          id: true,
 
-      createdAt: true,
-    },
-  });
+          rating: true,
+
+          comment: true,
+
+          moderationStatus: true,
+
+          moderationReason: true,
+
+          images: {
+            orderBy: {
+              sortOrder: "asc",
+            },
+
+            select: {
+              objectKey: true,
+              sortOrder: true,
+            },
+          },
+
+          createdAt: true,
+        },
+      });
+    } catch (error) {
+      // -------------------------------------------------
+      // HANDLE UNIQUE CONSTRAINT VIOLATION
+      // -------------------------------------------------
+
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        // Check whether the conflict is caused by
+        // an existing review for this appointment.
+
+        const duplicateReview = await prisma.review.findUnique({
+          where: {
+            appointmentId,
+          },
+
+          select: {
+            id: true,
+          },
+        });
+
+        if (duplicateReview) {
+          throw new AppError("REVIEW_ALREADY_EXISTS", 409);
+        }
+      }
+
+      // Preserve all unrelated Prisma/database errors.
+
+      throw error;
+    }
+  })();
 
   // =====================================================
   // 10. GENERATE RESPONSE IMAGE URLS
   //
-  // Use returned DB ordering as source of truth.
+  // Database image ordering is the source of truth.
+  // Reuse already generated signed URLs where possible.
   // =====================================================
 
   const images = await Promise.all(
@@ -253,52 +306,76 @@ const createReview = async (
   );
 
   // =====================================================
-  // 11. MODERATION RESULT NOTIFICATION
+  // 11. MULTILINGUAL REVIEW NOTIFICATION
+  //
+  // Supported languages:
+  // - en
+  // - zh-CN
+  // - zh-HK
+  //
+  // Notification failure must not fail review creation.
   // =====================================================
 
   try {
+    let notificationType: string;
+
+    let translations: INotificationTranslations;
+
+    // -------------------------------------------------
+    // REVIEW PUBLISHED
+    // -------------------------------------------------
+
     if (review.moderationStatus === ReviewModerationStatus.VISIBLE) {
-      await notificationService.createNotification({
-        userId: customerId,
+      notificationType = "REVIEW_PUBLISHED";
 
-        type: "REVIEW_PUBLISHED",
-
-        title: "Review published",
-
-        message: "Your review has been published successfully.",
-      });
+      translations = notificationTemplates.REVIEW_PUBLISHED();
     }
 
-    if (review.moderationStatus === ReviewModerationStatus.HIDDEN) {
-      await notificationService.createNotification({
-        userId: customerId,
+    // -------------------------------------------------
+    // REVIEW HIDDEN / NEEDS CHANGES
+    // -------------------------------------------------
+    else if (review.moderationStatus === ReviewModerationStatus.HIDDEN) {
+      notificationType = "REVIEW_NEEDS_CHANGES";
 
-        type: "REVIEW_NEEDS_CHANGES",
-
-        title: "Review needs changes",
-
-        message:
-          "Your review is not public because it may contain content that does not meet our review guidelines. You can edit and resubmit it.",
-      });
+      translations = notificationTemplates.REVIEW_NEEDS_CHANGES();
     }
 
-    if (review.moderationStatus === ReviewModerationStatus.PENDING) {
-      await notificationService.createNotification({
-        userId: customerId,
+    // -------------------------------------------------
+    // REVIEW PENDING MODERATION
+    // -------------------------------------------------
+    else {
+      notificationType = "REVIEW_PENDING";
 
-        type: "REVIEW_PENDING",
-
-        title: "Review under review",
-
-        message: "Your review is being checked before publication.",
-      });
+      translations = notificationTemplates.REVIEW_PENDING();
     }
+
+    // -------------------------------------------------
+    // SAVE MULTILINGUAL NOTIFICATION
+    // -------------------------------------------------
+
+    await notificationService.createNotification({
+      userId: customerId,
+
+      type: notificationType,
+
+      // Default English fallback.
+
+      title: translations.en!.title!,
+
+      message: translations.en!.message!,
+
+      // All supported languages.
+
+      translations,
+    });
   } catch (error) {
     console.error("Failed to create review notification:", error);
   }
 
   // =====================================================
   // 12. RESPONSE
+  //
+  // Preserve existing API response structure.
   // =====================================================
 
   return {
@@ -318,7 +395,15 @@ const createReview = async (
   };
 };
 
-const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
+const getBranchReviews = async (
+  branchId: string,
+  query: IGetReviewsQuery,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. CHECK BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
@@ -333,10 +418,18 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
     throw new AppError("BRANCH_NOT_FOUND", 404);
   }
 
+  // =====================================================
+  // 2. PAGINATION
+  // =====================================================
+
   const page = query.page ?? 1;
   const limit = query.limit ?? 20;
 
   const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 3. FILTER
+  // =====================================================
 
   const where = {
     branchId,
@@ -347,6 +440,10 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
       rating: query.rating,
     }),
   };
+
+  // =====================================================
+  // 4. FETCH REVIEWS + TOTAL
+  // =====================================================
 
   const [reviews, total] = await prisma.$transaction([
     prisma.review.findMany({
@@ -387,6 +484,15 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
           },
         },
 
+        // Booking-time multilingual snapshot
+        appointment: {
+          select: {
+            id: true,
+            itemName: true,
+            itemNameTranslations: true,
+          },
+        },
+
         images: {
           orderBy: {
             sortOrder: "asc",
@@ -405,8 +511,16 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
     }),
   ]);
 
+  // =====================================================
+  // 5. RESPONSE + LOCALIZATION
+  // =====================================================
+
   const items = await Promise.all(
     reviews.map(async (review) => {
+      // ===============================================
+      // SIGNED IMAGE URLS
+      // ===============================================
+
       const images = await Promise.all(
         review.images.map(async (image) => ({
           objectKey: image.objectKey,
@@ -416,6 +530,22 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
           sortOrder: image.sortOrder,
         })),
       );
+
+      // ===============================================
+      // LOCALIZE APPOINTMENT ITEM NAME
+      // ===============================================
+
+      const localizedItem = getLocalizedContent(
+        review.appointment.itemNameTranslations,
+        language,
+        {
+          name: review.appointment.itemName,
+        },
+      );
+
+      // ===============================================
+      // RESPONSE
+      // ===============================================
 
       return {
         id: review.id,
@@ -432,6 +562,11 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
         staff: {
           id: review.staff.id,
           name: review.staff.user.name,
+        },
+
+        appointment: {
+          id: review.appointment.id,
+          itemName: localizedItem.name,
         },
 
         reply: review.replyText
@@ -451,6 +586,10 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
     }),
   );
 
+  // =====================================================
+  // 6. PAGINATION RESPONSE
+  // =====================================================
+
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   return {
@@ -468,7 +607,16 @@ const getBranchReviews = async (branchId: string, query: IGetReviewsQuery) => {
     },
   };
 };
-const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
+
+const getStaffReviews = async (
+  staffId: string,
+  query: IGetReviewsQuery,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. CHECK STAFF
+  // =====================================================
+
   const staff = await prisma.staff.findUnique({
     where: {
       id: staffId,
@@ -483,10 +631,18 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
     throw new AppError("STAFF_NOT_FOUND", 404);
   }
 
+  // =====================================================
+  // 2. PAGINATION
+  // =====================================================
+
   const page = query.page ?? 1;
   const limit = query.limit ?? 20;
 
   const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 3. FILTER
+  // =====================================================
 
   const where = {
     staffId,
@@ -497,6 +653,10 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
       rating: query.rating,
     }),
   };
+
+  // =====================================================
+  // 4. FETCH REVIEWS + TOTAL
+  // =====================================================
 
   const [reviews, total] = await prisma.$transaction([
     prisma.review.findMany({
@@ -529,6 +689,16 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
           select: {
             id: true,
             name: true,
+            translations: true,
+          },
+        },
+
+        // Booking-time multilingual snapshot
+        appointment: {
+          select: {
+            id: true,
+            itemName: true,
+            itemNameTranslations: true,
           },
         },
 
@@ -550,8 +720,16 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
     }),
   ]);
 
+  // =====================================================
+  // 5. RESPONSE + LOCALIZATION
+  // =====================================================
+
   const items = await Promise.all(
     reviews.map(async (review) => {
+      // ===============================================
+      // SIGNED IMAGE URLS
+      // ===============================================
+
       const images = await Promise.all(
         review.images.map(async (image) => ({
           objectKey: image.objectKey,
@@ -561,6 +739,34 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
           sortOrder: image.sortOrder,
         })),
       );
+
+      // ===============================================
+      // LOCALIZE BRANCH NAME
+      // ===============================================
+
+      const localizedBranch = getLocalizedContent(
+        review.branch.translations,
+        language,
+        {
+          name: review.branch.name,
+        },
+      );
+
+      // ===============================================
+      // LOCALIZE APPOINTMENT ITEM NAME
+      // ===============================================
+
+      const localizedItem = getLocalizedContent(
+        review.appointment.itemNameTranslations,
+        language,
+        {
+          name: review.appointment.itemName,
+        },
+      );
+
+      // ===============================================
+      // RESPONSE
+      // ===============================================
 
       return {
         id: review.id,
@@ -576,7 +782,12 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
 
         branch: {
           id: review.branch.id,
-          name: review.branch.name,
+          name: localizedBranch.name,
+        },
+
+        appointment: {
+          id: review.appointment.id,
+          itemName: localizedItem.name,
         },
 
         reply: review.replyText
@@ -596,6 +807,10 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
     }),
   );
 
+  // =====================================================
+  // 6. PAGINATION RESPONSE
+  // =====================================================
+
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   return {
@@ -614,11 +829,23 @@ const getStaffReviews = async (staffId: string, query: IGetReviewsQuery) => {
   };
 };
 
-const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
+const getMyReviews = async (
+  customerId: string,
+  query: IGetReviewsQuery,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
+
   const page = query.page ?? 1;
   const limit = query.limit ?? 20;
 
   const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 2. FILTER
+  // =====================================================
 
   const where = {
     customerId,
@@ -627,6 +854,10 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
       rating: query.rating,
     }),
   };
+
+  // =====================================================
+  // 3. FETCH MY REVIEWS + TOTAL
+  // =====================================================
 
   const [reviews, total] = await prisma.$transaction([
     prisma.review.findMany({
@@ -657,6 +888,7 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
           select: {
             id: true,
             name: true,
+            translations: true,
           },
         },
 
@@ -678,6 +910,7 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
             date: true,
             startTime: true,
             itemName: true,
+            itemNameTranslations: true,
           },
         },
 
@@ -699,8 +932,16 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
     }),
   ]);
 
+  // =====================================================
+  // 4. GENERATE RESPONSE + LOCALIZATION
+  // =====================================================
+
   const items = await Promise.all(
     reviews.map(async (review) => {
+      // ===================================================
+      // GENERATE SIGNED IMAGE URLS
+      // ===================================================
+
       const images = await Promise.all(
         review.images.map(async (image) => ({
           objectKey: image.objectKey,
@@ -710,6 +951,46 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
           sortOrder: image.sortOrder,
         })),
       );
+
+      // ===================================================
+      // LOCALIZE BRANCH NAME
+      // ===================================================
+
+      const localizedBranch = getLocalizedContent(
+        review.branch.translations,
+        language,
+        {
+          name: review.branch.name,
+        },
+      );
+
+      // ===================================================
+      // LOCALIZE APPOINTMENT ITEM NAME
+      // ===================================================
+
+      const localizedItem = getLocalizedContent(
+        review.appointment.itemNameTranslations,
+        language,
+        {
+          name: review.appointment.itemName,
+        },
+      );
+
+      console.log("\n========== MY REVIEW LOCALIZATION ==========");
+      console.log("Requested Language:", language);
+      console.log("Appointment ID:", review.appointment.id);
+      console.log("Original Item Name:", review.appointment.itemName);
+
+      console.log(
+        "Saved Item Translations:",
+        JSON.stringify(review.appointment.itemNameTranslations, null, 2),
+      );
+
+      console.log("Localized Item Name:", localizedItem.name);
+      console.log("============================================");
+      // ===================================================
+      // RESPONSE
+      // ===================================================
 
       return {
         id: review.id,
@@ -727,7 +1008,7 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
 
         branch: {
           id: review.branch.id,
-          name: review.branch.name,
+          name: localizedBranch.name,
         },
 
         staff: {
@@ -742,7 +1023,7 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
 
           startTime: review.appointment.startTime,
 
-          itemName: review.appointment.itemName,
+          itemName: localizedItem.name,
         },
 
         reply: review.replyText
@@ -764,6 +1045,10 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
     }),
   );
 
+  // =====================================================
+  // 5. PAGINATION RESPONSE
+  // =====================================================
+
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   return {
@@ -774,10 +1059,29 @@ const getMyReviews = async (customerId: string, query: IGetReviewsQuery) => {
       limit,
       total,
       totalPages,
-
       hasNextPage: page < totalPages,
-
       hasPreviousPage: page > 1,
+    },
+
+    // TEMPORARY DEBUG - REMOVE AFTER TESTING
+    debug: {
+      requestedLanguage: language,
+
+      appointments: reviews.map((review) => ({
+        appointmentId: review.appointment.id,
+
+        originalItemName: review.appointment.itemName,
+
+        savedTranslations: review.appointment.itemNameTranslations,
+
+        localizedItemName: getLocalizedContent(
+          review.appointment.itemNameTranslations,
+          language,
+          {
+            name: review.appointment.itemName,
+          },
+        ).name,
+      })),
     },
   };
 };
@@ -795,21 +1099,15 @@ const updateReview = async (
     where: {
       id: reviewId,
     },
-
     select: {
       id: true,
-
       customerId: true,
-
       comment: true,
-
       moderationStatus: true,
-
       images: {
         orderBy: {
           sortOrder: "asc",
         },
-
         select: {
           objectKey: true,
         },
@@ -877,9 +1175,6 @@ const updateReview = async (
 
   // =====================================================
   // 7. SHOULD RE-MODERATE?
-  //
-  // Rating-only update does not need moderation.
-  // Comment OR image change must re-moderate.
   // =====================================================
 
   const requiresModeration =
@@ -888,7 +1183,6 @@ const updateReview = async (
   let moderationUpdate:
     | {
         moderationStatus: ReviewModerationStatus;
-
         moderationReason: string | null;
       }
     | undefined;
@@ -906,7 +1200,6 @@ const updateReview = async (
     signedImages = await Promise.all(
       finalImageObjectKeys.map(async (objectKey) => ({
         objectKey,
-
         url: await uploadService.getImageUrl(objectKey),
       })),
     );
@@ -927,13 +1220,11 @@ const updateReview = async (
       if (moderationResult.safe) {
         moderationUpdate = {
           moderationStatus: ReviewModerationStatus.VISIBLE,
-
           moderationReason: null,
         };
       } else {
         moderationUpdate = {
           moderationStatus: ReviewModerationStatus.HIDDEN,
-
           moderationReason: moderationResult.reason ?? "Unsafe review content",
         };
       }
@@ -942,7 +1233,6 @@ const updateReview = async (
 
       moderationUpdate = {
         moderationStatus: ReviewModerationStatus.PENDING,
-
         moderationReason: "Moderation service unavailable",
       };
     }
@@ -966,7 +1256,6 @@ const updateReview = async (
         where: {
           id: reviewId,
         },
-
         data: {
           ...(payload.rating !== undefined && {
             rating: payload.rating,
@@ -978,7 +1267,6 @@ const updateReview = async (
 
           ...(moderationUpdate && {
             moderationStatus: moderationUpdate.moderationStatus,
-
             moderationReason: moderationUpdate.moderationReason,
           }),
 
@@ -991,29 +1279,21 @@ const updateReview = async (
             },
           }),
         },
-
         select: {
           id: true,
-
           rating: true,
-
           comment: true,
-
           moderationStatus: true,
-
           moderationReason: true,
-
           images: {
             orderBy: {
               sortOrder: "asc",
             },
-
             select: {
               objectKey: true,
               sortOrder: true,
             },
           },
-
           updatedAt: true,
         },
       });
@@ -1036,58 +1316,41 @@ const updateReview = async (
 
       return {
         objectKey: image.objectKey,
-
         url:
           existingSigned?.url ??
           (await uploadService.getImageUrl(image.objectKey)),
-
         sortOrder: image.sortOrder,
       };
     }),
   );
 
   // =====================================================
-  // 12. MODERATION NOTIFICATION
+  // 12. MULTILINGUAL MODERATION NOTIFICATION
   // =====================================================
 
   if (requiresModeration && moderationUpdate) {
     try {
+      let type: string;
+      let translations: INotificationTranslations;
+
       if (result.moderationStatus === ReviewModerationStatus.VISIBLE) {
-        await notificationService.createNotification({
-          userId: customerId,
-
-          type: "REVIEW_PUBLISHED",
-
-          title: "Review published",
-
-          message: "Your updated review has been published successfully.",
-        });
+        type = "REVIEW_PUBLISHED";
+        translations = notificationTemplates.REVIEW_PUBLISHED(true);
+      } else if (result.moderationStatus === ReviewModerationStatus.HIDDEN) {
+        type = "REVIEW_NEEDS_CHANGES";
+        translations = notificationTemplates.REVIEW_NEEDS_CHANGES(true);
+      } else {
+        type = "REVIEW_PENDING";
+        translations = notificationTemplates.REVIEW_PENDING(true);
       }
 
-      if (result.moderationStatus === ReviewModerationStatus.HIDDEN) {
-        await notificationService.createNotification({
-          userId: customerId,
-
-          type: "REVIEW_NEEDS_CHANGES",
-
-          title: "Review needs changes",
-
-          message:
-            "Your updated review is not public because it may contain content that does not meet our review guidelines. You can edit and resubmit it.",
-        });
-      }
-
-      if (result.moderationStatus === ReviewModerationStatus.PENDING) {
-        await notificationService.createNotification({
-          userId: customerId,
-
-          type: "REVIEW_PENDING",
-
-          title: "Review under review",
-
-          message: "Your updated review is being checked before publication.",
-        });
-      }
+      await notificationService.createNotification({
+        userId: customerId,
+        type,
+        title: translations.en!.title!,
+        message: translations.en!.message!,
+        translations,
+      });
     } catch (error) {
       console.error("Failed to create review update notification:", error);
     }
@@ -1099,17 +1362,11 @@ const updateReview = async (
 
   return {
     id: result.id,
-
     rating: result.rating,
-
     comment: result.comment,
-
     images,
-
     moderationStatus: result.moderationStatus,
-
     moderationReason: result.moderationReason,
-
     updatedAt: result.updatedAt.toISOString(),
   };
 };
@@ -1244,7 +1501,6 @@ const moderateReview = async (
     where: {
       id: reviewId,
     },
-
     select: {
       id: true,
       customerId: true,
@@ -1264,7 +1520,6 @@ const moderateReview = async (
     where: {
       id: reviewId,
     },
-
     data: {
       moderationStatus: payload.moderationStatus,
 
@@ -1273,7 +1528,6 @@ const moderateReview = async (
           ? (payload.reason ?? "Hidden by manual moderation")
           : null,
     },
-
     select: {
       id: true,
       moderationStatus: true,
@@ -1295,13 +1549,9 @@ const moderateReview = async (
   if (statusChanged) {
     await auditLogService.createAuditLog({
       userId,
-
       action: "REVIEW_MODERATED",
-
       entityType: "REVIEW",
-
       entityId: reviewId,
-
       metadata: {
         previousStatus: review.moderationStatus,
         newStatus: updatedReview.moderationStatus,
@@ -1311,35 +1561,34 @@ const moderateReview = async (
   }
 
   // =====================================================
-  // 5. CUSTOMER NOTIFICATION
+  // 5. MULTILINGUAL CUSTOMER NOTIFICATION
   // =====================================================
 
   if (statusChanged) {
     try {
+      let type: string;
+      let translations: INotificationTranslations;
+
       if (updatedReview.moderationStatus === ReviewModerationStatus.VISIBLE) {
-        await notificationService.createNotification({
-          userId: review.customerId,
-
-          type: "REVIEW_PUBLISHED",
-
-          title: "Review published",
-
-          message: "Your review has been reviewed and is now publicly visible.",
-        });
+        type = "REVIEW_PUBLISHED";
+        translations = notificationTemplates.REVIEW_PUBLISHED();
+      } else if (
+        updatedReview.moderationStatus === ReviewModerationStatus.HIDDEN
+      ) {
+        type = "REVIEW_NEEDS_CHANGES";
+        translations = notificationTemplates.REVIEW_NEEDS_CHANGES();
+      } else {
+        type = "REVIEW_PENDING";
+        translations = notificationTemplates.REVIEW_PENDING();
       }
 
-      if (updatedReview.moderationStatus === ReviewModerationStatus.HIDDEN) {
-        await notificationService.createNotification({
-          userId: review.customerId,
-
-          type: "REVIEW_NEEDS_CHANGES",
-
-          title: "Review needs changes",
-
-          message:
-            "Your review is not publicly visible. You can edit and resubmit it.",
-        });
-      }
+      await notificationService.createNotification({
+        userId: review.customerId,
+        type,
+        title: translations.en!.title!,
+        message: translations.en!.message!,
+        translations,
+      });
     } catch (error) {
       console.error("Failed to create review moderation notification:", error);
     }
@@ -1351,6 +1600,7 @@ const moderateReview = async (
 
   return updatedReview;
 };
+
 const saveReviewReply = async (
   reviewId: string,
   userId: string,
@@ -1365,14 +1615,11 @@ const saveReviewReply = async (
     where: {
       id: reviewId,
     },
-
     select: {
       id: true,
       branchId: true,
       customerId: true,
       moderationStatus: true,
-
-      // Needed to determine create vs update
       replyText: true,
     },
   });
@@ -1417,7 +1664,7 @@ const saveReviewReply = async (
   }
 
   // =====================================================
-  // 5. CHECK IF THIS IS A NEW REPLY OR AN UPDATE
+  // 5. CHECK NEW REPLY OR UPDATE
   // =====================================================
 
   const isNewReply = !review.replyText;
@@ -1441,30 +1688,22 @@ const saveReviewReply = async (
   }
 
   // =====================================================
-  // 7. CREATE / UPDATE SINGLE OFFICIAL REPLY
+  // 7. CREATE / UPDATE OFFICIAL REPLY
   // =====================================================
 
   const updatedReview = await prisma.review.update({
     where: {
       id: reviewId,
     },
-
     data: {
       replyText: payload.reply.trim(),
-
-      // V1 behavior:
-      // reply edit করলে repliedAt নতুন timestamp হবে.
       repliedAt: new Date(),
-
       repliedById: userId,
     },
-
     select: {
       id: true,
-
       replyText: true,
       repliedAt: true,
-
       repliedBy: {
         select: {
           id: true,
@@ -1476,17 +1715,21 @@ const saveReviewReply = async (
   });
 
   // =====================================================
-  // 8. CUSTOMER NOTIFICATION
-  // Only notify on first reply, not on reply edits
+  // 8. MULTILINGUAL CUSTOMER NOTIFICATION
+  //
+  // Only first reply, not reply edits.
   // =====================================================
 
   if (isNewReply) {
     try {
+      const translations = notificationTemplates.REVIEW_REPLY();
+
       await notificationService.createNotification({
         userId: review.customerId,
         type: "REVIEW_REPLY",
-        title: "Salon replied to your review",
-        message: "The salon has replied to your review.",
+        title: translations.en!.title!,
+        message: translations.en!.message!,
+        translations,
       });
     } catch (error) {
       console.error("Failed to create review reply notification:", error);
@@ -1499,12 +1742,9 @@ const saveReviewReply = async (
 
   return {
     reviewId: updatedReview.id,
-
     reply: {
       text: updatedReview.replyText,
-
       repliedAt: updatedReview.repliedAt,
-
       repliedBy: updatedReview.repliedBy
         ? {
             id: updatedReview.repliedBy.id,

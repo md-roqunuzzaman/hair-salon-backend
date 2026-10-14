@@ -8,6 +8,7 @@ import { sendResponse } from "../../utils/sendResponse.js";
 
 import { branchService } from "./branch.service.js";
 import { AppError } from "../../utils/app-error.js";
+import { DEFAULT_LANGUAGE, isLanguage } from "../../utils/language.js";
 
 const createBranch = catchAsync(async (req: Request, res: Response) => {
   const result = await branchService.createBranch(req.body);
@@ -19,8 +20,17 @@ const createBranch = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+// =====================================================
+// GET ALL BRANCHES
+// =====================================================
+
 const getBranches = catchAsync(async (req: Request, res: Response) => {
-  const result = await branchService.getBranches(req.query);
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await branchService.getBranches(req.query, language);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -30,10 +40,18 @@ const getBranches = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+// =====================================================
+// GET SINGLE BRANCH
+// =====================================================
+
 const getBranchById = catchAsync(async (req: Request, res: Response) => {
   const branchId = req.params.branchId as string;
 
-  const result = await branchService.getBranchById(branchId);
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await branchService.getBranchById(branchId, language);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -43,10 +61,18 @@ const getBranchById = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+// =====================================================
+// UPDATE BRANCH
+// =====================================================
+
 const updateBranch = catchAsync(async (req: Request, res: Response) => {
   const branchId = req.params.branchId as string;
 
-  const result = await branchService.updateBranch(branchId, req.body);
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await branchService.updateBranch(branchId, req.body, language);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -55,7 +81,6 @@ const updateBranch = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
-
 const updateBranchStatus = catchAsync(async (req: Request, res: Response) => {
   const branchId = req.params.branchId as string;
 

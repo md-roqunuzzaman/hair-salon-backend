@@ -7,6 +7,7 @@ import { catchAsync } from "../../utils/catchAsync.js";
 import { sendResponse } from "../../utils/sendResponse.js";
 
 import { reviewService } from "./review.service.js";
+import { DEFAULT_LANGUAGE, isLanguage } from "../../utils/language.js";
 
 const createReview = catchAsync(async (req: Request, res: Response) => {
   const customerId = req.user!.userId;
@@ -55,7 +56,15 @@ const getStaffReviews = catchAsync(async (req: Request, res: Response) => {
     throw new AppError("Invalid staffId", 400);
   }
 
-  const result = await reviewService.getStaffReviews(staffId, req.body);
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await reviewService.getStaffReviews(
+    staffId,
+    req.body,
+    language,
+  );
 
   sendResponse(res, {
     success: true,
@@ -70,7 +79,15 @@ const getMyReviews = catchAsync(async (req: Request, res: Response) => {
     throw new AppError("AUTH_REQUIRED", 401);
   }
 
-  const result = await reviewService.getMyReviews(req.user.userId, req.body);
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await reviewService.getMyReviews(
+    req.user.userId,
+    req.body,
+    language,
+  );
 
   sendResponse(res, {
     success: true,

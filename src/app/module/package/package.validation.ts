@@ -1,5 +1,23 @@
 import { z } from "zod";
 
+const packageLocaleSchema = z
+  .object({
+    name: z.string().trim().min(2).max(120).optional(),
+
+    description: z.string().trim().max(1500).optional(),
+  })
+  .strict();
+
+const packageTranslationsSchema = z
+  .object({
+    en: packageLocaleSchema.optional(),
+
+    "zh-CN": packageLocaleSchema.optional(),
+
+    "zh-HK": packageLocaleSchema.optional(),
+  })
+  .strict();
+
 const createPackageValidationSchema = z
   .object({
     body: z.object({
@@ -53,6 +71,7 @@ const createPackageValidationSchema = z
       salesStartAt: z.string().datetime({ offset: true }).optional(),
 
       salesEndAt: z.string().datetime({ offset: true }).optional(),
+      translations: packageTranslationsSchema.optional(),
     }),
   })
   .superRefine((data, ctx) => {
@@ -187,6 +206,7 @@ const updatePackageValidationSchema = z.object({
     salesStartAt: z.string().datetime({ offset: true }).optional(),
 
     salesEndAt: z.string().datetime({ offset: true }).optional(),
+    translations: packageTranslationsSchema.optional(),
   }),
 });
 const updatePackageStatusValidationSchema = z.object({

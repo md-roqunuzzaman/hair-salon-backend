@@ -7,6 +7,8 @@ import {
 import { prisma } from "../../lib/prisma.js";
 
 import { AppError } from "../../utils/app-error.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { getLocalizedContent } from "../../utils/localization.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { uploadService } from "../upload/upload.service.js";
 
@@ -23,6 +25,7 @@ const createService = async (payload: ICreateServicePayload) => {
   // =====================================================
 
   const serviceName = payload.name.trim();
+  const serviceDescription = payload.description?.trim() || null;
 
   // =====================================================
   // 2. DUPLICATE SERVICE CHECK
@@ -72,14 +75,50 @@ const createService = async (payload: ICreateServicePayload) => {
     throw new AppError("One or more branches do not exist", 404);
   }
 
-  const inactiveBranch = branches.find((branch) => branch.status !== "ACTIVE");
+  const inactiveBranch = branches.find(
+    (branch) => branch.status !== BranchStatus.ACTIVE,
+  );
 
   if (inactiveBranch) {
     throw new AppError("Service cannot be assigned to an inactive branch", 400);
   }
 
   // =====================================================
-  // 5. CREATE SERVICE + BRANCH ASSIGNMENTS
+  // 5. PREPARE MULTILINGUAL TRANSLATIONS
+  // =====================================================
+
+  const translations: Prisma.InputJsonObject = {
+    en: {
+      name: serviceName,
+      description: serviceDescription,
+    },
+
+    ...(payload.translations?.["zh-CN"] && {
+      "zh-CN": {
+        ...(payload.translations["zh-CN"].name !== undefined && {
+          name: payload.translations["zh-CN"].name,
+        }),
+
+        ...(payload.translations["zh-CN"].description !== undefined && {
+          description: payload.translations["zh-CN"].description,
+        }),
+      },
+    }),
+
+    ...(payload.translations?.["zh-HK"] && {
+      "zh-HK": {
+        ...(payload.translations["zh-HK"].name !== undefined && {
+          name: payload.translations["zh-HK"].name,
+        }),
+
+        ...(payload.translations["zh-HK"].description !== undefined && {
+          description: payload.translations["zh-HK"].description,
+        }),
+      },
+    }),
+  };
+  // =====================================================
+  // 6. CREATE SERVICE + BRANCH ASSIGNMENTS
   // =====================================================
 
   const service = await prisma.$transaction(async (tx) => {
@@ -87,11 +126,14 @@ const createService = async (payload: ICreateServicePayload) => {
       data: {
         name: serviceName,
 
-        description: payload.description?.trim() || null,
+        description: serviceDescription,
 
         price: payload.price,
 
         durationMinutes: payload.durationMinutes,
+
+        // NEW: Multilingual JSON
+        translations,
       },
     });
 
@@ -102,7 +144,6 @@ const createService = async (payload: ICreateServicePayload) => {
     await tx.serviceBranch.createMany({
       data: uniqueBranchIds.map((branchId) => ({
         serviceId: createdService.id,
-
         branchId,
       })),
     });
@@ -111,7 +152,7 @@ const createService = async (payload: ICreateServicePayload) => {
   });
 
   // =====================================================
-  // 6. RESPONSE
+  // 7. RESPONSE
   // =====================================================
 
   return {
@@ -128,13 +169,26 @@ const createService = async (payload: ICreateServicePayload) => {
     status: service.status,
 
     images: [],
+
+    // NEW: Admin can access all translations
+    translations: service.translations,
   };
 };
+const getServices = async (
+  query: Record<string, any>,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
 
-const getServices = async (query: Record<string, any>) => {
   const limit = query.limit ? Number(query.limit) : 20;
   const page = query.page ? Number(query.page) : 1;
   const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 2. FILTERS
+  // =====================================================
 
   const status = query.status as ServiceStatus | undefined;
   const searchTerm = query.q as string | undefined;
@@ -146,6 +200,10 @@ const getServices = async (query: Record<string, any>) => {
       status,
     });
   }
+
+  // =====================================================
+  // 3. SEARCH
+  // =====================================================
 
   if (searchTerm) {
     andConditions.push({
@@ -165,6 +223,10 @@ const getServices = async (query: Record<string, any>) => {
       ],
     });
   }
+
+  // =====================================================
+  // 4. FETCH SERVICES + TOTAL COUNT
+  // =====================================================
 
   const [services, totalServiceCount] = await Promise.all([
     prisma.service.findMany({
@@ -198,6 +260,9 @@ const getServices = async (query: Record<string, any>) => {
               select: {
                 id: true,
                 name: true,
+
+                // NEW: Branch translations
+                translations: true,
               },
             },
           },
@@ -212,20 +277,64 @@ const getServices = async (query: Record<string, any>) => {
     }),
   ]);
 
+  // =====================================================
+  // 5. LOCALIZE SERVICES + GENERATE IMAGE URLS
+  // =====================================================
+
   const items = await Promise.all(
     services.map(async (service) => {
+      // ===============================================
+      // LOCALIZE SERVICE NAME + DESCRIPTION
+      // ===============================================
+
+      const localizedService = getLocalizedContent(
+        service.translations,
+        language,
+        {
+          name: service.name,
+          description: service.description,
+        },
+      );
+
+      // ===============================================
+      // GENERATE PRIMARY IMAGE URL
+      // ===============================================
+
       const primaryImageObjectKey = service.images[0]?.objectKey ?? null;
 
       const primaryImageUrl = primaryImageObjectKey
         ? await uploadService.getImageUrl(primaryImageObjectKey)
         : null;
 
+      // ===============================================
+      // LOCALIZE BRANCH NAMES
+      // ===============================================
+
+      const localizedBranches = service.branches.map((item) => {
+        const localizedBranch = getLocalizedContent(
+          item.branch.translations,
+          language,
+          {
+            name: item.branch.name,
+          },
+        );
+
+        return {
+          id: item.branch.id,
+          name: localizedBranch.name,
+        };
+      });
+
+      // ===============================================
+      // FINAL SERVICE RESPONSE
+      // ===============================================
+
       return {
         id: service.id,
 
-        name: service.name,
+        name: localizedService.name,
 
-        description: service.description,
+        description: localizedService.description,
 
         price: Number(service.price),
 
@@ -240,15 +349,20 @@ const getServices = async (query: Record<string, any>) => {
             }
           : null,
 
-        branches: service.branches.map((item) => ({
-          id: item.branch.id,
-          name: item.branch.name,
-        })),
+        branches: localizedBranches,
       };
     }),
   );
 
+  // =====================================================
+  // 6. PAGINATION
+  // =====================================================
+
   const totalPages = Math.ceil(totalServiceCount / limit);
+
+  // =====================================================
+  // 7. FINAL RESPONSE
+  // =====================================================
 
   return {
     items,
@@ -263,7 +377,11 @@ const getServices = async (query: Record<string, any>) => {
     },
   };
 };
-const getServiceById = async (serviceId: string) => {
+
+const getServiceById = async (
+  serviceId: string,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
   // =====================================================
   // 1. FIND SERVICE
   // =====================================================
@@ -294,6 +412,7 @@ const getServiceById = async (serviceId: string) => {
               id: true,
               name: true,
               status: true,
+              translations: true,
             },
           },
         },
@@ -306,33 +425,58 @@ const getServiceById = async (serviceId: string) => {
   }
 
   // =====================================================
-  // 2. GENERATE SIGNED IMAGE URLS
+  // 2. LOCALIZE SERVICE
+  // =====================================================
+
+  const localizedService = getLocalizedContent(service.translations, language, {
+    name: service.name,
+    description: service.description,
+  });
+
+  // =====================================================
+  // 3. GENERATE SIGNED IMAGE URLS
   // =====================================================
 
   const images = await Promise.all(
     service.images.map(async (image) => ({
       id: image.id,
-
       objectKey: image.objectKey,
-
       url: await uploadService.getImageUrl(image.objectKey),
-
       isPrimary: image.isPrimary,
-
       sortOrder: image.sortOrder,
     })),
   );
 
   // =====================================================
-  // 3. RESPONSE
+  // 4. LOCALIZE BRANCHES
+  // =====================================================
+
+  const branches = service.branches.map((item) => {
+    const localizedBranch = getLocalizedContent(
+      item.branch.translations,
+      language,
+      {
+        name: item.branch.name,
+      },
+    );
+
+    return {
+      id: item.branch.id,
+      name: localizedBranch.name,
+      status: item.branch.status,
+    };
+  });
+
+  // =====================================================
+  // 5. FINAL RESPONSE
   // =====================================================
 
   return {
     id: service.id,
 
-    name: service.name,
+    name: localizedService.name,
 
-    description: service.description,
+    description: localizedService.description,
 
     price: Number(service.price),
 
@@ -342,15 +486,30 @@ const getServiceById = async (serviceId: string) => {
 
     images,
 
-    branches: service.branches.map((item) => ({
-      id: item.branch.id,
-
-      name: item.branch.name,
-
-      status: item.branch.status,
-    })),
+    branches,
   };
 };
+
+const getServiceTranslationRecord = (
+  value: unknown,
+): Record<string, Record<string, unknown>> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+
+  const result: Record<string, Record<string, unknown>> = {};
+
+  for (const locale of ["en", "zh-CN", "zh-HK"]) {
+    const entry = (value as Record<string, unknown>)[locale];
+
+    if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
+      result[locale] = { ...entry };
+    }
+  }
+
+  return result;
+};
+
 const updateService = async (
   serviceId: string,
   payload: IUpdateServicePayload,
@@ -382,6 +541,7 @@ const updateService = async (
           equals: serviceName,
           mode: "insensitive",
         },
+
         NOT: {
           id: serviceId,
         },
@@ -432,6 +592,80 @@ const updateService = async (
   // =====================================================
 
   const updatedService = await prisma.$transaction(async (tx) => {
+    // Fetch latest service state for translation merging.
+    const currentService = await tx.service.findUnique({
+      where: {
+        id: serviceId,
+      },
+    });
+
+    if (!currentService) {
+      throw new AppError("Service not found", 404);
+    }
+
+    // ===================================================
+    // PREPARE MULTILINGUAL TRANSLATIONS
+    // ===================================================
+
+    const shouldUpdateTranslations =
+      payload.translations !== undefined ||
+      payload.name !== undefined ||
+      payload.description !== undefined;
+
+    let mergedTranslations: Prisma.InputJsonObject | undefined;
+
+    if (shouldUpdateTranslations) {
+      const existingTranslations = getServiceTranslationRecord(
+        currentService.translations,
+      );
+
+      const incomingTranslations = payload.translations;
+
+      const nextTranslations = {
+        ...existingTranslations,
+      };
+
+      // Merge only supplied language fields.
+      for (const locale of ["zh-CN", "zh-HK"] as const) {
+        const incoming = incomingTranslations?.[locale];
+
+        if (incoming !== undefined) {
+          nextTranslations[locale] = {
+            ...(nextTranslations[locale] ?? {}),
+
+            ...(incoming.name !== undefined && {
+              name: incoming.name,
+            }),
+
+            ...(incoming.description !== undefined && {
+              description: incoming.description,
+            }),
+          };
+        }
+      }
+
+      // English base fields remain source of truth.
+      nextTranslations.en = {
+        ...(nextTranslations.en ?? {}),
+
+        name:
+          payload.name !== undefined
+            ? payload.name.trim()
+            : currentService.name,
+
+        description:
+          payload.description !== undefined
+            ? payload.description.trim()
+            : currentService.description,
+      };
+
+      mergedTranslations = nextTranslations as Prisma.InputJsonObject;
+    }
+
+    // ===================================================
+    // UPDATE SERVICE
+    // ===================================================
+
     await tx.service.update({
       where: {
         id: serviceId,
@@ -453,12 +687,16 @@ const updateService = async (
         ...(payload.durationMinutes !== undefined && {
           durationMinutes: payload.durationMinutes,
         }),
+
+        ...(mergedTranslations !== undefined && {
+          translations: mergedTranslations,
+        }),
       },
     });
 
-    // ================================================
+    // ===================================================
     // REPLACE IMAGES ONLY WHEN PROVIDED
-    // ================================================
+    // ===================================================
 
     if (uniqueImageObjectKeys !== undefined) {
       await tx.serviceImage.deleteMany({
@@ -479,9 +717,9 @@ const updateService = async (
       }
     }
 
-    // ================================================
-    // FETCH UPDATED SERVICE WITH IMAGES + BRANCHES
-    // ================================================
+    // ===================================================
+    // FETCH UPDATED SERVICE
+    // ===================================================
 
     return tx.service.findUnique({
       where: {
@@ -532,13 +770,9 @@ const updateService = async (
   const images = await Promise.all(
     updatedService.images.map(async (image) => ({
       id: image.id,
-
       objectKey: image.objectKey,
-
       url: await uploadService.getImageUrl(image.objectKey),
-
       isPrimary: image.isPrimary,
-
       sortOrder: image.sortOrder,
     })),
   );
@@ -567,9 +801,10 @@ const updateService = async (
       name: item.branch.name,
       status: item.branch.status,
     })),
+
+    translations: updatedService.translations,
   };
 };
-
 const updateServiceStatus = async (
   serviceId: string,
   payload: IUpdateServiceStatusPayload,
@@ -706,13 +941,18 @@ const assignServiceToBranches = async (
 const getBranchServices = async (
   branchId: string,
   query: Record<string, any>,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
+
   const limit = query.limit ? Number(query.limit) : 20;
   const page = query.page ? Number(query.page) : 1;
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 1. CHECK BRANCH
+  // 2. CHECK BRANCH
   // =====================================================
 
   const branch = await prisma.branch.findUnique({
@@ -730,7 +970,7 @@ const getBranchServices = async (
   }
 
   // =====================================================
-  // 2. STATUS
+  // 3. STATUS
   // =====================================================
 
   const status = query.status
@@ -738,7 +978,7 @@ const getBranchServices = async (
     : ServiceStatus.ACTIVE;
 
   // =====================================================
-  // 3. FETCH SERVICES + COUNT
+  // 4. FETCH SERVICES + COUNT
   // =====================================================
 
   const [services, totalServiceCount] = await Promise.all([
@@ -789,21 +1029,42 @@ const getBranchServices = async (
   ]);
 
   // =====================================================
-  // 4. GENERATE PRIMARY IMAGE URL
+  // 5. LOCALIZE SERVICES + GENERATE IMAGE URLS
   // =====================================================
 
   const items = await Promise.all(
     services.map(async (service) => {
+      // ===============================================
+      // LOCALIZE SERVICE
+      // ===============================================
+
+      const localizedService = getLocalizedContent(
+        service.translations,
+        language,
+        {
+          name: service.name,
+          description: service.description,
+        },
+      );
+
+      // ===============================================
+      // GENERATE PRIMARY IMAGE URL
+      // ===============================================
+
       const primaryImageObjectKey = service.images[0]?.objectKey ?? null;
 
       const primaryImageUrl = primaryImageObjectKey
         ? await uploadService.getImageUrl(primaryImageObjectKey)
         : null;
 
+      // ===============================================
+      // RESPONSE
+      // ===============================================
+
       return {
         id: service.id,
 
-        name: service.name,
+        name: localizedService.name,
 
         price: Number(service.price),
 
@@ -820,13 +1081,13 @@ const getBranchServices = async (
   );
 
   // =====================================================
-  // 5. PAGINATION
+  // 6. PAGINATION
   // =====================================================
 
   const totalPages = Math.ceil(totalServiceCount / limit);
 
   // =====================================================
-  // 6. RESPONSE
+  // 7. FINAL RESPONSE
   // =====================================================
 
   return {

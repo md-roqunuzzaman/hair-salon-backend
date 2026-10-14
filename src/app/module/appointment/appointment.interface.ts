@@ -100,6 +100,12 @@ export interface IMyAppointmentItem {
     name: string;
   } | null;
 
+  // NEW: Package booking + multilingual name
+  package: {
+    id: string;
+    name: string;
+  } | null;
+
   staff: {
     id: string;
     name: string;
@@ -110,6 +116,14 @@ export interface IMyAppointmentItem {
   endTime: string;
 
   price: number;
+
+  // Deposit/payment summary
+  depositPercentage: number;
+  depositAmount: number;
+  remainingAmount: number;
+
+  amountPaid: number;
+  amountDue: number;
 
   qrAvailable: boolean;
 }

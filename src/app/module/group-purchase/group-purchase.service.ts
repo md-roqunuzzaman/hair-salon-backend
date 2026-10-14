@@ -11,6 +11,8 @@ import {
 import { prisma } from "../../lib/prisma.js";
 
 import { AppError } from "../../utils/app-error.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { getLocalizedContent } from "../../utils/localization.js";
 import {
   assertBranchHourlyCapacityAvailable,
   assertStaffSlotAvailable,
@@ -280,10 +282,19 @@ const createGroupPurchase = async (
 const getMyGroupPurchases = async (
   customerId: string,
   query: Record<string, any>,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
+
   const limit = query.limit ? Number(query.limit) : 20;
   const page = query.page ? Number(query.page) : 1;
   const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 2. FETCH CUSTOMER GROUP PURCHASES
+  // =====================================================
 
   const purchases = await prisma.groupPurchase.findMany({
     where: {
@@ -302,6 +313,10 @@ const getMyGroupPurchases = async (
         select: {
           id: true,
           name: true,
+
+          // NEW: Multilingual translations
+          translations: true,
+
           type: true,
 
           images: {
@@ -320,6 +335,10 @@ const getMyGroupPurchases = async (
     },
   });
 
+  // =====================================================
+  // 3. TOTAL PURCHASE COUNT
+  // =====================================================
+
   const totalPurchaseCount = await prisma.groupPurchase.count({
     where: {
       customerId,
@@ -327,7 +346,7 @@ const getMyGroupPurchases = async (
   });
 
   // =====================================================
-  // GET REDEMPTION COUNTS FOR CURRENT PAGE
+  // 4. GET REDEMPTION COUNTS FOR CURRENT PAGE
   // =====================================================
 
   const purchaseIds = purchases.map((purchase) => purchase.id);
@@ -359,11 +378,21 @@ const getMyGroupPurchases = async (
   );
 
   // =====================================================
-  // RESPONSE
+  // 5. RESPONSE WITH MULTILINGUAL PACKAGE NAME
   // =====================================================
 
   return {
     items: purchases.map((purchase) => {
+      // NEW: Localize package name
+      // Fallback: selected language -> English -> original name
+      const localizedPackage = getLocalizedContent(
+        purchase.package.translations,
+        language,
+        {
+          name: purchase.package.name,
+        },
+      );
+
       const purchasedQuantity = purchase.quantity;
 
       const redeemedQuantity = redemptionCountMap.get(purchase.id) ?? 0;
@@ -381,7 +410,10 @@ const getMyGroupPurchases = async (
 
         package: {
           id: purchase.package.id,
-          name: purchase.package.name,
+
+          // Localized package name
+          name: localizedPackage.name,
+
           type: purchase.package.type,
 
           primaryImageObjectKey: purchase.package.images[0]?.objectKey || null,
@@ -401,7 +433,6 @@ const getMyGroupPurchases = async (
 
         createdAt: purchase.createdAt,
 
-        // NEW
         redemption: {
           purchasedQuantity,
           redeemedQuantity,
@@ -428,7 +459,12 @@ const getGroupPurchaseById = async (
   purchaseId: string,
   userId: string,
   role: string,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
+  // =====================================================
+  // 1. FETCH GROUP PURCHASE
+  // =====================================================
+
   const purchase = await prisma.groupPurchase.findUnique({
     where: {
       id: purchaseId,
@@ -439,6 +475,7 @@ const getGroupPurchaseById = async (
         select: {
           id: true,
           name: true,
+          translations: true,
           type: true,
           regularPrice: true,
           packagePrice: true,
@@ -461,6 +498,7 @@ const getGroupPurchaseById = async (
                 select: {
                   id: true,
                   name: true,
+                  translations: true,
                 },
               },
             },
@@ -472,6 +510,7 @@ const getGroupPurchaseById = async (
                 select: {
                   id: true,
                   name: true,
+                  translations: true,
                 },
               },
             },
@@ -480,6 +519,10 @@ const getGroupPurchaseById = async (
       },
     },
   });
+
+  // =====================================================
+  // 2. VALIDATE PURCHASE
+  // =====================================================
 
   if (!purchase) {
     throw new AppError("Group purchase not found", 404);
@@ -494,7 +537,19 @@ const getGroupPurchaseById = async (
   }
 
   // =====================================================
-  // GROUP PURCHASE REDEMPTION SUMMARY
+  // 3. LOCALIZE PACKAGE NAME
+  // =====================================================
+
+  const localizedPackage = getLocalizedContent(
+    purchase.package.translations,
+    language,
+    {
+      name: purchase.package.name,
+    },
+  );
+
+  // =====================================================
+  // 4. GROUP PURCHASE REDEMPTION SUMMARY
   // =====================================================
 
   // Keep this status filter consistent with
@@ -520,7 +575,7 @@ const getGroupPurchaseById = async (
     purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
 
   // =====================================================
-  // EXISTING RESPONSE + REDEMPTION
+  // 5. RESPONSE WITH MULTILINGUAL CONTENT
   // =====================================================
 
   return {
@@ -528,7 +583,10 @@ const getGroupPurchaseById = async (
 
     package: {
       id: purchase.package.id,
-      name: purchase.package.name,
+
+      // Localized package name
+      name: localizedPackage.name,
+
       type: purchase.package.type,
 
       regularPrice: Number(purchase.package.regularPrice),
@@ -548,15 +606,43 @@ const getGroupPurchaseById = async (
         sortOrder: image.sortOrder,
       })),
 
-      services: purchase.package.services.map((item) => ({
-        id: item.service.id,
-        name: item.service.name,
-      })),
+      // =================================================
+      // LOCALIZED SERVICES
+      // =================================================
 
-      branches: purchase.package.branches.map((item) => ({
-        id: item.branch.id,
-        name: item.branch.name,
-      })),
+      services: purchase.package.services.map((item) => {
+        const localizedService = getLocalizedContent(
+          item.service.translations,
+          language,
+          {
+            name: item.service.name,
+          },
+        );
+
+        return {
+          id: item.service.id,
+          name: localizedService.name,
+        };
+      }),
+
+      // =================================================
+      // LOCALIZED BRANCHES
+      // =================================================
+
+      branches: purchase.package.branches.map((item) => {
+        const localizedBranch = getLocalizedContent(
+          item.branch.translations,
+          language,
+          {
+            name: item.branch.name,
+          },
+        );
+
+        return {
+          id: item.branch.id,
+          name: localizedBranch.name,
+        };
+      }),
     },
 
     quantity: purchase.quantity,
@@ -573,7 +659,10 @@ const getGroupPurchaseById = async (
 
     createdAt: purchase.createdAt,
 
-    // NEW: Customer-facing redemption information.
+    // =====================================================
+    // 6. CUSTOMER-FACING REDEMPTION INFORMATION
+    // =====================================================
+
     redemption: {
       purchasedQuantity,
       redeemedQuantity,
@@ -597,9 +686,13 @@ const createGroupPurchaseAppointment = async (
 ) => {
   const { branchId, staffId, date, startTime } = payload;
 
-  // 1. Verify purchased package
+  // =====================================================
+  // 1. VERIFY PURCHASED PACKAGE
+  // =====================================================
+
   const purchase = await prisma.groupPurchase.findUnique({
     where: { id: purchaseId },
+
     include: {
       package: {
         select: {
@@ -624,7 +717,10 @@ const createGroupPurchaseAppointment = async (
     throw new AppError("Group purchase is not paid", 400);
   }
 
-  // 2. Check availability
+  // =====================================================
+  // 2. CHECK AVAILABILITY
+  // =====================================================
+
   const availability = await AvailabilityService.getAvailableSlots({
     branchId,
     packageId: purchase.packageId,
@@ -644,25 +740,42 @@ const createGroupPurchaseAppointment = async (
   }
 
   const resolvedStaffId = staffId ?? requestedSlot.staffId;
+
   const dateOnly = new Date(`${date}T00:00:00.000Z`);
 
-  // 3. Serializable transaction
+  // =====================================================
+  // 3. SERIALIZABLE TRANSACTION
+  // =====================================================
+
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await prisma.$transaction(
         async (tx) => {
           const currentPurchase = await tx.groupPurchase.findUnique({
-            where: { id: purchaseId },
+            where: {
+              id: purchaseId,
+            },
+
             include: {
               package: {
                 select: {
                   id: true,
                   name: true,
+
+                  // NEW: Multilingual package translations
+                  translations: true,
+
                   durationMinutes: true,
                   status: true,
+
                   branches: {
-                    where: { branchId },
-                    select: { branchId: true },
+                    where: {
+                      branchId,
+                    },
+
+                    select: {
+                      branchId: true,
+                    },
                   },
                 },
               },
@@ -688,10 +801,14 @@ const createGroupPurchaseAppointment = async (
             throw new AppError("Package is not available at this branch", 400);
           }
 
-          // 4. Check remaining purchased quantity
+          // =====================================================
+          // 4. CHECK REMAINING PURCHASED QUANTITY
+          // =====================================================
+
           const allocatedCount = await tx.appointment.count({
             where: {
               groupPurchaseId: purchaseId,
+
               appointmentStatus: {
                 not: AppointmentStatus.CANCELLED,
               },
@@ -702,15 +819,24 @@ const createGroupPurchaseAppointment = async (
             throw new AppError("No remaining package quantity available", 409);
           }
 
-          // 5. Calculate requested time
+          // =====================================================
+          // 5. CALCULATE REQUESTED TIME
+          // =====================================================
+
           const durationMinutes = currentPurchase.package.durationMinutes;
 
           const requestedStart = timeToMinutes(startTime);
+
           const requestedEnd = requestedStart + durationMinutes;
+
           const endTime = minutesToTime(requestedEnd);
+
           const now = new Date();
 
-          // 6. Final availability checks
+          // =====================================================
+          // 6. FINAL AVAILABILITY CHECKS
+          // =====================================================
+
           await assertStaffSlotAvailable(
             tx,
             resolvedStaffId,
@@ -730,7 +856,23 @@ const createGroupPurchaseAppointment = async (
             now,
           );
 
-          // 7. Create confirmed appointment
+          // =====================================================
+          // 7. PREPARE MULTILINGUAL PACKAGE SNAPSHOT
+          // =====================================================
+
+          // Store the package translations at booking time.
+          // Future package edits will not change this
+          // appointment's saved multilingual item name.
+
+          const itemNameTranslations =
+            currentPurchase.package.translations === null
+              ? undefined
+              : (currentPurchase.package.translations as Prisma.InputJsonValue);
+
+          // =====================================================
+          // 8. CREATE CONFIRMED APPOINTMENT
+          // =====================================================
+
           const appointment = await tx.appointment.create({
             data: {
               customerId,
@@ -742,14 +884,23 @@ const createGroupPurchaseAppointment = async (
               groupPurchaseId: purchaseId,
 
               bookingMethod: BookingMethod.GROUP_PURCHASE,
+
               appointmentStatus: AppointmentStatus.CONFIRMED,
+
               paymentStatus: PaymentStatus.PAID,
 
               date: dateOnly,
               startTime,
               endTime,
 
+              // Original package name snapshot
               itemName: currentPurchase.package.name,
+
+              // NEW: Multilingual name snapshot
+              ...(itemNameTranslations !== undefined && {
+                itemNameTranslations,
+              }),
+
               durationMinutes,
 
               // No additional payment required
@@ -757,10 +908,12 @@ const createGroupPurchaseAppointment = async (
               currency: "HKD",
 
               holdExpiresAt: null,
+
               qrToken: null,
               qrVerifiedAt: null,
               qrVerifiedBy: null,
             },
+
             select: {
               id: true,
               bookingMethod: true,
@@ -770,19 +923,32 @@ const createGroupPurchaseAppointment = async (
             },
           });
 
+          // =====================================================
+          // 9. RESPONSE
+          // =====================================================
+
           return {
             appointmentId: appointment.id,
+
             bookingMethod: appointment.bookingMethod,
+
             appointmentStatus: appointment.appointmentStatus,
+
             paymentStatus: appointment.paymentStatus,
+
             staffId: appointment.staffId,
+
             qrAvailable: false,
+
             additionalPaymentRequired: false,
           };
         },
+
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+
           maxWait: 10000,
+
           timeout: 15000,
         },
       );
@@ -805,7 +971,6 @@ const createGroupPurchaseAppointment = async (
 
   throw new AppError("Unable to create appointment", 409);
 };
-
 export const groupPurchaseService = {
   createGroupPurchase,
   getMyGroupPurchases,

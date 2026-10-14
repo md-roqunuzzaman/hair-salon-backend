@@ -1,16 +1,23 @@
 import {
+  AppointmentStatus,
   BranchStatus,
   Prisma,
   Role,
+  StaffStatus,
   UserStatus,
 } from "../../../../generated/prisma/client.js";
 
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { getLocalizedContent } from "../../utils/localization.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
+import { notificationService } from "../notification/notification.service.js";
+import { notificationTemplates } from "../notification/notification.templates.js";
 import { uploadService } from "../upload/upload.service.js";
 
 import {
+  IBranchTranslations,
   ICreateBranchPayload,
   ICustomerOperationalSearchQuery,
   ICustomerOperationalSearchResponse,
@@ -21,14 +28,104 @@ import {
 } from "./branch.interface.js";
 
 // =====================================================
+// BRANCH LOCALIZATION HELPERS
+// =====================================================
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const readBranchTranslations = (value: unknown): IBranchTranslations => {
+  if (!isRecord(value)) return {};
+
+  const result: IBranchTranslations = {};
+
+  for (const language of ["en", "zh-CN", "zh-HK"] as const) {
+    const locale = value[language];
+
+    if (!isRecord(locale)) continue;
+
+    result[language] = {
+      ...(typeof locale.name === "string" && {
+        name: locale.name,
+      }),
+      ...(typeof locale.address === "string" && {
+        address: locale.address,
+      }),
+      ...(typeof locale.description === "string" && {
+        description: locale.description,
+      }),
+    };
+  }
+
+  return result;
+};
+
+const buildBranchTranslations = (
+  existing: unknown,
+  incoming: IBranchTranslations | undefined,
+  base: {
+    name: string;
+    address: string;
+    description: string | null;
+  },
+): Prisma.InputJsonObject => {
+  const previous = readBranchTranslations(existing);
+
+  const mergeLocale = (language: "zh-CN" | "zh-HK") => ({
+    ...(previous[language] ?? {}),
+    ...(incoming?.[language] ?? {}),
+  });
+
+  return {
+    en: {
+      name: base.name,
+      address: base.address,
+      ...(base.description !== null && {
+        description: base.description,
+      }),
+    },
+
+    "zh-CN": mergeLocale("zh-CN"),
+    "zh-HK": mergeLocale("zh-HK"),
+  };
+};
+
+const localizeBranch = (
+  branch: {
+    name: string;
+    address: string;
+    description: string | null;
+    translations: unknown;
+  },
+  language: Language,
+) => {
+  return getLocalizedContent(branch.translations, language, {
+    name: branch.name,
+    address: branch.address,
+    description: branch.description,
+  });
+};
+// =====================================================
 // CREATE BRANCH
 // =====================================================
 
 const createBranch = async (payload: ICreateBranchPayload) => {
+  // =====================================================
+  // 1. PREPARE ENGLISH BASE DATA
+  // =====================================================
+
+  const name = payload.name.trim();
+  const address = payload.address.trim();
+  const description = payload.description?.trim() || null;
+
+  // =====================================================
+  // 2. DUPLICATE BRANCH CHECK
+  // =====================================================
+
   const existingBranch = await prisma.branch.findFirst({
     where: {
       name: {
-        equals: payload.name.trim(),
+        equals: name,
         mode: "insensitive",
       },
     },
@@ -38,19 +135,38 @@ const createBranch = async (payload: ICreateBranchPayload) => {
     throw new AppError("Branch already exists", 409);
   }
 
+  // =====================================================
+  // 3. BUILD TRANSLATIONS
+  // =====================================================
+
+  const translations = buildBranchTranslations(null, payload.translations, {
+    name,
+    address,
+    description,
+  });
+
+  // =====================================================
+  // 4. CREATE BRANCH + DEFAULT BOOKING POLICY
+  // =====================================================
+
   const branch = await prisma.$transaction(async (tx) => {
     const createdBranch = await tx.branch.create({
       data: {
-        name: payload.name.trim(),
-        address: payload.address.trim(),
+        name,
+        address,
+
         phone: payload.phone?.trim() || null,
-        description: payload.description?.trim() || null,
+
+        description,
+
         imageObjectKey: payload.imageObjectKey || null,
+
+        translations,
       },
     });
 
     // -------------------------------------------------
-    // Create default booking policy for every new branch
+    // CREATE DEFAULT BOOKING POLICY
     // -------------------------------------------------
 
     await tx.branchBookingPolicy.create({
@@ -69,10 +185,10 @@ const createBranch = async (payload: ICreateBranchPayload) => {
 
         reserveExpiryRule: "APPOINTMENT_TIME",
 
-        // Deposit is always available by default
+        // Deposit is always enabled
         depositEnabled: true,
 
-        // Default down payment = 10%
+        // Default deposit = 10%
         depositPercentage: 10,
       },
     });
@@ -87,7 +203,10 @@ const createBranch = async (payload: ICreateBranchPayload) => {
 // GET ALL BRANCHES
 // =====================================================
 
-const getBranches = async (query: Record<string, any>) => {
+const getBranches = async (
+  query: Record<string, any>,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
   // =====================================================
   // 1. PAGINATION
   // =====================================================
@@ -143,6 +262,8 @@ const getBranches = async (query: Record<string, any>) => {
 
         description: true,
 
+        translations: true,
+
         imageObjectKey: true,
 
         status: true,
@@ -161,11 +282,13 @@ const getBranches = async (query: Record<string, any>) => {
   ]);
 
   // =====================================================
-  // 4. GENERATE SIGNED IMAGE URLS
+  // 4. LOCALIZE BRANCHES + GENERATE SIGNED IMAGE URLS
   // =====================================================
 
   const items = await Promise.all(
     branches.map(async (branch) => {
+      const localized = localizeBranch(branch, language);
+
       const imageUrl = branch.imageObjectKey
         ? await uploadService.getImageUrl(branch.imageObjectKey)
         : null;
@@ -173,13 +296,13 @@ const getBranches = async (query: Record<string, any>) => {
       return {
         id: branch.id,
 
-        name: branch.name,
+        name: localized.name,
 
-        address: branch.address,
+        address: localized.address,
 
         phone: branch.phone,
 
-        description: branch.description,
+        description: localized.description,
 
         imageObjectKey: branch.imageObjectKey,
 
@@ -223,12 +346,14 @@ const getBranches = async (query: Record<string, any>) => {
     },
   };
 };
-
 // =====================================================
 // GET SINGLE BRANCH
 // =====================================================
 
-const getBranchById = async (branchId: string) => {
+const getBranchById = async (
+  branchId: string,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
   // =====================================================
   // 1. FIND BRANCH
   // =====================================================
@@ -240,13 +365,23 @@ const getBranchById = async (branchId: string) => {
 
     select: {
       id: true,
+
       name: true,
+
       address: true,
+
       phone: true,
+
       description: true,
+
+      translations: true,
+
       imageObjectKey: true,
+
       status: true,
+
       createdAt: true,
+
       updatedAt: true,
     },
   });
@@ -256,7 +391,13 @@ const getBranchById = async (branchId: string) => {
   }
 
   // =====================================================
-  // 2. GENERATE SIGNED IMAGE URL
+  // 2. LOCALIZE BRANCH CONTENT
+  // =====================================================
+
+  const localized = localizeBranch(branch, language);
+
+  // =====================================================
+  // 3. GENERATE SIGNED IMAGE URL
   // =====================================================
 
   const imageUrl = branch.imageObjectKey
@@ -264,19 +405,19 @@ const getBranchById = async (branchId: string) => {
     : null;
 
   // =====================================================
-  // 3. RESPONSE
+  // 4. RESPONSE
   // =====================================================
 
   return {
     id: branch.id,
 
-    name: branch.name,
+    name: localized.name,
 
-    address: branch.address,
+    address: localized.address,
 
     phone: branch.phone,
 
-    description: branch.description,
+    description: localized.description,
 
     imageObjectKey: branch.imageObjectKey,
 
@@ -289,7 +430,6 @@ const getBranchById = async (branchId: string) => {
     updatedAt: branch.updatedAt,
   };
 };
-
 // =====================================================
 // UPDATE BRANCH
 // =====================================================
@@ -297,6 +437,7 @@ const getBranchById = async (branchId: string) => {
 const updateBranch = async (
   branchId: string,
   payload: IUpdateBranchPayload,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
   // 1. FIND BRANCH
@@ -313,14 +454,39 @@ const updateBranch = async (
   }
 
   // =====================================================
-  // 2. DUPLICATE BRANCH NAME
+  // 2. RESOLVE ENGLISH BASE DATA
   // =====================================================
 
-  if (payload.name) {
+  const nextName =
+    payload.name !== undefined
+      ? payload.name.trim()
+      : payload.translations?.en?.name !== undefined
+        ? payload.translations.en.name.trim()
+        : branch.name;
+
+  const nextAddress =
+    payload.address !== undefined
+      ? payload.address.trim()
+      : payload.translations?.en?.address !== undefined
+        ? payload.translations.en.address.trim()
+        : branch.address;
+
+  const nextDescription =
+    payload.description !== undefined
+      ? payload.description.trim()
+      : payload.translations?.en?.description !== undefined
+        ? payload.translations.en.description.trim()
+        : branch.description;
+
+  // =====================================================
+  // 3. DUPLICATE BRANCH NAME CHECK
+  // =====================================================
+
+  if (nextName !== branch.name) {
     const existingBranch = await prisma.branch.findFirst({
       where: {
         name: {
-          equals: payload.name.trim(),
+          equals: nextName,
           mode: "insensitive",
         },
 
@@ -336,7 +502,7 @@ const updateBranch = async (
   }
 
   // =====================================================
-  // 3. IMAGE VALIDATION
+  // 4. IMAGE R2 VALIDATION
   // =====================================================
 
   if (payload.imageObjectKey !== undefined) {
@@ -346,12 +512,27 @@ const updateBranch = async (
       throw new AppError("Invalid branch image object key", 400);
     }
 
-    // Verify that the image really exists in R2.
     await uploadService.verifyImageExists(payload.imageObjectKey);
   }
 
   // =====================================================
-  // 4. UPDATE BRANCH
+  // 5. MERGE MULTILINGUAL TRANSLATIONS
+  // =====================================================
+
+  const translations = buildBranchTranslations(
+    branch.translations,
+    payload.translations,
+    {
+      name: nextName,
+
+      address: nextAddress,
+
+      description: nextDescription,
+    },
+  );
+
+  // =====================================================
+  // 6. UPDATE BRANCH
   // =====================================================
 
   const updatedBranch = await prisma.branch.update({
@@ -360,20 +541,16 @@ const updateBranch = async (
     },
 
     data: {
-      ...(payload.name !== undefined && {
-        name: payload.name.trim(),
-      }),
+      name: nextName,
 
-      ...(payload.address !== undefined && {
-        address: payload.address.trim(),
-      }),
+      address: nextAddress,
+
+      description: nextDescription,
+
+      translations,
 
       ...(payload.phone !== undefined && {
         phone: payload.phone.trim(),
-      }),
-
-      ...(payload.description !== undefined && {
-        description: payload.description.trim(),
       }),
 
       ...(payload.imageObjectKey !== undefined && {
@@ -383,7 +560,7 @@ const updateBranch = async (
   });
 
   // =====================================================
-  // 5. GENERATE SIGNED IMAGE URL
+  // 7. GENERATE SIGNED IMAGE URL
   // =====================================================
 
   const imageUrl = updatedBranch.imageObjectKey
@@ -391,19 +568,21 @@ const updateBranch = async (
     : null;
 
   // =====================================================
-  // 6. RESPONSE
+  // 8. LOCALIZE RESPONSE
   // =====================================================
+
+  const localized = localizeBranch(updatedBranch, language);
 
   return {
     id: updatedBranch.id,
 
-    name: updatedBranch.name,
+    name: localized.name,
 
-    address: updatedBranch.address,
+    address: localized.address,
 
     phone: updatedBranch.phone,
 
-    description: updatedBranch.description,
+    description: localized.description,
 
     imageObjectKey: updatedBranch.imageObjectKey,
 
@@ -426,9 +605,19 @@ const updateBranchStatus = async (
   payload: IUpdateBranchStatusPayload,
   userId: string,
 ) => {
+  // =====================================================
+  // 1. FIND BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
+    },
+
+    select: {
+      id: true,
+      name: true,
+      status: true,
     },
   });
 
@@ -437,7 +626,7 @@ const updateBranchStatus = async (
   }
 
   // =====================================================
-  // SAME STATUS — NO UPDATE / NO AUDIT
+  // 2. SAME STATUS - NO UPDATE / NO NOTIFICATION
   // =====================================================
 
   if (branch.status === payload.status) {
@@ -445,19 +634,38 @@ const updateBranchStatus = async (
   }
 
   // =====================================================
-  // UPDATE + AUDIT
+  // 3. UPDATE BRANCH STATUS + AUDIT + NOTIFICATIONS
   // =====================================================
 
   const updatedBranch = await prisma.$transaction(async (tx) => {
-    const result = await tx.branch.update({
+    // ===================================================
+    // 3.1 ATOMIC STATUS UPDATE
+    // ===================================================
+
+    const claimResult = await tx.branch.updateMany({
       where: {
         id: branchId,
+        status: branch.status,
       },
 
       data: {
         status: payload.status,
       },
     });
+
+    if (claimResult.count !== 1) {
+      throw new AppError("Branch status has changed. Please try again.", 409);
+    }
+
+    const result = await tx.branch.findUniqueOrThrow({
+      where: {
+        id: branchId,
+      },
+    });
+
+    // ===================================================
+    // 3.2 AUDIT LOG
+    // ===================================================
 
     await auditLogService.createAuditLog(
       {
@@ -476,6 +684,149 @@ const updateBranchStatus = async (
       },
       tx,
     );
+
+    // ===================================================
+    // 3.3 GET ACTIVE STAFF ASSIGNED TO THIS BRANCH
+    // ===================================================
+
+    const assignedStaff = await tx.staff.findMany({
+      where: {
+        status: StaffStatus.ACTIVE,
+
+        branches: {
+          some: {
+            branchId,
+          },
+        },
+      },
+
+      select: {
+        userId: true,
+      },
+    });
+
+    // ===================================================
+    // 3.4 GET BRANCH MANAGERS
+    // ===================================================
+
+    const branchManagers = await tx.branchManagerBranch.findMany({
+      where: {
+        branchId,
+      },
+
+      select: {
+        userId: true,
+      },
+    });
+
+    // ===================================================
+    // 3.5 COLLECT STAFF + MANAGER USER IDS
+    // ===================================================
+
+    const recipientIds = new Set<string>();
+
+    for (const staff of assignedStaff) {
+      if (staff.userId) {
+        recipientIds.add(staff.userId);
+      }
+    }
+
+    for (const manager of branchManagers) {
+      recipientIds.add(manager.userId);
+    }
+
+    // ===================================================
+    // 3.6 NOTIFY STAFF + MANAGERS
+    // ===================================================
+
+    const isActive = result.status === BranchStatus.ACTIVE;
+
+    const staffTranslations = notificationTemplates.BRANCH_STATUS_CHANGED(
+      result.name,
+      isActive,
+    );
+
+    for (const recipientId of recipientIds) {
+      await notificationService.createNotification(
+        {
+          userId: recipientId,
+
+          type: "BRANCH_STATUS_CHANGED",
+
+          title: staffTranslations.en!.title!,
+
+          message: staffTranslations.en!.message!,
+
+          translations: staffTranslations,
+        },
+        tx,
+      );
+    }
+
+    // ===================================================
+    // 3.7 NOTIFY AFFECTED CUSTOMERS IF BRANCH INACTIVE
+    // ===================================================
+
+    if (result.status === BranchStatus.INACTIVE) {
+      const now = new Date();
+
+      const todayUTC = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+      );
+
+      const affectedAppointments = await tx.appointment.findMany({
+        where: {
+          branchId,
+
+          date: {
+            gte: todayUTC,
+          },
+
+          appointmentStatus: {
+            in: [
+              AppointmentStatus.PENDING_PAYMENT,
+              AppointmentStatus.RESERVED,
+              AppointmentStatus.CONFIRMED,
+            ],
+          },
+        },
+
+        select: {
+          customerId: true,
+        },
+      });
+
+      // One notification per customer, not per appointment.
+
+      const customerIds = new Set(
+        affectedAppointments.map((appointment) => appointment.customerId),
+      );
+
+      const customerTranslations = notificationTemplates.BRANCH_UNAVAILABLE(
+        result.name,
+      );
+
+      for (const customerId of customerIds) {
+        await notificationService.createNotification(
+          {
+            userId: customerId,
+
+            type: "BRANCH_UNAVAILABLE",
+
+            title: customerTranslations.en!.title!,
+
+            message: customerTranslations.en!.message!,
+
+            translations: customerTranslations,
+          },
+          tx,
+        );
+      }
+    }
+
+    // ===================================================
+    // 4. RETURN UPDATED BRANCH
+    // ===================================================
 
     return result;
   });

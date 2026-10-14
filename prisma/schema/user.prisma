@@ -1,10 +1,10 @@
 model User {
-  id           String  @id @default(uuid())
-  name         String
-  email        String  @unique
-  phone        String? @unique
-  passwordHash String
-
+  id                   String                @id @default(uuid())
+  name                 String
+  email                String                @unique
+  phone                String?               @unique
+  passwordHash         String
+  preferredLanguage    String                @default("en")
   role                 Role                  @default(CUSTOMER)
   status               UserStatus            @default(ACTIVE)
   groupPurchases       GroupPurchase[]

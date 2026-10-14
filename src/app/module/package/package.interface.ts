@@ -3,11 +3,19 @@ import {
   PackageStatus,
   PackageType,
 } from "../../../../generated/prisma/client.js";
+import { Language } from "../../utils/language.js";
 
+export interface IPackageLocale {
+  name?: string;
+  description?: string;
+}
+
+export type IPackageTranslations = Partial<Record<Language, IPackageLocale>>;
 export interface ICreatePackagePayload {
   type: PackageType;
   name: string;
   description?: string;
+  translations?: IPackageTranslations;
 
   serviceIds: string[];
 
@@ -17,7 +25,7 @@ export interface ICreatePackagePayload {
 
   branchIds: string[];
 
-  imageObjectKeys?: string[];
+  imageObjectKeys: string[]; // Required
 
   listingStatus: ListingStatus;
 
@@ -41,6 +49,7 @@ export interface IUpdatePackagePayload {
   purchaseLimitPerCustomer?: number;
   salesStartAt?: string;
   salesEndAt?: string;
+  translations?: IPackageTranslations;
 }
 
 export interface IUpdatePackageStatusPayload {

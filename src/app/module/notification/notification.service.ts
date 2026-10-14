@@ -1,6 +1,8 @@
 import { Prisma } from "../../../../generated/prisma/client.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { getLocalizedContent } from "../../utils/localization.js";
 import {
   ICreateNotificationPayload,
   IGetNotificationsQuery,
@@ -18,6 +20,12 @@ const createNotification = async (
       type: payload.type,
       title: payload.title,
       message: payload.message,
+
+      ...(payload.translations !== undefined && {
+        translations: {
+          ...payload.translations,
+        } as Prisma.InputJsonObject,
+      }),
     },
   });
 };
@@ -25,6 +33,7 @@ const createNotification = async (
 const getNotifications = async (
   userId: string,
   query: IGetNotificationsQuery,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
   const page = query.page ?? 1;
   const limit = query.limit ?? 20;
@@ -39,7 +48,7 @@ const getNotifications = async (
     }),
   };
 
-  const [items, total] = await prisma.$transaction([
+  const [notifications, total] = await prisma.$transaction([
     prisma.notification.findMany({
       where,
 
@@ -55,6 +64,7 @@ const getNotifications = async (
         type: true,
         title: true,
         message: true,
+        translations: true,
         isRead: true,
         createdAt: true,
       },
@@ -64,6 +74,26 @@ const getNotifications = async (
       where,
     }),
   ]);
+
+  // =====================================================
+  // LOCALIZE NOTIFICATIONS
+  // =====================================================
+
+  const items = notifications.map((notification) => {
+    const localized = getLocalizedContent(notification.translations, language, {
+      title: notification.title,
+      message: notification.message,
+    });
+
+    return {
+      id: notification.id,
+      type: notification.type,
+      title: localized.title,
+      message: localized.message,
+      isRead: notification.isRead,
+      createdAt: notification.createdAt,
+    };
+  });
 
   const totalPages = Math.ceil(total / limit);
 

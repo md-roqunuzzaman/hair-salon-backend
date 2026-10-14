@@ -1,8 +1,9 @@
 model Package {
-  id          String      @id @default(uuid())
-  type        PackageType
-  name        String
-  description String?
+  id           String      @id @default(uuid())
+  type         PackageType
+  name         String
+  description  String?
+  translations Json?
 
   regularPrice    Decimal @db.Decimal(10, 2)
   packagePrice    Decimal @db.Decimal(10, 2)

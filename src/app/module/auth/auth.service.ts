@@ -18,8 +18,6 @@ import path from "path";
 import { transporter } from "../../lib/nodemailer.js";
 import { AppError } from "../../utils/app-error.js";
 
-const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
-
 const OTP_TTL_SECONDS = 5 * 60; // 5 minutes
 const RESET_TOKEN_TTL_SECONDS = 10 * 60; // 10 minutes
 
@@ -164,7 +162,7 @@ const loginUser = async (payload: ILoginUserPayload) => {
   await redisClient.set(sessionKey, "valid", {
     expiration: {
       type: "EX",
-      value: REFRESH_TOKEN_TTL_SECONDS,
+      value: jwtUtils.getRemainingLifetimeSeconds(refreshToken),
     },
   });
 
@@ -247,7 +245,7 @@ const refreshToken = async (token: string) => {
     `,
     {
       keys: [oldSessionKey, newSessionKey],
-      arguments: [String(REFRESH_TOKEN_TTL_SECONDS)],
+      arguments: [String(jwtUtils.getRemainingLifetimeSeconds(newRefreshToken))],
     },
   );
 

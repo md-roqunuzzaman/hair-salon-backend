@@ -9,6 +9,7 @@ model Staff {
   specialization  String?
   description     String?
   avatarObjectKey String?
+  translations    Json?
 
   status StaffStatus @default(ACTIVE)
 

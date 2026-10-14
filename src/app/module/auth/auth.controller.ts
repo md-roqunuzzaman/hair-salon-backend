@@ -3,29 +3,8 @@ import httpStatus from "http-status";
 import { catchAsync } from "../../utils/catchAsync.js";
 import { authService } from "./auth.service.js";
 import { sendResponse } from "../../utils/sendResponse.js";
-import config from "../../config/index.js";
 import { AppError } from "../../utils/app-error.js";
-
-const cookieBaseOptions = {
-  httpOnly: true,
-  secure: config.node_env === "production",
-  sameSite: "lax" as const,
-};
-
-const setAuthCookies = (
-  res: Response,
-  accessToken: string,
-  refreshToken: string,
-) => {
-  res.cookie("accessToken", accessToken, {
-    ...cookieBaseOptions,
-    maxAge: 1000 * 60 * 15,
-  });
-  res.cookie("refreshToken", refreshToken, {
-    ...cookieBaseOptions,
-    maxAge: 1000 * 60 * 60 * 24 * 7,
-  });
-};
+import { cookieBaseOptions, setAuthCookies } from "../../utils/auth-cookies.js";
 
 const registerUser = catchAsync(async (req: Request, res: Response) => {
   const result = await authService.registerUser(req.body);

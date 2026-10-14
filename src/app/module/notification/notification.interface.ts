@@ -4,9 +4,30 @@ export interface IGetNotificationsQuery {
   unreadOnly?: boolean;
 }
 
+// =====================================================
+// NOTIFICATION TRANSLATIONS
+// =====================================================
+
+export interface INotificationLocalizedContent {
+  title?: string;
+  message?: string;
+}
+
+export interface INotificationTranslations {
+  en?: INotificationLocalizedContent;
+  "zh-CN"?: INotificationLocalizedContent;
+  "zh-HK"?: INotificationLocalizedContent;
+}
+
+// =====================================================
+// CREATE NOTIFICATION PAYLOAD
+// =====================================================
+
 export interface ICreateNotificationPayload {
   userId: string;
   type: string;
   title: string;
   message: string;
+
+  translations?: INotificationTranslations;
 }

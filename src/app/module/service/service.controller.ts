@@ -8,6 +8,12 @@ import { sendResponse } from "../../utils/sendResponse.js";
 
 import { serviceService } from "./service.service.js";
 
+import { DEFAULT_LANGUAGE, isLanguage } from "../../utils/language.js";
+
+// =====================================================
+// CREATE SERVICE
+// =====================================================
+
 const createService = catchAsync(async (req: Request, res: Response) => {
   const result = await serviceService.createService(req.body);
 
@@ -19,8 +25,18 @@ const createService = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+// =====================================================
+// GET ALL SERVICES
+// =====================================================
+
 const getServices = catchAsync(async (req: Request, res: Response) => {
-  const result = await serviceService.getServices(req.query);
+  const requestedLanguage = res.locals.language;
+
+  const language = isLanguage(requestedLanguage)
+    ? requestedLanguage
+    : DEFAULT_LANGUAGE;
+
+  const result = await serviceService.getServices(req.query, language);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -30,10 +46,20 @@ const getServices = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+// =====================================================
+// GET SINGLE SERVICE
+// =====================================================
+
 const getServiceById = catchAsync(async (req: Request, res: Response) => {
   const serviceId = req.params.serviceId as string;
 
-  const result = await serviceService.getServiceById(serviceId);
+  const requestedLanguage = res.locals.language;
+
+  const language = isLanguage(requestedLanguage)
+    ? requestedLanguage
+    : DEFAULT_LANGUAGE;
+
+  const result = await serviceService.getServiceById(serviceId, language);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -42,6 +68,10 @@ const getServiceById = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+// =====================================================
+// UPDATE SERVICE
+// =====================================================
 
 const updateService = catchAsync(async (req: Request, res: Response) => {
   const serviceId = req.params.serviceId as string;
@@ -55,6 +85,10 @@ const updateService = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+// =====================================================
+// UPDATE SERVICE STATUS
+// =====================================================
 
 const updateServiceStatus = catchAsync(async (req: Request, res: Response) => {
   const serviceId = req.params.serviceId as string;
@@ -72,6 +106,10 @@ const updateServiceStatus = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+// =====================================================
+// ASSIGN SERVICE TO BRANCHES
+// =====================================================
 
 const assignServiceToBranches = catchAsync(
   async (req: Request, res: Response) => {
@@ -91,10 +129,24 @@ const assignServiceToBranches = catchAsync(
   },
 );
 
+// =====================================================
+// GET BRANCH SERVICES
+// =====================================================
+
 const getBranchServices = catchAsync(async (req: Request, res: Response) => {
   const branchId = req.params.branchId as string;
 
-  const result = await serviceService.getBranchServices(branchId, req.query);
+  const requestedLanguage = res.locals.language;
+
+  const language = isLanguage(requestedLanguage)
+    ? requestedLanguage
+    : DEFAULT_LANGUAGE;
+
+  const result = await serviceService.getBranchServices(
+    branchId,
+    req.query,
+    language,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

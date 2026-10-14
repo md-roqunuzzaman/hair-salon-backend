@@ -21,7 +21,8 @@ model Appointment {
   currency        String  @default("HKD")
   durationMinutes Int
 
-  itemName String
+  itemName             String
+  itemNameTranslations Json?
 
   holdExpiresAt DateTime?
 

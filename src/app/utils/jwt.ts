@@ -28,7 +28,23 @@ const verifyToken = (token: string, secret: string) => {
   }
 };
 
+// For tokens issued by this server; decoding is not an authentication check.
+const getRemainingLifetimeSeconds = (token: string) => {
+  const payload = jwt.decode(token);
+  if (!payload || typeof payload === "string" ||
+      typeof payload.exp !== "number" || !Number.isFinite(payload.exp)) {
+    throw new Error("Token must have a valid expiry");
+  }
+
+  const remaining = payload.exp - Math.floor(Date.now() / 1000);
+  if (remaining <= 0) {
+    throw new Error("Token has already expired");
+  }
+  return remaining;
+};
+
 export const jwtUtils = {
   createToken,
   verifyToken,
+  getRemainingLifetimeSeconds,
 };

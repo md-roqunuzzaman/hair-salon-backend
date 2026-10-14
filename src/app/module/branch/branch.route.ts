@@ -85,6 +85,13 @@ const appointmentQueryToBody = (
 };
 router.get(
   "/:branchId/appointments",
+  (req: Request, res: Response, next: NextFunction) => {
+    console.log("========== ROUTE HIT ==========");
+    console.log("URL:", req.originalUrl);
+    console.log("Branch ID:", req.params.branchId);
+    console.log("===============================");
+    next();
+  },
   auth(Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER),
   appointmentQueryToBody,
   validateRequest(appointmentValidation.getBranchAppointmentsValidationSchema),

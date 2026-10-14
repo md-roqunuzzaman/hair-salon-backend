@@ -2,7 +2,15 @@ import {
   DayOfWeek,
   StaffUnavailabilityType,
 } from "../../../../generated/prisma/enums.js";
+import { Language } from "../../utils/language.js";
 
+export interface IStaffLocale {
+  roleTitle?: string;
+  specialization?: string;
+  description?: string;
+}
+
+export type IStaffTranslations = Partial<Record<Language, IStaffLocale>>;
 export interface ICreateStaffPayload {
   name: string;
   email: string;
@@ -10,6 +18,7 @@ export interface ICreateStaffPayload {
   roleTitle: string;
   specialization?: string;
   description?: string;
+  translations?: IStaffTranslations;
 
   branchIds: string[];
   serviceIds: string[];
@@ -25,6 +34,7 @@ export interface IUpdateStaffPayload {
   specialization?: string;
   description?: string;
   avatarObjectKey?: string;
+  translations?: IStaffTranslations;
 }
 
 export interface IUpdateStaffStatusPayload {

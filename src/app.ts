@@ -28,6 +28,7 @@ import { ReportRoutes } from "./app/module/report/report.route.js";
 import { AuditLogRoutes } from "./app/module/auditLog/auditLog.route.js";
 import { UploadRoutes } from "./app/module/upload/upload.route.js";
 import { BranchHourlyCapacityRoutes } from "./app/module/branch-hourly-capacity/branch-hourly-capacity.route.js";
+import { languageMiddleware } from "./app/middleware/language.middleware.js";
 
 const app: Application = express();
 
@@ -52,7 +53,15 @@ app.use(express.urlencoded({ extended: true }));
 // Middleware to parse JSON bodies
 app.use(express.json());
 app.use(cookieParser());
-
+app.use(languageMiddleware);
+app.use((req, res, next) => {
+  console.log("========== INCOMING REQUEST ==========");
+  console.log("METHOD:", req.method);
+  console.log("URL:", req.originalUrl);
+  console.log("TIME:", new Date().toISOString());
+  console.log("======================================");
+  next();
+});
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", UserRoutes);
 app.use("/api/v1/brand", BrandRoutes);

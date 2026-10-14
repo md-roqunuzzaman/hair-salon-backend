@@ -7,12 +7,39 @@ import { catchAsync } from "../../utils/catchAsync.js";
 import { sendResponse } from "../../utils/sendResponse.js";
 
 import { staffService } from "./staff.service.js";
+import {
+  DEFAULT_LANGUAGE,
+  isLanguage,
+  Language,
+} from "../../utils/language.js";
+import { IMyStaffAppointmentsQuery } from "./staff.interface.js";
+import { AppError } from "../../utils/app-error.js";
 
 const createStaff = catchAsync(async (req: Request, res: Response) => {
-  const result = await staffService.createStaff(req.body, {
-    userId: req.user!.userId,
-    role: req.user!.role,
-  });
+  // =====================================================
+  // 1. RESOLVE REQUEST LANGUAGE
+  // =====================================================
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  // =====================================================
+  // 2. CREATE STAFF
+  // =====================================================
+
+  const result = await staffService.createStaff(
+    req.body,
+    {
+      userId: req.user!.userId,
+      role: req.user!.role,
+    },
+    language,
+  );
+
+  // =====================================================
+  // 3. SEND RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
@@ -23,10 +50,16 @@ const createStaff = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getStaff = catchAsync(async (req: Request, res: Response) => {
-  const result = await staffService.getStaff(req.query, {
-    userId: req.user!.userId,
-    role: req.user!.role,
-  });
+  const language = res.locals.language as Language;
+
+  const result = await staffService.getStaff(
+    req.query,
+    {
+      userId: req.user!.userId,
+      role: req.user!.role,
+    },
+    language,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -37,12 +70,18 @@ const getStaff = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getStaffById = catchAsync(async (req: Request, res: Response) => {
-  const staffId = req.params.staffId as string;
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
 
-  const result = await staffService.getStaffById(staffId, {
-    userId: req.user!.userId,
-    role: req.user!.role,
-  });
+  const result = await staffService.getStaffById(
+    req.params.staffId as string,
+    {
+      userId: req.user!.userId,
+      role: req.user!.role,
+    },
+    language,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -55,10 +94,19 @@ const getStaffById = catchAsync(async (req: Request, res: Response) => {
 const updateStaff = catchAsync(async (req: Request, res: Response) => {
   const staffId = req.params.staffId as string;
 
-  const result = await staffService.updateStaff(staffId, req.body, {
-    userId: req.user!.userId,
-    role: req.user!.role,
-  });
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await staffService.updateStaff(
+    staffId,
+    req.body,
+    {
+      userId: req.user!.userId,
+      role: req.user!.role,
+    },
+    language,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -134,7 +182,11 @@ const assignStaffPackages = catchAsync(async (req: Request, res: Response) => {
 const getBranchStaff = catchAsync(async (req: Request, res: Response) => {
   const branchId = req.params.branchId as string;
 
-  const result = await staffService.getBranchStaff(branchId);
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await staffService.getBranchStaff(branchId, language);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -143,15 +195,20 @@ const getBranchStaff = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
-
 const getEligibleStaffForService = catchAsync(
   async (req: Request, res: Response) => {
     const branchId = req.params.branchId as string;
     const serviceId = req.params.serviceId as string;
 
+    // Resolve requested language
+    const language = isLanguage(res.locals.language)
+      ? res.locals.language
+      : DEFAULT_LANGUAGE;
+
     const result = await staffService.getEligibleStaffForService(
       branchId,
       serviceId,
+      language,
     );
 
     sendResponse(res, {
@@ -168,9 +225,15 @@ const getEligibleStaffForPackage = catchAsync(
     const branchId = req.params.branchId as string;
     const packageId = req.params.packageId as string;
 
+    // Resolve selected language
+    const language = isLanguage(res.locals.language)
+      ? res.locals.language
+      : DEFAULT_LANGUAGE;
+
     const result = await staffService.getEligibleStaffForPackage(
       branchId,
       packageId,
+      language,
     );
 
     sendResponse(res, {
@@ -199,12 +262,40 @@ const updateStaffSchedule = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getStaffSchedule = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. AUTHENTICATION
+  // =====================================================
+
+  if (!req.user) {
+    throw new AppError("Unauthorized", 401);
+  }
+
   const staffId = req.params.staffId as string;
 
-  const result = await staffService.getStaffSchedule(staffId, {
-    userId: req.user!.userId,
-    role: req.user!.role,
-  });
+  // =====================================================
+  // 2. LANGUAGE
+  // =====================================================
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  // =====================================================
+  // 3. SERVICE
+  // =====================================================
+
+  const result = await staffService.getStaffSchedule(
+    staffId,
+    {
+      userId: req.user.userId,
+      role: req.user.role,
+    },
+    language,
+  );
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -213,7 +304,6 @@ const getStaffSchedule = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
-
 const createStaffUnavailability = catchAsync(
   async (req: Request, res: Response) => {
     const staffId = req.params.staffId as string;
@@ -314,13 +404,33 @@ const deleteStaffUnavailability = catchAsync(
 );
 
 const getMyStaffSchedule = catchAsync(async (req: Request, res: Response) => {
-  /*
-   * userId comes from the authenticated JWT.
-   * Frontend does NOT need to send staffId.
-   */
-  const userId = req.user!.userId;
+  // =====================================================
+  // 1. AUTHENTICATION
+  // =====================================================
 
-  const result = await staffService.getMyStaffSchedule(userId);
+  if (!req.user) {
+    throw new AppError("Unauthorized", 401);
+  }
+
+  const userId = req.user.userId;
+
+  // =====================================================
+  // 2. LANGUAGE
+  // =====================================================
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  // =====================================================
+  // 3. SERVICE
+  // =====================================================
+
+  const result = await staffService.getMyStaffSchedule(userId, language);
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -331,9 +441,39 @@ const getMyStaffSchedule = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getMyAppointments = catchAsync(async (req: Request, res: Response) => {
-  const userId = req.user!.userId;
+  // =====================================================
+  // 1. AUTHENTICATED USER
+  // =====================================================
 
-  const result = await staffService.getMyAppointments(userId, req.body);
+  if (!req.user) {
+    throw new AppError("Unauthorized", 401);
+  }
+
+  const userId = req.user.userId;
+
+  // =====================================================
+  // 2. QUERY
+  // =====================================================
+
+  const query = req.body as IMyStaffAppointmentsQuery;
+
+  // =====================================================
+  // 3. LANGUAGE
+  // =====================================================
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  // =====================================================
+  // 4. SERVICE
+  // =====================================================
+
+  const result = await staffService.getMyAppointments(userId, query, language);
+
+  // =====================================================
+  // 5. RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

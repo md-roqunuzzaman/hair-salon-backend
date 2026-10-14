@@ -13,12 +13,12 @@ model Promotion {
 
   imageObjectKey String?
 
-  branches PromotionBranch[]
-  services PromotionService[]
-  packages PromotionPackage[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  branches     PromotionBranch[]
+  services     PromotionService[]
+  packages     PromotionPackage[]
+  translations Json?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
 
   @@index([status])
   @@index([startAt])

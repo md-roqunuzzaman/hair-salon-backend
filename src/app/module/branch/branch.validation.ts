@@ -1,5 +1,23 @@
 import { z } from "zod";
 
+const branchLocaleSchema = z
+  .object({
+    name: z.string().trim().min(2).max(100).optional(),
+
+    address: z.string().trim().min(3).max(255).optional(),
+
+    description: z.string().trim().max(1000).optional(),
+  })
+  .strict();
+
+const branchTranslationsSchema = z
+  .object({
+    en: branchLocaleSchema.optional(),
+    "zh-CN": branchLocaleSchema.optional(),
+    "zh-HK": branchLocaleSchema.optional(),
+  })
+  .strict();
+
 const createBranchValidationSchema = z.object({
   body: z.object({
     name: z
@@ -23,6 +41,7 @@ const createBranchValidationSchema = z.object({
       .optional(),
 
     imageObjectKey: z.string().optional(),
+    translations: branchTranslationsSchema.optional(),
   }),
 });
 
@@ -51,6 +70,7 @@ const updateBranchValidationSchema = z.object({
       .optional(),
 
     imageObjectKey: z.string().optional(),
+    translations: branchTranslationsSchema.optional(),
   }),
 });
 

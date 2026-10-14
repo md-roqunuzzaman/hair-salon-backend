@@ -1,9 +1,44 @@
 import { z } from "zod";
 
+// =====================================================
+// PROMOTION TRANSLATIONS
+// =====================================================
+
+const promotionTranslationsSchema = z
+  .object({
+    en: z
+      .object({
+        name: z.string().trim().min(1).max(150),
+      })
+      .strict()
+      .optional(),
+
+    "zh-CN": z
+      .object({
+        name: z.string().trim().min(1).max(150),
+      })
+      .strict()
+      .optional(),
+
+    "zh-HK": z
+      .object({
+        name: z.string().trim().min(1).max(150),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+// =====================================================
+// CREATE PROMOTION
+// =====================================================
+
 const createPromotionValidationSchema = z.object({
   body: z
     .object({
       name: z.string().trim().min(1, "Promotion name is required").max(150),
+
+      translations: promotionTranslationsSchema.optional(),
 
       minimumTopup: z.number().positive("minimumTopup must be greater than 0"),
 
@@ -20,6 +55,7 @@ const createPromotionValidationSchema = z.object({
       packageIds: z.array(z.string().uuid()).default([]),
 
       status: z.enum(["ACTIVE", "INACTIVE"]),
+
       imageObjectKey: z
         .string()
         .trim()
@@ -28,7 +64,6 @@ const createPromotionValidationSchema = z.object({
     })
     .superRefine((data, ctx) => {
       const startAt = new Date(data.startAt);
-
       const endAt = new Date(data.endAt);
 
       if (startAt.getTime() >= endAt.getTime()) {
@@ -65,9 +100,18 @@ const createPromotionValidationSchema = z.object({
     }),
 });
 
+// =====================================================
+// GET PROMOTIONS QUERY
+// =====================================================
+
 const getPromotionsQueryValidationSchema = z.object({
   branchId: z.string().uuid().optional(),
 });
+
+// =====================================================
+// UPDATE PROMOTION
+// =====================================================
+
 const updatePromotionValidationSchema = z.object({
   body: z
     .object({
@@ -77,6 +121,9 @@ const updatePromotionValidationSchema = z.object({
         .min(1, "Promotion name is required")
         .max(150)
         .optional(),
+
+      // FIX: TRANSLATIONS BELONG HERE
+      translations: promotionTranslationsSchema.optional(),
 
       minimumTopup: z
         .number()
@@ -97,6 +144,7 @@ const updatePromotionValidationSchema = z.object({
       serviceIds: z.array(z.string().uuid()).optional(),
 
       packageIds: z.array(z.string().uuid()).optional(),
+
       imageObjectKey: z
         .string()
         .trim()
@@ -154,11 +202,19 @@ const updatePromotionValidationSchema = z.object({
     }),
 });
 
+// =====================================================
+// UPDATE PROMOTION STATUS
+// =====================================================
+
 const updatePromotionStatusValidationSchema = z.object({
   body: z.object({
     status: z.enum(["ACTIVE", "INACTIVE"]),
   }),
 });
+
+// =====================================================
+// EXPORT
+// =====================================================
 
 export const promotionValidation = {
   createPromotionValidationSchema,

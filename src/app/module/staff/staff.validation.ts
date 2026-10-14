@@ -1,5 +1,25 @@
 import { z } from "zod";
 
+const staffLocaleSchema = z
+  .object({
+    roleTitle: z.string().trim().min(2).max(100).optional(),
+
+    specialization: z.string().trim().max(150).optional(),
+
+    description: z.string().trim().max(1000).optional(),
+  })
+  .strict();
+
+const staffTranslationsSchema = z
+  .object({
+    en: staffLocaleSchema.optional(),
+
+    "zh-CN": staffLocaleSchema.optional(),
+
+    "zh-HK": staffLocaleSchema.optional(),
+  })
+  .strict();
+
 const createStaffValidationSchema = z.object({
   body: z.object({
     name: z
@@ -30,6 +50,7 @@ const createStaffValidationSchema = z.object({
     packageIds: z.array(z.string().uuid("Invalid package ID")).default([]),
 
     avatarObjectKey: z.string().min(1).optional(),
+    translations: staffTranslationsSchema.optional(),
   }),
 });
 
@@ -46,6 +67,7 @@ const updateStaffValidationSchema = z.object({
     description: z.string().max(1000).optional(),
 
     avatarObjectKey: z.string().min(1).optional(),
+    translations: staffTranslationsSchema.optional(),
   }),
 });
 

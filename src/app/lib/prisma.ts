@@ -12,7 +12,9 @@ const logConnectionError = (error: Error) => {
 const adapter = new PrismaPg(
   {
     connectionString: env.DATABASE_URL,
-    connectionTimeoutMillis: 15_000,
+    connectionTimeoutMillis: 30_000,
+    // Keep one warmed connection for the minute-based expiry job.
+    min: 1,
     idleTimeoutMillis: 10_000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,

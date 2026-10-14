@@ -2,6 +2,7 @@ import {
   DayOfWeek,
   ReserveExpiryRule,
 } from "../../../../generated/prisma/enums.js";
+import { Language } from "../../utils/language.js";
 
 export interface ICreateBranchPayload {
   name: string;
@@ -9,6 +10,7 @@ export interface ICreateBranchPayload {
   phone?: string;
   description?: string;
   imageObjectKey?: string;
+  translations?: IBranchTranslations;
 }
 
 export interface IUpdateBranchPayload {
@@ -17,6 +19,7 @@ export interface IUpdateBranchPayload {
   phone?: string;
   description?: string;
   imageObjectKey?: string;
+  translations?: IBranchTranslations;
 }
 
 export interface IUpdateBranchStatusPayload {
@@ -65,3 +68,11 @@ export interface ICustomerOperationalSearchItem {
 export interface ICustomerOperationalSearchResponse {
   items: ICustomerOperationalSearchItem[];
 }
+
+export interface IBranchLocale {
+  name?: string;
+  address?: string;
+  description?: string;
+}
+
+export type IBranchTranslations = Partial<Record<Language, IBranchLocale>>;

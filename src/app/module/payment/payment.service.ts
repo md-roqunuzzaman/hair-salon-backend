@@ -33,6 +33,7 @@ import {
   IRefundPaymentResponse,
 } from "./payment.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
+import { notificationTemplates } from "../notification/notification.templates.js";
 const createStripeIntent = async (
   customerId: string,
   payload: ICreateStripeIntentPayload,
@@ -327,7 +328,6 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
   // =====================================================
   // 2. GROUP PURCHASE STRIPE WEBHOOK DISPATCH
-  // IMPORTANT: Must run before general idempotency check.
   // =====================================================
 
   if (
@@ -383,6 +383,14 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       throw new AppError("Payment not found", 404);
     }
 
+    if (
+      paymentIntent.status !== "succeeded" ||
+      paymentIntent.currency.toLowerCase() !== payment.currency.toLowerCase() ||
+      paymentIntent.amount_received !== Math.round(Number(payment.amount) * 100)
+    ) {
+      throw new AppError("Stripe payment verification failed", 409);
+    }
+
     // ===================================================
     // LATE APPOINTMENT PAYMENT TYPE
     // ===================================================
@@ -392,6 +400,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       appointmentId: string;
       customerId: string;
       amount: number;
+      currency: string;
       providerPaymentId: string;
     };
 
@@ -400,8 +409,6 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
     // ===================================================
 
     const transactionResult = await prisma.$transaction(async (tx) => {
-      // Re-check webhook idempotency inside transaction
-
       const existingEvent = await tx.stripeWebhookEvent.findUnique({
         where: {
           id: event.id,
@@ -415,8 +422,6 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         };
       }
 
-      // Re-read payment inside transaction
-
       const currentPayment = await tx.payment.findUnique({
         where: {
           id: payment.id,
@@ -429,7 +434,6 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
       // =================================================
       // PAYMENT -> PAID
-      // Do not overwrite REFUNDED / PARTIALLY_REFUNDED.
       // =================================================
 
       if (
@@ -506,12 +510,17 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
               },
             });
 
+            // MULTILINGUAL BOOKING CONFIRMED NOTIFICATION
+
+            const translations = notificationTemplates.PAY_NOW_CONFIRMED();
+
             await notificationService.createNotification(
               {
                 userId: appointment.customerId,
                 type: "BOOKING_CONFIRMED",
-                title: "Booking confirmed",
-                message: "Your appointment has been confirmed successfully.",
+                title: translations.en!.title!,
+                message: translations.en!.message!,
+                translations,
               },
               tx,
             );
@@ -553,6 +562,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
               appointmentId: appointment.id,
               customerId: appointment.customerId,
               amount: Number(currentPayment.amount),
+              currency: currentPayment.currency,
               providerPaymentId: paymentIntent.id,
             };
           }
@@ -594,13 +604,20 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
               },
             });
 
+            // MULTILINGUAL DEPOSIT RECEIVED NOTIFICATION
+
+            const translations = notificationTemplates.DEPOSIT_RECEIVED(
+              Number(currentPayment.amount),
+              currentPayment.currency,
+            );
+
             await notificationService.createNotification(
               {
                 userId: appointment.customerId,
-                type: "BOOKING_CONFIRMED",
-                title: "Deposit received",
-                message:
-                  "Your deposit has been received and your appointment is reserved.",
+                type: "DEPOSIT_RECEIVED",
+                title: translations.en!.title!,
+                message: translations.en!.message!,
+                translations,
               },
               tx,
             );
@@ -643,6 +660,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
               appointmentId: appointment.id,
               customerId: appointment.customerId,
               amount: Number(currentPayment.amount),
+              currency: currentPayment.currency,
               providerPaymentId: paymentIntent.id,
             };
           }
@@ -719,12 +737,20 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             },
           });
 
+          // MULTILINGUAL WALLET TOP-UP NOTIFICATION
+
+          const translations = notificationTemplates.WALLET_TOPUP_SUCCESS(
+            Number(topup.amount),
+            currentPayment.currency,
+          );
+
           await notificationService.createNotification(
             {
               userId: currentPayment.customerId,
               type: "WALLET_TOPUP_SUCCESS",
-              title: "Wallet top-up successful",
-              message: "Your wallet top-up has been completed successfully.",
+              title: translations.en!.title!,
+              message: translations.en!.message!,
+              translations,
             },
             tx,
           );
@@ -733,7 +759,6 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
       // =================================================
       // MARK WEBHOOK PROCESSED
-      // Late appointment payment requires refund first.
       // =================================================
 
       if (!lateAppointmentPayment) {
@@ -778,7 +803,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         },
       });
 
-      // If refund already succeeded, normalize local state.
+      // Refund already succeeded: normalize local state.
 
       if (localRefund?.status === RefundStatus.SUCCEEDED) {
         await prisma.$transaction(async (tx) => {
@@ -819,7 +844,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         };
       }
 
-      // Create or reopen local refund attempt.
+      // CREATE OR REOPEN LOCAL REFUND ATTEMPT
 
       if (!localRefund) {
         localRefund = await prisma.refund.create({
@@ -842,7 +867,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       }
 
       try {
+        // ===============================================
         // STRIPE AUTO REFUND
+        // ===============================================
 
         const stripeRefund = await stripe.refunds.create(
           {
@@ -860,7 +887,25 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           },
         );
 
+        // Only finalize after Stripe confirms success.
+
+        if (stripeRefund.status !== "succeeded") {
+          await prisma.refund.update({
+            where: {
+              id: localRefund.id,
+            },
+            data: {
+              providerRefundId: stripeRefund.id,
+              status: RefundStatus.PENDING,
+            },
+          });
+
+          throw new AppError("Late payment refund is not completed yet", 503);
+        }
+
+        // ===============================================
         // FINALIZE REFUND LOCALLY
+        // ===============================================
 
         await prisma.$transaction(async (tx) => {
           const refundedAt = new Date();
@@ -898,18 +943,25 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             },
           });
 
+          // MULTILINGUAL LATE PAYMENT REFUND NOTIFICATION
+
+          const translations = notificationTemplates.LATE_APPOINTMENT_REFUND(
+            latePayment.amount,
+            latePayment.currency,
+          );
+
           await notificationService.createNotification(
             {
               userId: latePayment.customerId,
               type: "REFUND_COMPLETED",
-              title: "Payment refunded",
-              message:
-                "Your payment was received after the booking hold expired and has been refunded automatically.",
+              title: translations.en!.title!,
+              message: translations.en!.message!,
+              translations,
             },
             tx,
           );
 
-          // Mark event only after refund completion.
+          // Mark event after refund completion.
 
           await tx.stripeWebhookEvent.upsert({
             where: {
@@ -923,6 +975,15 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           });
         });
       } catch (error) {
+        // A pending Stripe refund must not be marked FAILED.
+
+        if (
+          error instanceof AppError &&
+          error.message === "Late payment refund is not completed yet"
+        ) {
+          throw error;
+        }
+
         await prisma.refund.update({
           where: {
             id: localRefund.id,
@@ -937,8 +998,6 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         throw new AppError("Late payment automatic refund failed", 502);
       }
     }
-
-    // NORMAL SUCCESS
 
     return {
       received: true as const,
@@ -970,27 +1029,57 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           return;
         }
 
+        // Re-read current payment to avoid notifying after success.
+
+        const currentPayment = await tx.payment.findUnique({
+          where: {
+            id: payment.id,
+          },
+        });
+
+        if (!currentPayment) {
+          throw new AppError("Payment not found", 404);
+        }
+
         // PAYMENT -> FAILED
         // Only pending payment attempts can become FAILED.
 
-        if (payment.status === PaymentStatus.PENDING) {
-          await tx.payment.update({
+        if (currentPayment.status === PaymentStatus.PENDING) {
+          const changed = await tx.payment.updateMany({
             where: {
-              id: payment.id,
+              id: currentPayment.id,
+              status: PaymentStatus.PENDING,
             },
             data: {
               status: PaymentStatus.FAILED,
               failedAt: new Date(),
             },
           });
+
+          // MULTILINGUAL PAYMENT FAILED NOTIFICATION
+
+          if (changed.count === 1 && currentPayment.appointmentId) {
+            const translations = notificationTemplates.PAYMENT_FAILED();
+
+            await notificationService.createNotification(
+              {
+                userId: currentPayment.customerId,
+                type: "PAYMENT_FAILED",
+                title: translations.en!.title!,
+                message: translations.en!.message!,
+                translations,
+              },
+              tx,
+            );
+          }
         }
 
         // WALLET TOP-UP -> FAILED
 
-        if (payment.walletTopupId) {
+        if (currentPayment.walletTopupId) {
           const topup = await tx.walletTopup.findUnique({
             where: {
-              id: payment.walletTopupId,
+              id: currentPayment.walletTopupId,
             },
           });
 
@@ -1266,6 +1355,10 @@ const handleGroupPurchaseStripeEvent = async (
   event: Stripe.Event,
   paymentIntent: Stripe.PaymentIntent,
 ) => {
+  // =====================================================
+  // 1. FIND GROUP PURCHASE PAYMENT
+  // =====================================================
+
   const payment = await prisma.payment.findUnique({
     where: {
       providerPaymentId: paymentIntent.id,
@@ -1280,6 +1373,10 @@ const handleGroupPurchaseStripeEvent = async (
     throw new AppError("Group purchase payment not found", 404);
   }
 
+  // =====================================================
+  // 2. VERIFY STRIPE PAYMENT DATA
+  // =====================================================
+
   if (
     payment.provider !== PaymentProvider.STRIPE ||
     paymentIntent.currency.toLowerCase() !== payment.currency.toLowerCase() ||
@@ -1292,28 +1389,40 @@ const handleGroupPurchaseStripeEvent = async (
     throw new AppError("Stripe payment verification failed", 409);
   }
 
+  // =====================================================
+  // 3. IDEMPOTENCY CHECK
+  // =====================================================
+
   const alreadyProcessed = await prisma.stripeWebhookEvent.findUnique({
-    where: { id: event.id },
+    where: {
+      id: event.id,
+    },
   });
 
   if (alreadyProcessed) {
-    return { received: true as const };
+    return {
+      received: true as const,
+    };
   }
 
   // =====================================================
-  // PAYMENT FAILED
-  // A failed attempt does not necessarily mean the
-  // PaymentIntent cannot be retried.
-  // Keep the purchase reservation until expiry.
+  // 4. PAYMENT FAILED
+  //
+  // Failed payment attempt does not automatically expire
+  // the group purchase reservation.
   // =====================================================
 
   if (event.type === "payment_intent.payment_failed") {
     await prisma.$transaction(async (tx) => {
       const existing = await tx.stripeWebhookEvent.findUnique({
-        where: { id: event.id },
+        where: {
+          id: event.id,
+        },
       });
 
-      if (existing) return;
+      if (existing) {
+        return;
+      }
 
       await tx.stripeWebhookEvent.create({
         data: {
@@ -1323,11 +1432,19 @@ const handleGroupPurchaseStripeEvent = async (
       });
     });
 
-    return { received: true as const };
+    return {
+      received: true as const,
+    };
   }
 
+  // =====================================================
+  // 5. HANDLE ONLY PAYMENT SUCCESS
+  // =====================================================
+
   if (event.type !== "payment_intent.succeeded") {
-    return { received: true as const };
+    return {
+      received: true as const,
+    };
   }
 
   if (
@@ -1338,7 +1455,7 @@ const handleGroupPurchaseStripeEvent = async (
   }
 
   // =====================================================
-  // SUCCESS SETTLEMENT OR LATE PAYMENT DETECTION
+  // 6. SUCCESS SETTLEMENT OR LATE PAYMENT DETECTION
   // =====================================================
 
   type SettlementResult = "SETTLED" | "ALREADY_PAID" | "REFUND_REQUIRED";
@@ -1349,23 +1466,43 @@ const handleGroupPurchaseStripeEvent = async (
     try {
       settlementResult = await prisma.$transaction(
         async (tx): Promise<SettlementResult> => {
+          // ===============================================
+          // RECHECK WEBHOOK IDEMPOTENCY
+          // ===============================================
+
           const existing = await tx.stripeWebhookEvent.findUnique({
-            where: { id: event.id },
+            where: {
+              id: event.id,
+            },
           });
 
-          if (existing) return "ALREADY_PAID";
+          if (existing) {
+            return "ALREADY_PAID";
+          }
+
+          // ===============================================
+          // FETCH CURRENT PAYMENT AND PURCHASE
+          // ===============================================
 
           const currentPayment = await tx.payment.findUnique({
-            where: { id: payment.id },
+            where: {
+              id: payment.id,
+            },
           });
 
           const purchase = await tx.groupPurchase.findUnique({
-            where: { id: payment.groupPurchaseId! },
+            where: {
+              id: payment.groupPurchaseId!,
+            },
           });
 
           if (!currentPayment || !purchase) {
             throw new AppError("Payment or purchase not found", 404);
           }
+
+          // ===============================================
+          // VERIFY PURCHASE OWNERSHIP AND AMOUNT
+          // ===============================================
 
           if (
             purchase.customerId !== currentPayment.customerId ||
@@ -1373,6 +1510,10 @@ const handleGroupPurchaseStripeEvent = async (
           ) {
             throw new AppError("Group purchase payment mismatch", 409);
           }
+
+          // ===============================================
+          // ALREADY PAID
+          // ===============================================
 
           if (purchase.paymentStatus === PaymentStatus.PAID) {
             if (
@@ -1386,7 +1527,10 @@ const handleGroupPurchaseStripeEvent = async (
             }
 
             await tx.stripeWebhookEvent.create({
-              data: { id: event.id, type: event.type },
+              data: {
+                id: event.id,
+                type: event.type,
+              },
             });
 
             return "ALREADY_PAID";
@@ -1399,9 +1543,10 @@ const handleGroupPurchaseStripeEvent = async (
             purchase.reservationExpiresAt !== null &&
             purchase.reservationExpiresAt > now;
 
-          // =================================================
-          // LATE PAYMENT: DO NOT ACTIVATE PURCHASE
-          // =================================================
+          // ===============================================
+          // 7. LATE PAYMENT
+          // DO NOT ACTIVATE EXPIRED PURCHASE
+          // ===============================================
 
           if (!activeReservation) {
             if (
@@ -1409,7 +1554,9 @@ const handleGroupPurchaseStripeEvent = async (
               currentPayment.status !== PaymentStatus.PAID
             ) {
               await tx.payment.update({
-                where: { id: currentPayment.id },
+                where: {
+                  id: currentPayment.id,
+                },
                 data: {
                   status: PaymentStatus.PAID,
                   paidAt: now,
@@ -1418,8 +1565,9 @@ const handleGroupPurchaseStripeEvent = async (
               });
             }
 
-            // Release reservation only if it is still PENDING.
-            // Expiry cleanup may already have released it.
+            // Release reserved inventory only when
+            // purchase is still PENDING.
+
             if (purchase.paymentStatus === PaymentStatus.PENDING) {
               const changed = await tx.groupPurchase.updateMany({
                 where: {
@@ -1435,7 +1583,9 @@ const handleGroupPurchaseStripeEvent = async (
                 const released = await tx.package.updateMany({
                   where: {
                     id: purchase.packageId,
-                    reservedQuantity: { gte: purchase.quantity },
+                    reservedQuantity: {
+                      gte: purchase.quantity,
+                    },
                   },
                   data: {
                     reservedQuantity: {
@@ -1453,20 +1603,23 @@ const handleGroupPurchaseStripeEvent = async (
               }
             }
 
-            // Event marker is intentionally not written yet.
-            // It is written only after refund finalization.
+            // Webhook event will be marked processed
+            // after successful refund finalization.
+
             return "REFUND_REQUIRED";
           }
 
-          // =================================================
-          // VALID PURCHASE: SETTLE EXACTLY ONCE
-          // =================================================
+          // ===============================================
+          // 8. VALID GROUP PURCHASE SETTLEMENT
+          // ===============================================
 
           const updatedPurchase = await tx.groupPurchase.updateMany({
             where: {
               id: purchase.id,
               paymentStatus: PaymentStatus.PENDING,
-              reservationExpiresAt: { gt: now },
+              reservationExpiresAt: {
+                gt: now,
+              },
             },
             data: {
               paymentStatus: PaymentStatus.PAID,
@@ -1479,14 +1632,24 @@ const handleGroupPurchaseStripeEvent = async (
             throw new AppError("Purchase settlement conflict", 409);
           }
 
+          // ===============================================
+          // 9. UPDATE PACKAGE INVENTORY
+          // ===============================================
+
           const updatedPackage = await tx.package.updateMany({
             where: {
               id: purchase.packageId,
-              reservedQuantity: { gte: purchase.quantity },
+              reservedQuantity: {
+                gte: purchase.quantity,
+              },
             },
             data: {
-              reservedQuantity: { decrement: purchase.quantity },
-              soldQuantity: { increment: purchase.quantity },
+              reservedQuantity: {
+                decrement: purchase.quantity,
+              },
+              soldQuantity: {
+                increment: purchase.quantity,
+              },
             },
           });
 
@@ -1494,8 +1657,14 @@ const handleGroupPurchaseStripeEvent = async (
             throw new AppError("Inventory settlement failed", 409);
           }
 
+          // ===============================================
+          // 10. MARK PAYMENT AS PAID
+          // ===============================================
+
           await tx.payment.update({
-            where: { id: currentPayment.id },
+            where: {
+              id: currentPayment.id,
+            },
             data: {
               status: PaymentStatus.PAID,
               paidAt: now,
@@ -1503,16 +1672,29 @@ const handleGroupPurchaseStripeEvent = async (
             },
           });
 
+          // ===============================================
+          // 11. MULTILINGUAL GROUP PURCHASE NOTIFICATION
+          // ===============================================
+
+          const translations = notificationTemplates.GROUP_PURCHASE_SUCCESSFUL(
+            Number(currentPayment.amount),
+            currentPayment.currency,
+          );
+
           await notificationService.createNotification(
             {
               userId: purchase.customerId,
-              type: "BOOKING_CONFIRMED",
-              title: "Group purchase successful",
-              message:
-                "Your group purchase payment was successful. You can now book your appointment.",
+              type: "GROUP_PURCHASE_SUCCESSFUL",
+              title: translations.en!.title!,
+              message: translations.en!.message!,
+              translations,
             },
             tx,
           );
+
+          // ===============================================
+          // 12. MARK WEBHOOK EVENT PROCESSED
+          // ===============================================
 
           await tx.stripeWebhookEvent.create({
             data: {
@@ -1536,18 +1718,26 @@ const handleGroupPurchaseStripeEvent = async (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2034";
 
-      if (retryable && attempt < 3) continue;
+      if (retryable && attempt < 3) {
+        continue;
+      }
 
       throw error;
     }
   }
 
+  // =====================================================
+  // 13. NORMAL SETTLEMENT COMPLETE
+  // =====================================================
+
   if (settlementResult !== "REFUND_REQUIRED") {
-    return { received: true as const };
+    return {
+      received: true as const,
+    };
   }
 
   // =====================================================
-  // LATE PAYMENT AUTOMATIC REFUND
+  // 14. LATE PAYMENT AUTOMATIC REFUND
   // =====================================================
 
   const refundReason = "LATE_GROUP_PURCHASE_PAYMENT";
@@ -1557,8 +1747,14 @@ const handleGroupPurchaseStripeEvent = async (
       paymentId: payment.id,
       reason: refundReason,
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: {
+      createdAt: "asc",
+    },
   });
+
+  // ===============================================
+  // CREATE LOCAL REFUND RECORD
+  // ===============================================
 
   if (!localRefund) {
     localRefund = await prisma.refund.create({
@@ -1571,8 +1767,10 @@ const handleGroupPurchaseStripeEvent = async (
     });
   }
 
-  // Stripe idempotency key prevents duplicate Stripe refunds
-  // for retries using the same payment.
+  // =====================================================
+  // 15. PROCESS STRIPE REFUND
+  // =====================================================
+
   try {
     let providerRefundId = localRefund.providerRefundId;
 
@@ -1594,10 +1792,15 @@ const handleGroupPurchaseStripeEvent = async (
 
       providerRefundId = stripeRefund.id;
 
+      // ===============================================
+      // STRIPE REFUND PENDING
+      // ===============================================
+
       if (stripeRefund.status !== "succeeded") {
-        // A pending Stripe refund is not a completed refund.
         await prisma.refund.update({
-          where: { id: localRefund.id },
+          where: {
+            id: localRefund.id,
+          },
           data: {
             providerRefundId,
             status: RefundStatus.PENDING,
@@ -1608,17 +1811,27 @@ const handleGroupPurchaseStripeEvent = async (
       }
     }
 
+    // ===================================================
+    // 16. FINALIZE REFUND LOCALLY
+    // ===================================================
+
     await prisma.$transaction(async (tx) => {
       const existingEvent = await tx.stripeWebhookEvent.findUnique({
-        where: { id: event.id },
+        where: {
+          id: event.id,
+        },
       });
 
-      if (existingEvent) return;
+      if (existingEvent) {
+        return;
+      }
 
       const refundedAt = new Date();
 
       await tx.refund.update({
-        where: { id: localRefund.id },
+        where: {
+          id: localRefund.id,
+        },
         data: {
           providerRefundId,
           status: RefundStatus.SUCCEEDED,
@@ -1626,36 +1839,61 @@ const handleGroupPurchaseStripeEvent = async (
         },
       });
 
+      // ===============================================
+      // PAYMENT -> REFUNDED
+      // ===============================================
+
       await tx.payment.update({
-        where: { id: payment.id },
+        where: {
+          id: payment.id,
+        },
         data: {
           status: PaymentStatus.REFUNDED,
           refundedAt,
         },
       });
 
+      // ===============================================
+      // 17. MULTILINGUAL LATE GROUP REFUND NOTIFICATION
+      // ===============================================
+
+      const translations = notificationTemplates.LATE_GROUP_REFUND(
+        Number(payment.amount),
+        payment.currency,
+      );
+
       await notificationService.createNotification(
         {
           userId: payment.customerId,
           type: "REFUND_COMPLETED",
-          title: "Group purchase payment refunded",
-          message:
-            "Your group purchase payment was received after the reservation expired and has been refunded.",
+          title: translations.en!.title!,
+          message: translations.en!.message!,
+          translations,
         },
         tx,
       );
 
+      // ===============================================
+      // 18. MARK WEBHOOK EVENT PROCESSED
+      // ===============================================
+
       await tx.stripeWebhookEvent.create({
-        data: { id: event.id, type: event.type },
+        data: {
+          id: event.id,
+          type: event.type,
+        },
       });
     });
 
-    return { received: true as const };
+    return {
+      received: true as const,
+    };
   } catch (error) {
     console.error("[Group Purchase Late Refund] Processing failed:", error);
 
-    // Keep the webhook unprocessed so Stripe can retry.
-    // Do not mark the payment as REFUNDED until confirmed.
+    // Keep webhook unprocessed so Stripe can retry.
+    // Do not mark payment REFUNDED before confirmation.
+
     throw new AppError(
       "Group purchase late payment refund requires retry",
       503,
@@ -1871,7 +2109,10 @@ const refundPayment = async (
     throw new AppError("SALON_PAYMENT_REFUND_NOT_SUPPORTED", 409);
   }
 
-  if (!payment.providerPaymentId) {
+  if (
+    payment.provider !== PaymentProvider.STRIPE ||
+    !payment.providerPaymentId
+  ) {
     throw new AppError("REFUND_NOT_ALLOWED", 409);
   }
 
@@ -1884,197 +2125,248 @@ const refundPayment = async (
       paymentId,
       status: RefundStatus.SUCCEEDED,
     },
-
     _sum: {
       amount: true,
     },
   });
 
   const alreadyRefunded = Number(refundSummary._sum.amount ?? 0);
-
   const paymentAmount = Number(payment.amount);
-
   const remainingRefundable = paymentAmount - alreadyRefunded;
 
   // =====================================================
   // 4. VALIDATE REQUESTED AMOUNT
   // =====================================================
 
-  if (payload.amount <= 0 || payload.amount > remainingRefundable) {
+  const refundAmount = payload.amount;
+  const refundReason = payload.reason.trim();
+
+  if (
+    !Number.isFinite(refundAmount) ||
+    refundAmount <= 0 ||
+    !Number.isInteger(refundAmount * 100) ||
+    refundAmount > remainingRefundable
+  ) {
     throw new AppError("REFUND_AMOUNT_INVALID", 400);
   }
 
+  if (!refundReason) {
+    throw new AppError("REFUND_REASON_REQUIRED", 400);
+  }
+
   // =====================================================
-  // 5. CREATE LOCAL PENDING REFUND
+  // 5. CHECK UNRESOLVED REFUND REQUESTS
+  //
+  // Do not start another refund while a previous Stripe
+  // refund is still pending or needs reconciliation.
+  // =====================================================
+
+  const unresolvedRefund = await prisma.refund.findFirst({
+    where: {
+      paymentId,
+      status: RefundStatus.PENDING,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (unresolvedRefund) {
+    throw new AppError("REFUND_ALREADY_PENDING", 409);
+  }
+
+  // =====================================================
+  // 6. CREATE LOCAL PENDING REFUND
   // =====================================================
 
   const localRefund = await prisma.refund.create({
     data: {
       paymentId,
-
-      amount: payload.amount,
-
-      reason: payload.reason.trim(),
-
+      amount: refundAmount,
+      reason: refundReason,
       status: RefundStatus.PENDING,
     },
   });
 
   // =====================================================
-  // 6. CREATE STRIPE REFUND
+  // 7. CREATE STRIPE REFUND
   // =====================================================
 
+  let stripeRefund: Stripe.Refund;
+
   try {
-    const stripeRefund = await stripe.refunds.create(
+    stripeRefund = await stripe.refunds.create(
       {
         payment_intent: payment.providerPaymentId,
-
-        amount: Math.round(payload.amount * 100),
-
+        amount: Math.round(refundAmount * 100),
         metadata: {
           paymentId,
-
           refundId: localRefund.id,
-
-          reason: payload.reason.trim(),
+          reason: refundReason,
         },
       },
-
       {
         idempotencyKey: `refund-${localRefund.id}`,
       },
     );
+  } catch (error) {
+    console.error("[Refund Payment] Stripe refund request failed:", error);
 
-    // ===================================================
-    // 7. DETERMINE PARTIAL / FULL
-    // ===================================================
+    // The request may have reached Stripe even if the
+    // response failed. Keep PENDING for reconciliation.
+    // Do not mark FAILED without verifying Stripe state.
 
-    const totalRefunded = alreadyRefunded + payload.amount;
+    throw new AppError("STRIPE_OPERATION_FAILED", 502);
+  }
 
-    const fullyRefunded = totalRefunded >= paymentAmount;
+  // =====================================================
+  // 8. STORE STRIPE REFUND ID
+  // =====================================================
 
-    const newPaymentStatus = fullyRefunded
-      ? PaymentStatus.REFUNDED
-      : PaymentStatus.PARTIALLY_REFUNDED;
+  await prisma.refund.update({
+    where: {
+      id: localRefund.id,
+    },
+    data: {
+      providerRefundId: stripeRefund.id,
+    },
+  });
 
-    // ===================================================
-    // 8. UPDATE LOCALLY + NOTIFICATION + AUDIT LOG
-    // ===================================================
+  // =====================================================
+  // 9. HANDLE NON-SUCCEEDED STRIPE REFUND
+  // =====================================================
 
-    await prisma.$transaction(async (tx) => {
-      await tx.refund.update({
-        where: {
-          id: localRefund.id,
-        },
-
-        data: {
-          providerRefundId: stripeRefund.id,
-
-          status: RefundStatus.SUCCEEDED,
-
-          refundedAt: new Date(),
-        },
-      });
-
-      await tx.payment.update({
-        where: {
-          id: paymentId,
-        },
-
-        data: {
-          status: newPaymentStatus,
-
-          refundedAt: fullyRefunded ? new Date() : payment.refundedAt,
-        },
-      });
-
-      // =================================================
-      // CUSTOMER NOTIFICATION
-      // =================================================
-
-      await notificationService.createNotification(
-        {
-          userId: payment.customerId,
-
-          type: "REFUND_COMPLETED",
-
-          title: "Refund completed",
-
-          message: "Your refund has been processed successfully.",
-        },
-
-        tx,
-      );
-
-      // =================================================
-      // AUDIT LOG
-      // =================================================
-
-      await auditLogService.createAuditLog(
-        {
-          userId,
-
-          action: "REFUND_PROCESSED",
-
-          entityType: "PAYMENT",
-
-          entityId: paymentId,
-
-          metadata: {
-            refundId: localRefund.id,
-
-            providerRefundId: stripeRefund.id,
-
-            amount: payload.amount,
-
-            reason: payload.reason.trim(),
-
-            previousPaymentStatus: payment.status,
-
-            newPaymentStatus,
-
-            alreadyRefunded,
-
-            totalRefunded,
-
-            fullyRefunded,
-          },
-        },
-
-        tx,
-      );
-    });
-
-    // =====================================================
-    // 9. RESPONSE
-    // =====================================================
-
-    return {
-      paymentId,
-
-      refundId: localRefund.id,
-
-      refundStatus: "SUCCEEDED",
-
-      amount: payload.amount,
-    };
-  } catch {
-    // =====================================================
-    // 10. MARK LOCAL REFUND FAILED
-    // =====================================================
-
+  if (stripeRefund.status === "failed" || stripeRefund.status === "canceled") {
     await prisma.refund.update({
       where: {
         id: localRefund.id,
       },
-
       data: {
         status: RefundStatus.FAILED,
       },
     });
 
-    throw new AppError("STRIPE_OPERATION_FAILED", 502);
+    throw new AppError("STRIPE_REFUND_FAILED", 502);
   }
+
+  if (stripeRefund.status !== "succeeded") {
+    // Stripe has accepted the refund but has not
+    // confirmed its completion.
+    //
+    // Keep local refund PENDING.
+    // Do not change payment status.
+    // Do not send REFUND_COMPLETED notification.
+    // A separate reconciliation process must finalize it.
+
+    throw new AppError("STRIPE_REFUND_PENDING", 409);
+  }
+
+  // =====================================================
+  // 10. DETERMINE PARTIAL / FULL REFUND
+  // =====================================================
+
+  const totalRefunded = alreadyRefunded + refundAmount;
+
+  const fullyRefunded =
+    Math.round(totalRefunded * 100) >= Math.round(paymentAmount * 100);
+
+  const newPaymentStatus = fullyRefunded
+    ? PaymentStatus.REFUNDED
+    : PaymentStatus.PARTIALLY_REFUNDED;
+
+  // =====================================================
+  // 11. FINALIZE LOCALLY + NOTIFICATION + AUDIT LOG
+  // =====================================================
+
+  await prisma.$transaction(async (tx) => {
+    const refundedAt = new Date();
+
+    // ===============================================
+    // REFUND -> SUCCEEDED
+    // ===============================================
+
+    await tx.refund.update({
+      where: {
+        id: localRefund.id,
+      },
+      data: {
+        providerRefundId: stripeRefund.id,
+        status: RefundStatus.SUCCEEDED,
+        refundedAt,
+      },
+    });
+
+    // ===============================================
+    // PAYMENT -> REFUNDED / PARTIALLY_REFUNDED
+    // ===============================================
+
+    await tx.payment.update({
+      where: {
+        id: paymentId,
+      },
+      data: {
+        status: newPaymentStatus,
+        refundedAt: fullyRefunded ? refundedAt : payment.refundedAt,
+      },
+    });
+
+    // ===============================================
+    // MULTILINGUAL CUSTOMER NOTIFICATION
+    // ===============================================
+
+    const translations = notificationTemplates.REFUND_COMPLETED(
+      refundAmount,
+      payment.currency,
+    );
+
+    await notificationService.createNotification(
+      {
+        userId: payment.customerId,
+        type: "REFUND_COMPLETED",
+        title: translations.en!.title!,
+        message: translations.en!.message!,
+        translations,
+      },
+      tx,
+    );
+
+    // ===============================================
+    // AUDIT LOG
+    // ===============================================
+
+    await auditLogService.createAuditLog(
+      {
+        userId,
+        action: "REFUND_PROCESSED",
+        entityType: "PAYMENT",
+        entityId: paymentId,
+        metadata: {
+          refundId: localRefund.id,
+          providerRefundId: stripeRefund.id,
+          amount: refundAmount,
+          currency: payment.currency,
+          reason: refundReason,
+          previousPaymentStatus: payment.status,
+          newPaymentStatus,
+          alreadyRefunded,
+          totalRefunded,
+          fullyRefunded,
+        },
+      },
+      tx,
+    );
+  });
+
+  // =====================================================
+  // 12. RESPONSE
+  // =====================================================
+
+  return {
+    paymentId,
+    refundId: localRefund.id,
+    refundStatus: "SUCCEEDED",
+    amount: refundAmount,
+  };
 };
 
 export const paymentService = {

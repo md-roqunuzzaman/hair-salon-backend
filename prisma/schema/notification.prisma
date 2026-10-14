@@ -1,10 +1,11 @@
 model Notification {
-  id      String  @id @default(uuid())
-  userId  String
-  type    String
-  title   String
-  message String
-  isRead  Boolean @default(false)
+  id           String  @id @default(uuid())
+  userId       String
+  type         String
+  title        String
+  message      String
+  isRead       Boolean @default(false)
+  translations Json?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

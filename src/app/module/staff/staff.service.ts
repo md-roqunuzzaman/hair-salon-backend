@@ -26,6 +26,7 @@ import {
   ICreateStaffPayload,
   ICreateStaffUnavailabilityPayload,
   IMyStaffAppointmentsQuery,
+  IStaffTranslations,
   IUpdateStaffPayload,
   IUpdateStaffSchedulePayload,
   IUpdateStaffStatusPayload,
@@ -34,6 +35,94 @@ import {
 
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { uploadService } from "../upload/upload.service.js";
+import { getLocalizedContent } from "../../utils/localization.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { notificationService } from "../notification/notification.service.js";
+import { notificationTemplates } from "../notification/notification.templates.js";
+
+const readStaffTranslations = (value: unknown): IStaffTranslations => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return value as IStaffTranslations;
+};
+
+const buildStaffTranslations = (
+  existing: unknown,
+  incoming?: IStaffTranslations,
+): IStaffTranslations => {
+  const current = readStaffTranslations(existing);
+
+  if (!incoming) {
+    return current;
+  }
+
+  const result: IStaffTranslations = {
+    ...current,
+  };
+
+  for (const language of ["en", "zh-CN", "zh-HK"] as const) {
+    const update = incoming[language];
+
+    if (!update) continue;
+
+    result[language] = {
+      ...(current[language] ?? {}),
+      ...update,
+    };
+  }
+
+  return result;
+};
+
+const localizeStaff = <
+  T extends {
+    roleTitle: string;
+    specialization: string | null;
+    description: string | null;
+    translations: unknown;
+  },
+>(
+  staff: T,
+  language: Language,
+) => {
+  const localized = getLocalizedContent(staff.translations, language, {
+    roleTitle: staff.roleTitle,
+    specialization: staff.specialization ?? "",
+    description: staff.description ?? "",
+  });
+
+  const { translations: _translations, ...rest } = staff;
+
+  return {
+    ...rest,
+    roleTitle: localized.roleTitle,
+    specialization: localized.specialization || null,
+    description: localized.description || null,
+  };
+};
+
+const localizeStaffSummary = <
+  T extends {
+    roleTitle: string;
+    specialization: string | null;
+    translations: unknown;
+  },
+>(
+  staff: T,
+  language: Language,
+) => {
+  const localized = getLocalizedContent(staff.translations, language, {
+    roleTitle: staff.roleTitle,
+    specialization: staff.specialization ?? "",
+  });
+
+  return {
+    roleTitle: localized.roleTitle,
+    specialization: localized.specialization || null,
+  };
+};
 
 const generateTemporaryPassword = () => {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -56,13 +145,19 @@ const generateTemporaryPassword = () => {
 
   return chars.sort(() => crypto.randomInt(3) - 1).join("");
 };
+
 const createStaff = async (
   payload: ICreateStaffPayload,
   requester: {
     userId: string;
     role: Role;
   },
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
+  // =====================================================
+  // 1. NORMALIZE EMAIL
+  // =====================================================
+
   const email = payload.email.trim().toLowerCase();
 
   const uniqueBranchIds = [...new Set(payload.branchIds)];
@@ -80,6 +175,10 @@ const createStaff = async (
   if (uniquePackageIds.length !== payload.packageIds.length) {
     throw new AppError("Duplicate package IDs are not allowed", 400);
   }
+
+  // =====================================================
+  // 2. CHECK EXISTING USER / STAFF
+  // =====================================================
 
   const existingUser = await prisma.user.findUnique({
     where: {
@@ -101,7 +200,10 @@ const createStaff = async (
     throw new AppError("A staff member with this email already exists", 409);
   }
 
-  // Branch validation
+  // =====================================================
+  // 3. BRANCH VALIDATION
+  // =====================================================
+
   const branches = await prisma.branch.findMany({
     where: {
       id: {
@@ -127,7 +229,10 @@ const createStaff = async (
     throw new AppError("Staff cannot be assigned to an inactive branch", 400);
   }
 
-  // Branch Manager scope check
+  // =====================================================
+  // 4. BRANCH MANAGER SCOPE CHECK
+  // =====================================================
+
   if (requester.role === Role.BRANCH_MANAGER) {
     const managerBranches = await prisma.branchManagerBranch.findMany({
       where: {
@@ -162,7 +267,10 @@ const createStaff = async (
     }
   }
 
-  // Service validation
+  // =====================================================
+  // 5. SERVICE VALIDATION
+  // =====================================================
+
   const services = await prisma.service.findMany({
     where: {
       id: {
@@ -194,7 +302,8 @@ const createStaff = async (
     throw new AppError("Inactive services cannot be assigned to staff", 400);
   }
 
-  // Service must be available in at least one assigned branch
+  // Service must be available in an assigned branch.
+
   for (const service of services) {
     const serviceBranchIds = new Set(
       service.branches.map((item) => item.branchId),
@@ -212,7 +321,10 @@ const createStaff = async (
     }
   }
 
-  // Package validation
+  // =====================================================
+  // 6. PACKAGE VALIDATION
+  // =====================================================
+
   const packages = await prisma.package.findMany({
     where: {
       id: {
@@ -262,7 +374,8 @@ const createStaff = async (
       );
     }
 
-    // Staff must support ALL services inside package
+    // Staff must support ALL services in the package.
+
     const missingService = packageData.services.find(
       (item) => !uniqueServiceIds.includes(item.serviceId),
     );
@@ -275,15 +388,52 @@ const createStaff = async (
     }
   }
 
+  // =====================================================
+  // 7. PREPARE MULTILINGUAL STAFF CONTENT
+  // =====================================================
+
+  const roleTitle = payload.roleTitle.trim();
+
+  const specialization = payload.specialization?.trim() || null;
+
+  const description = payload.description?.trim() || null;
+
+  const staffTranslations = payload.translations
+    ? buildStaffTranslations(null, payload.translations)
+    : null;
+
+  // =====================================================
+  // 8. GENERATE TEMPORARY PASSWORD
+  // =====================================================
+
   const temporaryPassword = generateTemporaryPassword();
 
   const passwordHash = await bcrypt.hash(temporaryPassword, 12);
 
+  // =====================================================
+  // 9. DATABASE TRANSACTION
+  //
+  // Creates:
+  // - User account
+  // - Staff profile
+  // - Branch assignments
+  // - Service assignments
+  // - Package assignments
+  //
+  // All operations succeed or roll back together.
+  // =====================================================
+
   const result = await prisma.$transaction(async (tx) => {
+    // ---------------------------------------------
+    // CREATE USER
+    // ---------------------------------------------
+
     const user = await tx.user.create({
       data: {
         name: payload.name.trim(),
+
         email,
+
         phone: payload.phone?.trim() || null,
 
         passwordHash,
@@ -294,24 +444,37 @@ const createStaff = async (
       },
     });
 
+    // ---------------------------------------------
+    // CREATE STAFF WITH TRANSLATIONS
+    // ---------------------------------------------
+
     const staff = await tx.staff.create({
       data: {
         userId: user.id,
 
         name: payload.name.trim(),
+
         email,
 
         phone: payload.phone?.trim() || null,
 
-        roleTitle: payload.roleTitle.trim(),
+        roleTitle,
 
-        specialization: payload.specialization?.trim() || null,
+        specialization,
 
-        description: payload.description?.trim() || null,
+        description,
 
         avatarObjectKey: payload.avatarObjectKey || null,
+
+        translations: staffTranslations
+          ? (staffTranslations as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
       },
     });
+
+    // ---------------------------------------------
+    // ASSIGN STAFF BRANCHES
+    // ---------------------------------------------
 
     await tx.staffBranch.createMany({
       data: uniqueBranchIds.map((branchId) => ({
@@ -319,6 +482,10 @@ const createStaff = async (
         branchId,
       })),
     });
+
+    // ---------------------------------------------
+    // ASSIGN STAFF SERVICES
+    // ---------------------------------------------
 
     if (uniqueServiceIds.length > 0) {
       await tx.staffService.createMany({
@@ -329,6 +496,10 @@ const createStaff = async (
       });
     }
 
+    // ---------------------------------------------
+    // ASSIGN STAFF PACKAGES
+    // ---------------------------------------------
+
     if (uniquePackageIds.length > 0) {
       await tx.staffPackage.createMany({
         data: uniquePackageIds.map((packageId) => ({
@@ -338,22 +509,89 @@ const createStaff = async (
       });
     }
 
+    // ---------------------------------------------
+    // RETURN STAFF + LINKED USER ID
+    //
+    // userId is needed for notification recipient.
+    // ---------------------------------------------
+
     return staff;
   });
 
+  // =====================================================
+  // 10. MULTILINGUAL STAFF ACCOUNT NOTIFICATION
+  //
+  // Create only after successful database transaction.
+  //
+  // Recipient: result.userId, NOT result.id.
+  // =====================================================
+
+  try {
+    const translations = notificationTemplates.STAFF_ACCOUNT_CREATED();
+
+    await notificationService.createNotification({
+      userId: result.userId,
+
+      type: "STAFF_ACCOUNT_CREATED",
+
+      title: translations.en!.title!,
+
+      message: translations.en!.message!,
+
+      translations,
+    });
+  } catch (error) {
+    // Notification failure must not undo successful
+    // staff account creation.
+
+    console.error("Failed to create staff account notification:", error);
+  }
+
+  // =====================================================
+  // 11. LOCALIZE CREATED STAFF RESPONSE
+  // =====================================================
+
+  const localizedStaff = getLocalizedContent(result.translations, language, {
+    roleTitle: result.roleTitle,
+    specialization: result.specialization ?? "",
+    description: result.description ?? "",
+  });
+
+  // =====================================================
+  // 12. FINAL RESPONSE
+  //
+  // Preserve existing response structure.
+  // =====================================================
+
   return {
     id: result.id,
+
     name: result.name,
+
     email: result.email,
+
+    roleTitle: localizedStaff.roleTitle,
+
+    specialization: localizedStaff.specialization || null,
+
+    description: localizedStaff.description || null,
+
+    translations: result.translations,
+
     branchIds: uniqueBranchIds,
+
     serviceIds: uniqueServiceIds,
+
     packageIds: uniquePackageIds,
+
     status: result.status,
 
     temporaryPassword,
+
     mustChangePassword: true,
   };
 };
+
 type ReviewSummary = {
   averageRating: number;
   totalReviews: number;
@@ -409,6 +647,7 @@ const getStaff = async (
     userId: string;
     role: Role;
   },
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
   // 1. PAGINATION
@@ -416,6 +655,15 @@ const getStaff = async (
 
   const page = query.page ? Number(query.page) : 1;
   const limit = query.limit ? Number(query.limit) : 20;
+
+  if (!Number.isInteger(page) || page < 1) {
+    throw new AppError("page must be at least 1", 400);
+  }
+
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new AppError("limit must be between 1 and 100", 400);
+  }
+
   const skip = (page - 1) * limit;
 
   // =====================================================
@@ -442,6 +690,7 @@ const getStaff = async (
       where: {
         userId: requester.userId,
       },
+
       select: {
         branchId: true,
       },
@@ -520,6 +769,7 @@ const getStaff = async (
               select: {
                 id: true,
                 name: true,
+                translations: true,
               },
             },
           },
@@ -531,6 +781,7 @@ const getStaff = async (
               select: {
                 id: true,
                 name: true,
+                translations: true,
               },
             },
           },
@@ -543,6 +794,7 @@ const getStaff = async (
                 id: true,
                 name: true,
                 type: true,
+                translations: true,
               },
             },
           },
@@ -556,7 +808,7 @@ const getStaff = async (
   ]);
 
   // =====================================================
-  // 6. FETCH REVIEW SUMMARY FOR ALL STAFF
+  // 6. FETCH VISIBLE REVIEW SUMMARY
   // =====================================================
 
   const staffIds = staffList.map((staff) => staff.id);
@@ -590,16 +842,25 @@ const getStaff = async (
 
   const reviewSummaryMap = new Map<string, ReviewSummary>();
 
-  for (const staffId of staffIds) {
-    const staffReviewGroups = reviewGroups.filter(
-      (group) => group.staffId === staffId,
-    );
+  const reviewGroupsByStaff = new Map<string, typeof reviewGroups>();
 
-    reviewSummaryMap.set(staffId, buildReviewSummary(staffReviewGroups));
+  for (const group of reviewGroups) {
+    const existingGroups = reviewGroupsByStaff.get(group.staffId) ?? [];
+
+    existingGroups.push(group);
+
+    reviewGroupsByStaff.set(group.staffId, existingGroups);
+  }
+
+  for (const staffId of staffIds) {
+    reviewSummaryMap.set(
+      staffId,
+      buildReviewSummary(reviewGroupsByStaff.get(staffId) ?? []),
+    );
   }
 
   // =====================================================
-  // 8. GENERATE SIGNED AVATAR URLS + RESPONSE
+  // 8. LOCALIZED RESPONSE + SIGNED AVATAR URLS
   // =====================================================
 
   const items = await Promise.all(
@@ -607,6 +868,20 @@ const getStaff = async (
       const avatarUrl = staff.avatarObjectKey
         ? await uploadService.getImageUrl(staff.avatarObjectKey)
         : null;
+
+      // ---------------------------------------------
+      // LOCALIZE STAFF
+      // ---------------------------------------------
+
+      const localizedStaff = getLocalizedContent(staff.translations, language, {
+        roleTitle: staff.roleTitle,
+        specialization: staff.specialization,
+        description: staff.description,
+      });
+
+      // ---------------------------------------------
+      // RESPONSE
+      // ---------------------------------------------
 
       return {
         id: staff.id,
@@ -617,11 +892,11 @@ const getStaff = async (
 
         phone: staff.phone,
 
-        roleTitle: staff.roleTitle,
+        roleTitle: localizedStaff.roleTitle,
 
-        specialization: staff.specialization,
+        specialization: localizedStaff.specialization,
 
-        description: staff.description,
+        description: localizedStaff.description,
 
         avatarObjectKey: staff.avatarObjectKey,
 
@@ -631,21 +906,63 @@ const getStaff = async (
 
         reviewSummary: reviewSummaryMap.get(staff.id) ?? buildReviewSummary([]),
 
-        branches: staff.branches.map((item) => ({
-          id: item.branch.id,
-          name: item.branch.name,
-        })),
+        // -----------------------------------------
+        // LOCALIZED BRANCHES
+        // -----------------------------------------
 
-        services: staff.services.map((item) => ({
-          id: item.service.id,
-          name: item.service.name,
-        })),
+        branches: staff.branches.map((item) => {
+          const localizedBranch = getLocalizedContent(
+            item.branch.translations,
+            language,
+            {
+              name: item.branch.name,
+            },
+          );
 
-        packages: staff.packages.map((item) => ({
-          id: item.package.id,
-          name: item.package.name,
-          type: item.package.type,
-        })),
+          return {
+            id: item.branch.id,
+            name: localizedBranch.name,
+          };
+        }),
+
+        // -----------------------------------------
+        // LOCALIZED SERVICES
+        // -----------------------------------------
+
+        services: staff.services.map((item) => {
+          const localizedService = getLocalizedContent(
+            item.service.translations,
+            language,
+            {
+              name: item.service.name,
+            },
+          );
+
+          return {
+            id: item.service.id,
+            name: localizedService.name,
+          };
+        }),
+
+        // -----------------------------------------
+        // LOCALIZED PACKAGES
+        // -----------------------------------------
+
+        packages: staff.packages.map((item) => {
+          const localizedPackage = getLocalizedContent(
+            item.package.translations,
+            language,
+            {
+              name: item.package.name,
+            },
+          );
+
+          return {
+            id: item.package.id,
+            name: localizedPackage.name,
+            type: item.package.type,
+          };
+        }),
       };
     }),
   );
@@ -657,7 +974,7 @@ const getStaff = async (
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   // =====================================================
-  // 10. RESPONSE
+  // 10. FINAL RESPONSE
   // =====================================================
 
   return {
@@ -682,6 +999,7 @@ const getStaffById = async (
     userId: string;
     role: Role;
   },
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
   // 1. FIND STAFF
@@ -699,6 +1017,7 @@ const getStaffById = async (
             select: {
               id: true,
               name: true,
+              translations: true,
               status: true,
             },
           },
@@ -711,6 +1030,7 @@ const getStaffById = async (
             select: {
               id: true,
               name: true,
+              translations: true,
               price: true,
               durationMinutes: true,
               status: true,
@@ -725,6 +1045,7 @@ const getStaffById = async (
             select: {
               id: true,
               name: true,
+              translations: true,
               type: true,
               packagePrice: true,
               durationMinutes: true,
@@ -800,7 +1121,83 @@ const getStaffById = async (
     : null;
 
   // =====================================================
-  // 5. RESPONSE
+  // 5. LOCALIZE STAFF FIELDS
+  // =====================================================
+
+  const localizedStaff = getLocalizedContent(staff.translations, language, {
+    roleTitle: staff.roleTitle,
+    specialization: staff.specialization ?? "",
+    description: staff.description ?? "",
+  });
+
+  // =====================================================
+  // 6. LOCALIZE RELATED BRANCHES
+  // =====================================================
+
+  const branches = staff.branches.map((item) => {
+    const localizedBranch = getLocalizedContent(
+      item.branch.translations,
+      language,
+      {
+        name: item.branch.name,
+      },
+    );
+
+    return {
+      id: item.branch.id,
+      name: localizedBranch.name,
+      status: item.branch.status,
+    };
+  });
+
+  // =====================================================
+  // 7. LOCALIZE RELATED SERVICES
+  // =====================================================
+
+  const services = staff.services.map((item) => {
+    const localizedService = getLocalizedContent(
+      item.service.translations,
+      language,
+      {
+        name: item.service.name,
+      },
+    );
+
+    return {
+      id: item.service.id,
+      name: localizedService.name,
+      price: Number(item.service.price),
+      durationMinutes: item.service.durationMinutes,
+      status: item.service.status,
+    };
+  });
+
+  // =====================================================
+  // 8. LOCALIZE RELATED PACKAGES
+  // =====================================================
+
+  const packages = staff.packages.map((item) => {
+    const localizedPackage = getLocalizedContent(
+      item.package.translations,
+      language,
+      {
+        name: item.package.name,
+      },
+    );
+
+    return {
+      id: item.package.id,
+      name: localizedPackage.name,
+      type: item.package.type,
+      packagePrice: Number(item.package.packagePrice),
+      durationMinutes: item.package.durationMinutes,
+      status: item.package.status,
+      listingStatus: item.package.listingStatus,
+    };
+  });
+
+  // =====================================================
+  // 9. FINAL RESPONSE
   // =====================================================
 
   return {
@@ -812,11 +1209,15 @@ const getStaffById = async (
 
     phone: staff.phone,
 
-    roleTitle: staff.roleTitle,
+    // Selected language
+    roleTitle: localizedStaff.roleTitle,
 
-    specialization: staff.specialization,
+    specialization: localizedStaff.specialization || null,
 
-    description: staff.description,
+    description: localizedStaff.description || null,
+
+    // All saved translations
+    translations: staff.translations,
 
     avatarObjectKey: staff.avatarObjectKey,
 
@@ -826,29 +1227,11 @@ const getStaffById = async (
 
     reviewSummary,
 
-    branches: staff.branches.map((item) => ({
-      id: item.branch.id,
-      name: item.branch.name,
-      status: item.branch.status,
-    })),
+    branches,
 
-    services: staff.services.map((item) => ({
-      id: item.service.id,
-      name: item.service.name,
-      price: Number(item.service.price),
-      durationMinutes: item.service.durationMinutes,
-      status: item.service.status,
-    })),
+    services,
 
-    packages: staff.packages.map((item) => ({
-      id: item.package.id,
-      name: item.package.name,
-      type: item.package.type,
-      packagePrice: Number(item.package.packagePrice),
-      durationMinutes: item.package.durationMinutes,
-      status: item.package.status,
-      listingStatus: item.package.listingStatus,
-    })),
+    packages,
 
     createdAt: staff.createdAt,
 
@@ -859,6 +1242,336 @@ const getStaffById = async (
 const updateStaff = async (
   staffId: string,
   payload: IUpdateStaffPayload,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. FIND STAFF
+  // =====================================================
+
+  const staff = await prisma.staff.findUnique({
+    where: {
+      id: staffId,
+    },
+    include: {
+      branches: {
+        select: {
+          branchId: true,
+        },
+      },
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  // =====================================================
+  // 2. BRANCH MANAGER SCOPE CHECK
+  // =====================================================
+
+  if (requester.role === Role.BRANCH_MANAGER) {
+    const managerBranches = await prisma.branchManagerBranch.findMany({
+      where: {
+        userId: requester.userId,
+      },
+      select: {
+        branchId: true,
+      },
+    });
+
+    const allowedBranchIds = new Set(
+      managerBranches.map((item) => item.branchId),
+    );
+
+    const hasAccess = staff.branches.some((item) =>
+      allowedBranchIds.has(item.branchId),
+    );
+
+    if (!hasAccess) {
+      throw new AppError(
+        "You are not allowed to update this staff member",
+        403,
+      );
+    }
+  }
+
+  // =====================================================
+  // 3. AVATAR R2 VALIDATION
+  // =====================================================
+
+  if (payload.avatarObjectKey !== undefined) {
+    const expectedPrefix = `staff/${staffId}/`;
+
+    if (!payload.avatarObjectKey.startsWith(expectedPrefix)) {
+      throw new AppError("Invalid staff avatar object key", 400);
+    }
+
+    await uploadService.verifyImageExists(payload.avatarObjectKey);
+  }
+
+  // =====================================================
+  // 4. PREPARE BASE FIELDS
+  // =====================================================
+
+  const nextRoleTitle =
+    payload.roleTitle !== undefined
+      ? payload.roleTitle.trim()
+      : staff.roleTitle;
+
+  const nextSpecialization =
+    payload.specialization !== undefined
+      ? payload.specialization.trim()
+      : staff.specialization;
+
+  const nextDescription =
+    payload.description !== undefined
+      ? payload.description.trim()
+      : staff.description;
+
+  // =====================================================
+  // 5. PREPARE MULTILINGUAL TRANSLATIONS
+  // =====================================================
+
+  type LocaleFields = {
+    roleTitle?: string;
+    specialization?: string;
+    description?: string;
+  };
+
+  type LocaleCode = "en" | "zh-CN" | "zh-HK";
+
+  const hasTranslationChanges =
+    payload.translations !== undefined ||
+    payload.roleTitle !== undefined ||
+    payload.specialization !== undefined ||
+    payload.description !== undefined;
+
+  // Convert existing Prisma JSON safely into a locale object.
+  const readLocale = (value: Prisma.JsonValue | undefined): LocaleFields => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+
+    return {
+      ...(typeof value.roleTitle === "string" && {
+        roleTitle: value.roleTitle,
+      }),
+      ...(typeof value.specialization === "string" && {
+        specialization: value.specialization,
+      }),
+      ...(typeof value.description === "string" && {
+        description: value.description,
+      }),
+    };
+  };
+
+  const existingJson =
+    staff.translations &&
+    typeof staff.translations === "object" &&
+    !Array.isArray(staff.translations)
+      ? staff.translations
+      : null;
+
+  const existingEn = readLocale(existingJson?.en);
+  const existingZhCN = readLocale(existingJson?.["zh-CN"]);
+  const existingZhHK = readLocale(existingJson?.["zh-HK"]);
+
+  // Merge each field separately to preserve partial updates.
+  const mergeLocale = (
+    existing: LocaleFields,
+    incoming?: LocaleFields,
+  ): LocaleFields => ({
+    ...existing,
+    ...(incoming?.roleTitle !== undefined && {
+      roleTitle: incoming.roleTitle.trim(),
+    }),
+    ...(incoming?.specialization !== undefined && {
+      specialization: incoming.specialization.trim(),
+    }),
+    ...(incoming?.description !== undefined && {
+      description: incoming.description.trim(),
+    }),
+  });
+
+  const incomingTranslations = payload.translations;
+
+  const mergedEn = mergeLocale(existingEn, incomingTranslations?.en);
+
+  const mergedZhCN = mergeLocale(existingZhCN, incomingTranslations?.["zh-CN"]);
+
+  const mergedZhHK = mergeLocale(existingZhHK, incomingTranslations?.["zh-HK"]);
+
+  // Explicit base fields take priority over translations.en.
+  const finalEn: LocaleFields = {
+    ...mergedEn,
+
+    roleTitle:
+      payload.roleTitle !== undefined
+        ? nextRoleTitle
+        : (mergedEn.roleTitle ?? staff.roleTitle),
+
+    specialization:
+      payload.specialization !== undefined
+        ? (nextSpecialization ?? "")
+        : (mergedEn.specialization ?? staff.specialization ?? ""),
+
+    description:
+      payload.description !== undefined
+        ? (nextDescription ?? "")
+        : (mergedEn.description ?? staff.description ?? ""),
+  };
+
+  // Build JSON objects without assigning to readonly
+  // Prisma.InputJsonObject properties.
+  const toJsonLocale = (locale: LocaleFields): Prisma.InputJsonObject => ({
+    ...(locale.roleTitle !== undefined && {
+      roleTitle: locale.roleTitle,
+    }),
+    ...(locale.specialization !== undefined && {
+      specialization: locale.specialization,
+    }),
+    ...(locale.description !== undefined && {
+      description: locale.description,
+    }),
+  });
+
+  const hasZhCN =
+    existingJson?.["zh-CN"] !== undefined ||
+    incomingTranslations?.["zh-CN"] !== undefined;
+
+  const hasZhHK =
+    existingJson?.["zh-HK"] !== undefined ||
+    incomingTranslations?.["zh-HK"] !== undefined;
+
+  const finalTranslations: Prisma.InputJsonObject = {
+    en: toJsonLocale(finalEn),
+
+    ...(hasZhCN && {
+      "zh-CN": toJsonLocale(mergedZhCN),
+    }),
+
+    ...(hasZhHK && {
+      "zh-HK": toJsonLocale(mergedZhHK),
+    }),
+  };
+
+  // =====================================================
+  // 6. UPDATE STAFF + USER PROFILE
+  // =====================================================
+
+  const updatedStaff = await prisma.$transaction(async (tx) => {
+    const updated = await tx.staff.update({
+      where: {
+        id: staffId,
+      },
+
+      data: {
+        ...(payload.name !== undefined && {
+          name: payload.name.trim(),
+        }),
+
+        ...(payload.phone !== undefined && {
+          phone: payload.phone.trim(),
+        }),
+
+        ...(payload.roleTitle !== undefined && {
+          roleTitle: nextRoleTitle,
+        }),
+
+        ...(payload.specialization !== undefined && {
+          specialization: nextSpecialization,
+        }),
+
+        ...(payload.description !== undefined && {
+          description: nextDescription,
+        }),
+
+        ...(payload.avatarObjectKey !== undefined && {
+          avatarObjectKey: payload.avatarObjectKey,
+        }),
+
+        ...(hasTranslationChanges && {
+          translations: finalTranslations,
+        }),
+      },
+    });
+
+    // Keep linked User profile consistent.
+    await tx.user.update({
+      where: {
+        id: staff.userId,
+      },
+
+      data: {
+        ...(payload.name !== undefined && {
+          name: payload.name.trim(),
+        }),
+
+        ...(payload.phone !== undefined && {
+          phone: payload.phone.trim(),
+        }),
+      },
+    });
+
+    return updated;
+  });
+
+  // =====================================================
+  // 7. SIGNED AVATAR URL
+  // =====================================================
+
+  const avatarUrl = updatedStaff.avatarObjectKey
+    ? await uploadService.getImageUrl(updatedStaff.avatarObjectKey)
+    : null;
+
+  // =====================================================
+  // 8. LOCALIZE RESPONSE
+  // =====================================================
+
+  const localizedStaff = getLocalizedContent(
+    updatedStaff.translations,
+    language,
+    {
+      roleTitle: updatedStaff.roleTitle,
+      specialization: updatedStaff.specialization ?? "",
+      description: updatedStaff.description ?? "",
+    },
+  );
+
+  // =====================================================
+  // 9. FINAL RESPONSE
+  // =====================================================
+
+  return {
+    id: updatedStaff.id,
+
+    name: updatedStaff.name,
+
+    phone: updatedStaff.phone,
+
+    roleTitle: localizedStaff.roleTitle,
+
+    specialization: localizedStaff.specialization || null,
+
+    description: localizedStaff.description || null,
+
+    translations: updatedStaff.translations,
+
+    avatarObjectKey: updatedStaff.avatarObjectKey,
+
+    avatarUrl,
+
+    status: updatedStaff.status,
+  };
+};
+
+const updateStaffStatus = async (
+  staffId: string,
+  payload: IUpdateStaffStatusPayload,
   requester: {
     userId: string;
     role: Role;
@@ -918,169 +1631,7 @@ const updateStaff = async (
   }
 
   // =====================================================
-  // 3. AVATAR R2 VALIDATION
-  // =====================================================
-
-  if (payload.avatarObjectKey !== undefined) {
-    const expectedPrefix = `staff/${staffId}/`;
-
-    if (!payload.avatarObjectKey.startsWith(expectedPrefix)) {
-      throw new AppError("Invalid staff avatar object key", 400);
-    }
-
-    // Confirm object really exists in R2.
-    await uploadService.verifyImageExists(payload.avatarObjectKey);
-  }
-
-  // =====================================================
-  // 4. UPDATE STAFF + USER PROFILE
-  // =====================================================
-
-  const updatedStaff = await prisma.$transaction(async (tx) => {
-    const updated = await tx.staff.update({
-      where: {
-        id: staffId,
-      },
-
-      data: {
-        ...(payload.name !== undefined && {
-          name: payload.name.trim(),
-        }),
-
-        ...(payload.phone !== undefined && {
-          phone: payload.phone.trim(),
-        }),
-
-        ...(payload.roleTitle !== undefined && {
-          roleTitle: payload.roleTitle.trim(),
-        }),
-
-        ...(payload.specialization !== undefined && {
-          specialization: payload.specialization.trim(),
-        }),
-
-        ...(payload.description !== undefined && {
-          description: payload.description.trim(),
-        }),
-
-        ...(payload.avatarObjectKey !== undefined && {
-          avatarObjectKey: payload.avatarObjectKey,
-        }),
-      },
-    });
-
-    // Keep linked User profile consistent.
-    await tx.user.update({
-      where: {
-        id: staff.userId,
-      },
-
-      data: {
-        ...(payload.name !== undefined && {
-          name: payload.name.trim(),
-        }),
-
-        ...(payload.phone !== undefined && {
-          phone: payload.phone.trim(),
-        }),
-      },
-    });
-
-    return updated;
-  });
-
-  // =====================================================
-  // 5. SIGNED AVATAR URL
-  // =====================================================
-
-  const avatarUrl = updatedStaff.avatarObjectKey
-    ? await uploadService.getImageUrl(updatedStaff.avatarObjectKey)
-    : null;
-
-  // =====================================================
-  // 6. RESPONSE
-  // =====================================================
-
-  return {
-    id: updatedStaff.id,
-
-    name: updatedStaff.name,
-
-    phone: updatedStaff.phone,
-
-    roleTitle: updatedStaff.roleTitle,
-
-    specialization: updatedStaff.specialization,
-
-    description: updatedStaff.description,
-
-    avatarObjectKey: updatedStaff.avatarObjectKey,
-
-    avatarUrl,
-
-    status: updatedStaff.status,
-  };
-};
-
-const updateStaffStatus = async (
-  staffId: string,
-  payload: IUpdateStaffStatusPayload,
-  requester: {
-    userId: string;
-    role: Role;
-  },
-) => {
-  const staff = await prisma.staff.findUnique({
-    where: {
-      id: staffId,
-    },
-
-    include: {
-      branches: {
-        select: {
-          branchId: true,
-        },
-      },
-    },
-  });
-
-  if (!staff) {
-    throw new AppError("Staff not found", 404);
-  }
-
-  // =====================================================
-  // 1. BRANCH MANAGER SCOPE CHECK
-  // =====================================================
-
-  if (requester.role === Role.BRANCH_MANAGER) {
-    const managerBranches = await prisma.branchManagerBranch.findMany({
-      where: {
-        userId: requester.userId,
-      },
-
-      select: {
-        branchId: true,
-      },
-    });
-
-    const allowedBranchIds = new Set(
-      managerBranches.map((item) => item.branchId),
-    );
-
-    const hasAccess = staff.branches.some((item) =>
-      allowedBranchIds.has(item.branchId),
-    );
-
-    if (!hasAccess) {
-      throw new AppError(
-        "You are not allowed to update this staff member",
-        403,
-      );
-    }
-  }
-
-  // =====================================================
-  // 2. SAME STATUS
+  // 3. SAME STATUS - NO UPDATE / NO NOTIFICATION
   // =====================================================
 
   if (staff.status === payload.status) {
@@ -1091,7 +1642,7 @@ const updateStaffStatus = async (
   }
 
   // =====================================================
-  // 3. UPDATE + AUDIT
+  // 4. UPDATE STAFF STATUS + AUDIT LOG
   // =====================================================
 
   const updatedStaff = await prisma.$transaction(async (tx) => {
@@ -1106,6 +1657,7 @@ const updateStaffStatus = async (
 
       select: {
         id: true,
+        userId: true,
         status: true,
       },
     });
@@ -1126,7 +1678,6 @@ const updateStaffStatus = async (
           performedByRole: requester.role,
         },
       },
-
       tx,
     );
 
@@ -1134,7 +1685,41 @@ const updateStaffStatus = async (
   });
 
   // =====================================================
-  // 4. RESPONSE
+  // 5. MULTILINGUAL STATUS CHANGE NOTIFICATION
+  //
+  // Send only after successful transaction.
+  // Recipient is Staff.userId, not Staff.id.
+  // =====================================================
+
+  if (updatedStaff.userId) {
+    try {
+      const isActivated = updatedStaff.status === StaffStatus.ACTIVE;
+
+      const translations = isActivated
+        ? notificationTemplates.STAFF_ACTIVATED()
+        : notificationTemplates.STAFF_DEACTIVATED();
+
+      await notificationService.createNotification({
+        userId: updatedStaff.userId,
+
+        type: isActivated ? "STAFF_ACTIVATED" : "STAFF_DEACTIVATED",
+
+        title: translations.en!.title!,
+
+        message: translations.en!.message!,
+
+        translations,
+      });
+    } catch (error) {
+      // Notification failure must not undo
+      // a successful staff status update.
+
+      console.error("Failed to create staff status notification:", error);
+    }
+  }
+
+  // =====================================================
+  // 6. RESPONSE
   // =====================================================
 
   return {
@@ -1151,6 +1736,10 @@ const assignStaffBranches = async (
     role: Role;
   },
 ) => {
+  // =====================================================
+  // 1. FIND STAFF WITH EXISTING ASSIGNMENTS
+  // =====================================================
+
   const staff = await prisma.staff.findUnique({
     where: {
       id: staffId,
@@ -1162,6 +1751,7 @@ const assignStaffBranches = async (
           service: {
             select: {
               id: true,
+
               branches: {
                 select: {
                   branchId: true,
@@ -1200,11 +1790,19 @@ const assignStaffBranches = async (
     throw new AppError("Staff not found", 404);
   }
 
+  // =====================================================
+  // 2. VALIDATE DUPLICATE BRANCH IDS
+  // =====================================================
+
   const uniqueBranchIds = [...new Set(payload.branchIds)];
 
   if (uniqueBranchIds.length !== payload.branchIds.length) {
     throw new AppError("Duplicate branch IDs are not allowed", 400);
   }
+
+  // =====================================================
+  // 3. VALIDATE BRANCH EXISTENCE + STATUS
+  // =====================================================
 
   const branches = await prisma.branch.findMany({
     where: {
@@ -1212,6 +1810,7 @@ const assignStaffBranches = async (
         in: uniqueBranchIds,
       },
     },
+
     select: {
       id: true,
       status: true,
@@ -1230,7 +1829,10 @@ const assignStaffBranches = async (
     throw new AppError("Staff cannot be assigned to an inactive branch", 400);
   }
 
-  // Branch Manager scope check
+  // =====================================================
+  // 4. BRANCH MANAGER SCOPE CHECK
+  // =====================================================
+
   if (requester.role === Role.BRANCH_MANAGER) {
     const managerBranches = await prisma.branchManagerBranch.findMany({
       where: {
@@ -1246,7 +1848,8 @@ const assignStaffBranches = async (
       managerBranches.map((item) => item.branchId),
     );
 
-    // Manager must already have access to this staff
+    // Manager must already have access to this staff.
+
     const hasCurrentAccess = staff.branches.some((item) =>
       allowedBranchIds.has(item.branchId),
     );
@@ -1258,7 +1861,8 @@ const assignStaffBranches = async (
       );
     }
 
-    // Manager cannot assign outside own scope
+    // Manager cannot assign outside own scope.
+
     const unauthorizedBranch = uniqueBranchIds.find(
       (branchId) => !allowedBranchIds.has(branchId),
     );
@@ -1270,7 +1874,8 @@ const assignStaffBranches = async (
       );
     }
 
-    // Requirement: manager cannot perform cross-branch reassignment
+    // Manager cannot perform cross-branch reassignment.
+
     if (uniqueBranchIds.length > 1) {
       throw new AppError(
         "Branch Manager cannot assign staff across multiple branches",
@@ -1279,8 +1884,13 @@ const assignStaffBranches = async (
     }
   }
 
+  // =====================================================
+  // 5. VALIDATE EXISTING SERVICE ASSIGNMENTS
+  //
   // Every assigned service must be available
-  // in at least one of the final staff branches
+  // in at least one of the final staff branches.
+  // =====================================================
+
   for (const staffService of staff.services) {
     const serviceBranchIds = new Set(
       staffService.service.branches.map((item) => item.branchId),
@@ -1298,8 +1908,13 @@ const assignStaffBranches = async (
     }
   }
 
+  // =====================================================
+  // 6. VALIDATE EXISTING PACKAGE ASSIGNMENTS
+  //
   // Every assigned package must be available
-  // in at least one final staff branch
+  // in at least one final staff branch.
+  // =====================================================
+
   for (const staffPackage of staff.packages) {
     const packageBranchIds = new Set(
       staffPackage.package.branches.map((item) => item.branchId),
@@ -1317,6 +1932,40 @@ const assignStaffBranches = async (
     }
   }
 
+  // =====================================================
+  // 7. DETECT ACTUAL BRANCH ASSIGNMENT CHANGES
+  // =====================================================
+
+  const currentBranchIds = staff.branches.map((item) => item.branchId);
+
+  const currentBranchSet = new Set(currentBranchIds);
+  const newBranchSet = new Set(uniqueBranchIds);
+
+  const addedBranchIds = uniqueBranchIds.filter(
+    (branchId) => !currentBranchSet.has(branchId),
+  );
+
+  const removedBranchIds = currentBranchIds.filter(
+    (branchId) => !newBranchSet.has(branchId),
+  );
+
+  const hasChanges = addedBranchIds.length > 0 || removedBranchIds.length > 0;
+
+  // =====================================================
+  // 8. NO CHANGE - SKIP DATABASE WRITE + NOTIFICATION
+  // =====================================================
+
+  if (!hasChanges) {
+    return {
+      staffId,
+      branchIds: uniqueBranchIds,
+    };
+  }
+
+  // =====================================================
+  // 9. REPLACE STAFF BRANCH ASSIGNMENTS ATOMICALLY
+  // =====================================================
+
   await prisma.$transaction(async (tx) => {
     await tx.staffBranch.deleteMany({
       where: {
@@ -1324,13 +1973,50 @@ const assignStaffBranches = async (
       },
     });
 
-    await tx.staffBranch.createMany({
-      data: uniqueBranchIds.map((branchId) => ({
-        staffId,
-        branchId,
-      })),
-    });
+    if (uniqueBranchIds.length > 0) {
+      await tx.staffBranch.createMany({
+        data: uniqueBranchIds.map((branchId) => ({
+          staffId,
+          branchId,
+        })),
+      });
+    }
   });
+
+  // =====================================================
+  // 10. MULTILINGUAL BRANCH ASSIGNMENT NOTIFICATION
+  //
+  // Recipient: Staff.userId
+  // Only after successful transaction.
+  // =====================================================
+
+  if (staff.userId) {
+    try {
+      const translations =
+        notificationTemplates.STAFF_BRANCH_ASSIGNMENT_UPDATED();
+
+      await notificationService.createNotification({
+        userId: staff.userId,
+
+        type: "STAFF_BRANCH_ASSIGNMENT_UPDATED",
+
+        title: translations.en!.title!,
+
+        message: translations.en!.message!,
+
+        translations,
+      });
+    } catch (error) {
+      console.error(
+        "Failed to create staff branch assignment notification:",
+        error,
+      );
+    }
+  }
+
+  // =====================================================
+  // 11. RESPONSE - EXISTING STRUCTURE PRESERVED
+  // =====================================================
 
   return {
     staffId,
@@ -1728,7 +2414,10 @@ const assignStaffPackages = async (
   };
 };
 
-const getBranchStaff = async (branchId: string) => {
+const getBranchStaff = async (
+  branchId: string,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
   // =====================================================
   // 1. CHECK BRANCH
   // =====================================================
@@ -1772,6 +2461,7 @@ const getBranchStaff = async (branchId: string) => {
       name: true,
       roleTitle: true,
       specialization: true,
+      translations: true,
       avatarObjectKey: true,
     },
 
@@ -1813,9 +2503,6 @@ const getBranchStaff = async (branchId: string) => {
 
   const reviewSummaryMap = new Map<string, ReviewSummary>();
 
-  // Group review results by staffId to avoid
-  // repeatedly filtering all review groups.
-
   const reviewGroupsByStaff = new Map<string, typeof reviewGroups>();
 
   for (const group of reviewGroups) {
@@ -1833,11 +2520,16 @@ const getBranchStaff = async (branchId: string) => {
   }
 
   // =====================================================
-  // 5. GENERATE SIGNED AVATAR URLS + REVIEW SUMMARY
+  // 5. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
   // =====================================================
 
   const items = await Promise.all(
     staff.map(async (item) => {
+      const localizedStaff = getLocalizedContent(item.translations, language, {
+        roleTitle: item.roleTitle,
+        specialization: item.specialization ?? "",
+      });
+
       const avatarUrl = item.avatarObjectKey
         ? await uploadService.getImageUrl(item.avatarObjectKey)
         : null;
@@ -1847,9 +2539,9 @@ const getBranchStaff = async (branchId: string) => {
 
         name: item.name,
 
-        roleTitle: item.roleTitle,
+        roleTitle: localizedStaff.roleTitle,
 
-        specialization: item.specialization,
+        specialization: localizedStaff.specialization || null,
 
         avatarObjectKey: item.avatarObjectKey,
 
@@ -1868,9 +2560,11 @@ const getBranchStaff = async (branchId: string) => {
     items,
   };
 };
+
 const getEligibleStaffForService = async (
   branchId: string,
   serviceId: string,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
   // 1. CHECK BRANCH
@@ -1938,8 +2632,8 @@ const getEligibleStaffForService = async (
   //
   // Staff must satisfy:
   // 1. ACTIVE
-  // 2. assigned to selected branch
-  // 3. assigned to selected service
+  // 2. Assigned to selected branch
+  // 3. Assigned to selected service
   // =====================================================
 
   const staff = await prisma.staff.findMany({
@@ -1964,6 +2658,10 @@ const getEligibleStaffForService = async (
       name: true,
       roleTitle: true,
       specialization: true,
+
+      // Multilingual support
+      translations: true,
+
       avatarObjectKey: true,
     },
 
@@ -1973,11 +2671,20 @@ const getEligibleStaffForService = async (
   });
 
   // =====================================================
-  // 4. GENERATE SIGNED AVATAR URLS
+  // 4. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
   // =====================================================
 
   const items = await Promise.all(
     staff.map(async (item) => {
+      // Resolve requested language.
+      // Missing translations fall back to base fields.
+
+      const localizedStaff = getLocalizedContent(item.translations, language, {
+        roleTitle: item.roleTitle,
+        specialization: item.specialization ?? "",
+      });
+
+      // Generate signed avatar URL.
       const avatarUrl = item.avatarObjectKey
         ? await uploadService.getImageUrl(item.avatarObjectKey)
         : null;
@@ -1987,9 +2694,9 @@ const getEligibleStaffForService = async (
 
         name: item.name,
 
-        roleTitle: item.roleTitle,
+        roleTitle: localizedStaff.roleTitle,
 
-        specialization: item.specialization,
+        specialization: localizedStaff.specialization || null,
 
         avatarObjectKey: item.avatarObjectKey,
 
@@ -2006,9 +2713,11 @@ const getEligibleStaffForService = async (
     items,
   };
 };
+
 const getEligibleStaffForPackage = async (
   branchId: string,
   packageId: string,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
   // 1. CHECK BRANCH
@@ -2090,6 +2799,11 @@ const getEligibleStaffForPackage = async (
 
   // =====================================================
   // 4. FETCH PACKAGE-ASSIGNED STAFF
+  //
+  // Staff must:
+  // 1. Be ACTIVE
+  // 2. Be assigned to selected branch
+  // 3. Be assigned to selected package
   // =====================================================
 
   const staffList = await prisma.staff.findMany({
@@ -2137,11 +2851,20 @@ const getEligibleStaffForPackage = async (
   });
 
   // =====================================================
-  // 6. GENERATE SIGNED AVATAR URLS
+  // 6. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
   // =====================================================
 
   const items = await Promise.all(
     eligibleStaff.map(async (staff) => {
+      // Resolve requested language.
+      // Missing translations fall back to base fields.
+
+      const localizedStaff = getLocalizedContent(staff.translations, language, {
+        roleTitle: staff.roleTitle,
+        specialization: staff.specialization ?? "",
+      });
+
+      // Generate signed R2 avatar URL.
       const avatarUrl = staff.avatarObjectKey
         ? await uploadService.getImageUrl(staff.avatarObjectKey)
         : null;
@@ -2151,9 +2874,9 @@ const getEligibleStaffForPackage = async (
 
         name: staff.name,
 
-        roleTitle: staff.roleTitle,
+        roleTitle: localizedStaff.roleTitle,
 
-        specialization: staff.specialization,
+        specialization: localizedStaff.specialization || null,
 
         avatarObjectKey: staff.avatarObjectKey,
 
@@ -2185,6 +2908,10 @@ const updateStaffSchedule = async (
     role: Role;
   },
 ) => {
+  // =====================================================
+  // 1. FIND STAFF
+  // =====================================================
+
   const staff = await prisma.staff.findUnique({
     where: {
       id: staffId,
@@ -2205,7 +2932,10 @@ const updateStaffSchedule = async (
 
   const staffBranchIds = new Set(staff.branches.map((item) => item.branchId));
 
-  // Branch Manager scope
+  // =====================================================
+  // 2. BRANCH MANAGER SCOPE CHECK
+  // =====================================================
+
   let managerBranchIds: Set<string> | null = null;
 
   if (requester.role === Role.BRANCH_MANAGER) {
@@ -2233,7 +2963,10 @@ const updateStaffSchedule = async (
     }
   }
 
-  // Prevent duplicate branch + day rows
+  // =====================================================
+  // 3. PREVENT DUPLICATE BRANCH + DAY ENTRIES
+  // =====================================================
+
   const scheduleKeys = new Set<string>();
 
   for (const item of payload.schedule) {
@@ -2249,12 +2982,14 @@ const updateStaffSchedule = async (
     scheduleKeys.add(key);
   }
 
-  // All branch IDs in request
+  // =====================================================
+  // 4. VALIDATE REQUESTED BRANCHES
+  // =====================================================
+
   const scheduleBranchIds = [
     ...new Set(payload.schedule.map((item) => item.branchId)),
   ];
 
-  // Validate all requested branches
   const branches = await prisma.branch.findMany({
     where: {
       id: {
@@ -2284,8 +3019,13 @@ const updateStaffSchedule = async (
 
   const branchMap = new Map(branches.map((branch) => [branch.id, branch]));
 
+  // =====================================================
+  // 5. VALIDATE EACH SCHEDULE ENTRY
+  // =====================================================
+
   for (const item of payload.schedule) {
-    // Staff must belong to branch
+    // Staff must belong to requested branch.
+
     if (!staffBranchIds.has(item.branchId)) {
       throw new AppError(
         "Staff cannot be scheduled in an unassigned branch",
@@ -2293,7 +3033,8 @@ const updateStaffSchedule = async (
       );
     }
 
-    // Branch Manager scope
+    // Branch Manager scope.
+
     if (
       requester.role === Role.BRANCH_MANAGER &&
       managerBranchIds &&
@@ -2307,12 +3048,16 @@ const updateStaffSchedule = async (
 
     const branch = branchMap.get(item.branchId)!;
 
+    // Branch must be active.
+
     if (branch.status !== BranchStatus.ACTIVE) {
       throw new AppError(
         `Cannot schedule staff in inactive branch "${branch.name}"`,
         400,
       );
     }
+
+    // Validate time range.
 
     const startMinutes = timeToMinutes(item.startTime);
 
@@ -2324,6 +3069,8 @@ const updateStaffSchedule = async (
         400,
       );
     }
+
+    // Find business hours for requested day.
 
     const businessHour = branch.businessHours.find(
       (hour) => hour.day === item.day,
@@ -2362,7 +3109,10 @@ const updateStaffSchedule = async (
     }
   }
 
-  // Cross-branch overlap validation
+  // =====================================================
+  // 6. CROSS-BRANCH OVERLAP VALIDATION
+  // =====================================================
+
   const schedulesByDay = new Map<string, typeof payload.schedule>();
 
   for (const item of payload.schedule) {
@@ -2392,24 +3142,128 @@ const updateStaffSchedule = async (
     }
   }
 
+  // =====================================================
+  // 7. GET EXISTING STAFF SCHEDULE
+  //
+  // Needed to detect actual schedule changes.
+  // =====================================================
+
+  const existingSchedules = await prisma.staffSchedule.findMany({
+    where: {
+      staffId,
+    },
+
+    select: {
+      branchId: true,
+      day: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  // =====================================================
+  // 8. COMPARE OLD AND NEW SCHEDULE
+  //
+  // Order-independent comparison.
+  // =====================================================
+
+  const normalizeSchedule = (
+    schedules: Array<{
+      branchId: string;
+      day: string;
+      startTime: string;
+      endTime: string;
+    }>,
+  ) => {
+    return schedules
+      .map(
+        (item) =>
+          `${item.branchId}|${item.day}|${item.startTime}|${item.endTime}`,
+      )
+      .sort();
+  };
+
+  const oldSchedule = normalizeSchedule(existingSchedules);
+
+  const newSchedule = normalizeSchedule(payload.schedule);
+
+  const hasChanges =
+    oldSchedule.length !== newSchedule.length ||
+    oldSchedule.some((item, index) => item !== newSchedule[index]);
+
+  // =====================================================
+  // 9. NO CHANGES - SKIP UPDATE + NOTIFICATION
+  // =====================================================
+
+  if (!hasChanges) {
+    return {
+      staffId,
+    };
+  }
+
+  // =====================================================
+  // 10. REPLACE STAFF SCHEDULE ATOMICALLY
+  // =====================================================
+
   await prisma.$transaction(async (tx) => {
-    // replace current schedule
+    // Remove previous schedule.
+
     await tx.staffSchedule.deleteMany({
       where: {
         staffId,
       },
     });
 
-    await tx.staffSchedule.createMany({
-      data: payload.schedule.map((item) => ({
-        staffId,
-        branchId: item.branchId,
-        day: item.day,
-        startTime: item.startTime,
-        endTime: item.endTime,
-      })),
-    });
+    // Create new schedule entries.
+
+    if (payload.schedule.length > 0) {
+      await tx.staffSchedule.createMany({
+        data: payload.schedule.map((item) => ({
+          staffId,
+          branchId: item.branchId,
+          day: item.day,
+          startTime: item.startTime,
+          endTime: item.endTime,
+        })),
+      });
+    }
   });
+
+  // =====================================================
+  // 11. MULTILINGUAL SCHEDULE NOTIFICATION
+  //
+  // Recipient: Staff.userId
+  // Only after successful schedule update.
+  // =====================================================
+
+  if (staff.userId) {
+    try {
+      const translations = notificationTemplates.STAFF_SCHEDULE_UPDATED();
+
+      await notificationService.createNotification({
+        userId: staff.userId,
+
+        type: "STAFF_SCHEDULE_UPDATED",
+
+        title: translations.en!.title!,
+
+        message: translations.en!.message!,
+
+        translations,
+      });
+    } catch (error) {
+      // Notification failure must not undo
+      // successful schedule update.
+
+      console.error("Failed to create staff schedule notification:", error);
+    }
+  }
+
+  // =====================================================
+  // 12. RESPONSE
+  //
+  // Preserve existing response structure.
+  // =====================================================
 
   return {
     staffId,
@@ -2422,7 +3276,12 @@ const getStaffSchedule = async (
     userId: string;
     role: Role;
   },
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
+  // =====================================================
+  // 1. FIND STAFF
+  // =====================================================
+
   const staff = await prisma.staff.findUnique({
     where: {
       id: staffId,
@@ -2441,6 +3300,10 @@ const getStaffSchedule = async (
     throw new AppError("Staff not found", 404);
   }
 
+  // =====================================================
+  // 2. STAFF ACCESS CONTROL
+  // =====================================================
+
   // STAFF can only view own schedule
   if (requester.role === Role.STAFF) {
     if (staff.userId !== requester.userId) {
@@ -2450,6 +3313,10 @@ const getStaffSchedule = async (
       );
     }
   }
+
+  // =====================================================
+  // 3. BRANCH MANAGER ACCESS CONTROL
+  // =====================================================
 
   // BRANCH_MANAGER can only view staff inside managed branch scope
   if (requester.role === Role.BRANCH_MANAGER) {
@@ -2479,6 +3346,10 @@ const getStaffSchedule = async (
     }
   }
 
+  // =====================================================
+  // 4. FETCH STAFF SCHEDULE
+  // =====================================================
+
   const schedule = await prisma.staffSchedule.findMany({
     where: {
       staffId,
@@ -2489,6 +3360,7 @@ const getStaffSchedule = async (
         select: {
           id: true,
           name: true,
+          translations: true,
         },
       },
     },
@@ -2503,23 +3375,38 @@ const getStaffSchedule = async (
     ],
   });
 
+  // =====================================================
+  // 5. LOCALIZED RESPONSE
+  // =====================================================
+
   return {
     staffId: staff.id,
-    schedule: schedule.map((item) => ({
-      day: item.day,
 
-      branch: {
-        id: item.branch.id,
-        name: item.branch.name,
-      },
+    schedule: schedule.map((item) => {
+      const localizedBranch = getLocalizedContent(
+        item.branch.translations,
+        language,
+        {
+          name: item.branch.name,
+        },
+      );
 
-      branchId: item.branchId,
-      startTime: item.startTime,
-      endTime: item.endTime,
-    })),
+      return {
+        day: item.day,
+
+        branch: {
+          id: item.branch.id,
+          name: localizedBranch.name,
+        },
+
+        branchId: item.branchId,
+
+        startTime: item.startTime,
+        endTime: item.endTime,
+      };
+    }),
   };
 };
-
 const getDayOfWeekFromDate = (date: string): DayOfWeek => {
   const jsDay = new Date(`${date}T00:00:00Z`).getUTCDay();
 
@@ -3061,7 +3948,14 @@ const deleteStaffUnavailability = async (
   return null;
 };
 
-const getMyStaffSchedule = async (userId: string) => {
+const getMyStaffSchedule = async (
+  userId: string,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. FIND LOGGED-IN STAFF
+  // =====================================================
+
   const staff = await prisma.staff.findUnique({
     where: {
       userId,
@@ -3076,15 +3970,24 @@ const getMyStaffSchedule = async (userId: string) => {
     throw new AppError("Staff profile not found", 404);
   }
 
-  return getStaffSchedule(staff.id, {
-    userId,
-    role: Role.STAFF,
-  });
+  // =====================================================
+  // 2. RETURN LOCALIZED STAFF SCHEDULE
+  // =====================================================
+
+  return getStaffSchedule(
+    staff.id,
+    {
+      userId,
+      role: Role.STAFF,
+    },
+    language,
+  );
 };
 
 const getMyAppointments = async (
   userId: string,
   query: IMyStaffAppointmentsQuery,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
   // 1. RESOLVE LOGGED-IN STAFF
@@ -3105,7 +4008,7 @@ const getMyAppointments = async (
     throw new AppError("Staff not found", 404);
   }
 
-  if (staff.status !== "ACTIVE") {
+  if (staff.status !== StaffStatus.ACTIVE) {
     throw new AppError("Staff is inactive", 403);
   }
 
@@ -3143,7 +4046,7 @@ const getMyAppointments = async (
   }
 
   // =====================================================
-  // 4. FETCH
+  // 4. FETCH APPOINTMENTS
   // =====================================================
 
   const [appointments, total] = await prisma.$transaction([
@@ -3180,6 +4083,7 @@ const getMyAppointments = async (
           select: {
             id: true,
             name: true,
+            translations: true,
           },
         },
 
@@ -3202,52 +4106,163 @@ const getMyAppointments = async (
   ]);
 
   // =====================================================
-  // 5. DTO
+  // 5. FETCH RELATED SERVICE/PACKAGE TRANSLATIONS
   // =====================================================
 
-  const items = appointments.map((appointment) => ({
-    id: appointment.id,
+  const serviceIds = [
+    ...new Set(
+      appointments
+        .map((item) => item.serviceId)
+        .filter((id): id is string => id !== null),
+    ),
+  ];
 
-    bookingMethod: appointment.bookingMethod,
+  const packageIds = [
+    ...new Set(
+      appointments
+        .map((item) => item.packageId)
+        .filter((id): id is string => id !== null),
+    ),
+  ];
 
-    appointmentStatus: appointment.appointmentStatus,
+  const [services, packages] = await Promise.all([
+    serviceIds.length > 0
+      ? prisma.service.findMany({
+          where: {
+            id: {
+              in: serviceIds,
+            },
+          },
+          select: {
+            id: true,
+            name: true,
+            translations: true,
+          },
+        })
+      : Promise.resolve([]),
 
-    paymentStatus: appointment.paymentStatus,
+    packageIds.length > 0
+      ? prisma.package.findMany({
+          where: {
+            id: {
+              in: packageIds,
+            },
+          },
+          select: {
+            id: true,
+            name: true,
+            translations: true,
+          },
+        })
+      : Promise.resolve([]),
+  ]);
 
-    branch: {
-      id: appointment.branch.id,
-      name: appointment.branch.name,
-    },
+  // =====================================================
+  // 6. BUILD LOCALIZED NAME MAPS
+  // =====================================================
 
-    customer: {
-      id: appointment.customer.id,
-      name: appointment.customer.name,
-      phone: appointment.customer.phone,
-    },
+  const serviceNameMap = new Map<string, string>();
 
-    service: appointment.serviceId
-      ? {
-          id: appointment.serviceId,
-          name: appointment.itemName,
-        }
-      : null,
+  for (const service of services) {
+    const localizedService = getLocalizedContent(
+      service.translations,
+      language,
+      {
+        name: service.name,
+      },
+    );
 
-    package: appointment.packageId
-      ? {
-          id: appointment.packageId,
-          name: appointment.itemName,
-        }
-      : null,
+    serviceNameMap.set(service.id, localizedService.name);
+  }
 
-    date: appointment.date.toISOString().slice(0, 10),
+  const packageNameMap = new Map<string, string>();
 
-    startTime: appointment.startTime,
-    endTime: appointment.endTime,
+  for (const packageData of packages) {
+    const localizedPackage = getLocalizedContent(
+      packageData.translations,
+      language,
+      {
+        name: packageData.name,
+      },
+    );
 
-    durationMinutes: appointment.durationMinutes,
-  }));
+    packageNameMap.set(packageData.id, localizedPackage.name);
+  }
+
+  // =====================================================
+  // 7. BUILD LOCALIZED RESPONSE
+  // =====================================================
+
+  const items = appointments.map((appointment) => {
+    const localizedBranch = getLocalizedContent(
+      appointment.branch.translations,
+      language,
+      {
+        name: appointment.branch.name,
+      },
+    );
+
+    const serviceName = appointment.serviceId
+      ? (serviceNameMap.get(appointment.serviceId) ?? appointment.itemName)
+      : null;
+
+    const packageName = appointment.packageId
+      ? (packageNameMap.get(appointment.packageId) ?? appointment.itemName)
+      : null;
+
+    return {
+      id: appointment.id,
+
+      bookingMethod: appointment.bookingMethod,
+
+      appointmentStatus: appointment.appointmentStatus,
+
+      paymentStatus: appointment.paymentStatus,
+
+      branch: {
+        id: appointment.branch.id,
+        name: localizedBranch.name,
+      },
+
+      customer: {
+        id: appointment.customer.id,
+        name: appointment.customer.name,
+        phone: appointment.customer.phone,
+      },
+
+      service: appointment.serviceId
+        ? {
+            id: appointment.serviceId,
+            name: serviceName,
+          }
+        : null,
+
+      package: appointment.packageId
+        ? {
+            id: appointment.packageId,
+            name: packageName,
+          }
+        : null,
+
+      date: appointment.date.toISOString().slice(0, 10),
+
+      startTime: appointment.startTime,
+
+      endTime: appointment.endTime,
+
+      durationMinutes: appointment.durationMinutes,
+    };
+  });
+
+  // =====================================================
+  // 8. PAGINATION
+  // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+  // =====================================================
+  // 9. FINAL RESPONSE
+  // =====================================================
 
   return {
     items,

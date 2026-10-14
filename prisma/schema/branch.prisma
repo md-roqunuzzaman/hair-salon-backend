@@ -5,6 +5,7 @@ model Branch {
   phone            String?
   description      String?
   imageObjectKey   String?
+  translations     Json?
   status           BranchStatus           @default(ACTIVE)
   bookingPolicy    BranchBookingPolicy?
   businessHours    BranchBusinessHour[]

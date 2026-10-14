@@ -5,9 +5,11 @@ import { catchAsync } from "../../utils/catchAsync.js";
 import { sendResponse } from "../../utils/sendResponse.js";
 import { appointmentService } from "./appointment.service.js";
 import { AppError } from "../../utils/app-error.js";
+import { DEFAULT_LANGUAGE, isLanguage } from "../../utils/language.js";
 
 const createPayNowAppointment = catchAsync(
   async (req: Request, res: Response) => {
+    console.log("🔥 PAY NOW CONTROLLER HIT");
     const customerId = req.user!.userId;
 
     const result = await appointmentService.createPayNowAppointment(
@@ -26,6 +28,7 @@ const createPayNowAppointment = catchAsync(
 
 const createReserveAppointment = catchAsync(
   async (req: Request, res: Response) => {
+    console.log("🔥 RESERVE CONTROLLER HIT");
     const customerId = req.user!.userId;
 
     const result = await appointmentService.createReserveAppointment(
@@ -45,9 +48,14 @@ const createReserveAppointment = catchAsync(
 const getMyAppointments = catchAsync(async (req: Request, res: Response) => {
   const customerId = req.user!.userId;
 
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
   const result = await appointmentService.getMyAppointments(
     customerId,
     req.body,
+    language,
   );
 
   sendResponse(res, {
@@ -59,19 +67,28 @@ const getMyAppointments = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getAppointmentById = catchAsync(async (req: Request, res: Response) => {
-  const userId = req.user!.userId;
-  const role = req.user!.role;
+  if (!req.user) {
+    throw new AppError("Unauthorized", httpStatus.UNAUTHORIZED);
+  }
+
+  const userId = req.user.userId;
+  const role = req.user.role;
 
   const appointmentId = req.params.appointmentId;
 
-  if (Array.isArray(appointmentId)) {
+  if (!appointmentId || Array.isArray(appointmentId)) {
     throw new AppError("Invalid appointmentId", 400);
   }
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
 
   const result = await appointmentService.getAppointmentById(
     appointmentId,
     userId,
     role,
+    language,
   );
 
   sendResponse(res, {
@@ -81,7 +98,6 @@ const getAppointmentById = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
-
 const cancelAppointment = catchAsync(async (req: Request, res: Response) => {
   const appointmentId = req.params.appointmentId;
 
@@ -229,11 +245,24 @@ const getBranchAppointments = catchAsync(
     const userId = req.user!.userId;
     const role = req.user!.role;
 
+    // =====================================================
+    // LANGUAGE
+    // =====================================================
+
+    const language = isLanguage(res.locals.language)
+      ? res.locals.language
+      : DEFAULT_LANGUAGE;
+
+    // =====================================================
+    // SERVICE
+    // =====================================================
+
     const result = await appointmentService.getBranchAppointments(
       branchId,
       userId,
       role,
       req.body,
+      language,
     );
 
     sendResponse(res, {
@@ -246,7 +275,14 @@ const getBranchAppointments = catchAsync(
 );
 
 const getAllAppointments = catchAsync(async (req: Request, res: Response) => {
-  const result = await appointmentService.getAllAppointments(req.body);
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await appointmentService.getAllAppointments(
+    req.body,
+    language,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -258,6 +294,7 @@ const getAllAppointments = catchAsync(async (req: Request, res: Response) => {
 
 const createDepositAppointment = catchAsync(
   async (req: Request, res: Response) => {
+    console.log("🔥 DEPOSIT CONTROLLER HIT");
     const customerId = req.user!.userId;
 
     const result = await appointmentService.createDepositAppointment(
