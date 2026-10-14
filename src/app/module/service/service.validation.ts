@@ -9,6 +9,10 @@ const serviceLocaleSchema = z
     name: z.string().trim().min(2).max(100).optional(),
 
     description: z.string().trim().max(1000).nullable().optional(),
+
+    processSteps: z.array(z.string().trim().min(1)).optional(),
+
+    bookingNotes: z.array(z.string().trim().min(1)).optional(),
   })
   .strict();
 
@@ -19,6 +23,22 @@ const serviceTranslationsSchema = z
     "zh-HK": serviceLocaleSchema.optional(),
   })
   .strict();
+
+// =====================================================
+// SERVICE DISPLAY FIELD VALIDATION
+// =====================================================
+
+const serviceDisplayFieldsSchema = {
+  isPopular: z.boolean().optional(),
+
+  processSteps: z
+    .array(z.string().trim().min(1, "Process step cannot be empty"))
+    .optional(),
+
+  bookingNotes: z
+    .array(z.string().trim().min(1, "Booking note cannot be empty"))
+    .optional(),
+};
 
 // =====================================================
 // CREATE SERVICE
@@ -52,7 +72,10 @@ const createServiceValidationSchema = z.object({
       .min(1, "At least one service image is required")
       .optional(),
 
-    // NEW
+    // SERVICE DISPLAY FIELDS
+    ...serviceDisplayFieldsSchema,
+
+    // MULTILINGUAL SUPPORT
     translations: serviceTranslationsSchema.optional(),
   }),
 });
@@ -73,7 +96,10 @@ const updateServiceValidationSchema = z.object({
 
     durationMinutes: z.number().int().positive().optional(),
 
-    // NEW
+    // SERVICE DISPLAY FIELDS
+    ...serviceDisplayFieldsSchema,
+
+    // MULTILINGUAL SUPPORT
     translations: serviceTranslationsSchema.optional(),
   }),
 });

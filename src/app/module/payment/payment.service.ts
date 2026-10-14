@@ -1980,11 +1980,11 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   const page = Number(query.page ?? 1);
   const limit = Number(query.limit ?? 20);
 
-  if (page < 1) {
+  if (!Number.isInteger(page) || page < 1) {
     throw new AppError("page must be at least 1", 400);
   }
 
-  if (limit < 1 || limit > 100) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
     throw new AppError("limit must be between 1 and 100", 400);
   }
 
@@ -2005,7 +2005,7 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   };
 
   // =====================================================
-  // 3. FETCH + COUNT
+  // 3. FETCH PAYMENTS + TOTAL COUNT
   // =====================================================
 
   const [payments, total] = await prisma.$transaction([
@@ -2027,6 +2027,11 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
         provider: true,
         providerPaymentId: true,
         appointmentId: true,
+
+        // G6 - NEW FIELDS
+        createdAt: true,
+        purpose: true,
+        groupPurchaseId: true,
       },
     }),
 
@@ -2036,7 +2041,58 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   ]);
 
   // =====================================================
-  // 4. RESPONSE DTO
+  // 4. FETCH SUCCESSFUL REFUND TOTALS
+  // =====================================================
+
+  const paymentIds = payments.map((payment) => payment.id);
+
+  const refundTotals =
+    paymentIds.length > 0
+      ? await prisma.refund.groupBy({
+          by: ["paymentId"],
+
+          where: {
+            paymentId: {
+              in: paymentIds,
+            },
+
+            status: RefundStatus.SUCCEEDED,
+          },
+
+          _sum: {
+            amount: true,
+          },
+        })
+      : [];
+
+  // =====================================================
+  // 5. REFUND AMOUNT LOOKUP MAP
+  // =====================================================
+
+  const refundedAmountMap = new Map<string, number>();
+
+  for (const refund of refundTotals) {
+    refundedAmountMap.set(refund.paymentId, Number(refund._sum.amount ?? 0));
+  }
+
+  // =====================================================
+  // 6. PAYMENT LABEL MAPPING
+  // =====================================================
+
+  const paymentLabels: Record<PaymentPurpose, string> = {
+    [PaymentPurpose.APPOINTMENT]: "Appointment Payment",
+
+    [PaymentPurpose.GROUP_PURCHASE]: "Group Purchase",
+
+    [PaymentPurpose.WALLET_TOP_UP]: "Wallet Top Up",
+
+    [PaymentPurpose.APPOINTMENT_DEPOSIT]: "Appointment Deposit",
+
+    [PaymentPurpose.APPOINTMENT_REMAINING]: "Appointment Remaining Payment",
+  };
+
+  // =====================================================
+  // 7. RESPONSE DTO
   // =====================================================
 
   const items: IMyPaymentItem[] = payments.map((payment) => ({
@@ -2053,7 +2109,23 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
     providerPaymentId: payment.providerPaymentId,
 
     appointmentId: payment.appointmentId,
+
+    // G6 - NEW FIELDS
+
+    createdAt: payment.createdAt,
+
+    purpose: payment.purpose,
+
+    groupPurchaseId: payment.groupPurchaseId,
+
+    label: paymentLabels[payment.purpose] ?? "Payment",
+
+    refundedAmount: refundedAmountMap.get(payment.id) ?? 0,
   }));
+
+  // =====================================================
+  // 8. PAGINATION RESPONSE
+  // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 

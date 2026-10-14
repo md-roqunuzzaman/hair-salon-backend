@@ -76,3 +76,65 @@ export interface IBranchLocale {
 }
 
 export type IBranchTranslations = Partial<Record<Language, IBranchLocale>>;
+
+export interface IBranchDailySummaryQuery {
+  date: string;
+}
+
+export interface IBranchDailySummaryResult {
+  date: string;
+
+  total: number;
+  completed: number;
+  cancelled: number;
+  noShow: number;
+  pending: number;
+  expired: number;
+
+  statusBreakdown: {
+    pendingPayment: number;
+    reserved: number;
+    confirmed: number;
+    completed: number;
+    cancelled: number;
+    noShow: number;
+    expired: number;
+  };
+
+  revenue: number;
+  averageTicket: number;
+}
+
+export interface IBranchDailySeriesQuery {
+  start: string;
+  end: string;
+}
+
+export interface IBranchDailySeriesItem {
+  date: string;
+  count: number;
+}
+
+export interface IBranchDailySeriesResult {
+  items: IBranchDailySeriesItem[];
+}
+
+export interface IBranchStaffOutputQuery {
+  start: string;
+  end: string;
+}
+
+export interface IBranchStaffOutputItem {
+  staffId: string;
+  staffName: string;
+
+  appointmentCount: number;
+  completedCount: number;
+
+  revenue: number;
+  averageRating: number | null;
+}
+
+export interface IBranchStaffOutputResult {
+  items: IBranchStaffOutputItem[];
+}

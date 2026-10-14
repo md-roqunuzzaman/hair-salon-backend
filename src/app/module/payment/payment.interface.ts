@@ -1,3 +1,5 @@
+import { PaymentPurpose } from "../../../../generated/prisma/enums.js";
+
 export interface ICreateStripeIntentPayload {
   appointmentId: string;
 }
@@ -34,12 +36,22 @@ export interface IMyPaymentsQuery {
 
 export interface IMyPaymentItem {
   id: string;
+
   amount: number;
   currency: string;
+
   paymentStatus: string;
   provider: string;
   providerPaymentId: string | null;
+
   appointmentId: string | null;
+
+  // G6 - Payment History Enhancement
+  createdAt: Date;
+  purpose: PaymentPurpose;
+  groupPurchaseId: string | null;
+  label: string;
+  refundedAmount: number;
 }
 export interface IMyPaymentsQuery {
   page?: string;

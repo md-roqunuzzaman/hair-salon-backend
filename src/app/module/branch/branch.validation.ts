@@ -203,6 +203,148 @@ const customerOperationalSearchValidationSchema = z.object({
   }),
 });
 
+const getBranchDailySummaryValidationSchema = z.object({
+  body: z.object({
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be in YYYY-MM-DD format")
+      .refine((value) => {
+        const parsedDate = new Date(`${value}T00:00:00.000Z`);
+
+        return (
+          !Number.isNaN(parsedDate.getTime()) &&
+          parsedDate.toISOString().slice(0, 10) === value
+        );
+      }, "Invalid date"),
+  }),
+});
+
+const getBranchDailySeriesValidationSchema = z.object({
+  body: z
+    .object({
+      start: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "start must be in YYYY-MM-DD format")
+        .refine((value) => {
+          const parsed = new Date(`${value}T00:00:00.000Z`);
+
+          return (
+            !Number.isNaN(parsed.getTime()) &&
+            parsed.toISOString().slice(0, 10) === value
+          );
+        }, "Invalid start date"),
+
+      end: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "end must be in YYYY-MM-DD format")
+        .refine((value) => {
+          const parsed = new Date(`${value}T00:00:00.000Z`);
+
+          return (
+            !Number.isNaN(parsed.getTime()) &&
+            parsed.toISOString().slice(0, 10) === value
+          );
+        }, "Invalid end date"),
+    })
+    .superRefine((data, ctx) => {
+      const startDate = new Date(`${data.start}T00:00:00.000Z`);
+      const endDate = new Date(`${data.end}T00:00:00.000Z`);
+
+      if (
+        Number.isNaN(startDate.getTime()) ||
+        Number.isNaN(endDate.getTime())
+      ) {
+        return;
+      }
+
+      if (startDate > endDate) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["end"],
+          message: "end date must be greater than or equal to start date",
+        });
+
+        return;
+      }
+
+      const totalDays =
+        Math.round(
+          (endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000),
+        ) + 1;
+
+      if (totalDays > 366) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["end"],
+          message: "Date range cannot exceed 366 days",
+        });
+      }
+    }),
+});
+
+const getBranchStaffOutputValidationSchema = z.object({
+  body: z
+    .object({
+      start: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "start must be in YYYY-MM-DD format")
+        .refine((value) => {
+          const parsed = new Date(`${value}T00:00:00.000Z`);
+
+          return (
+            !Number.isNaN(parsed.getTime()) &&
+            parsed.toISOString().slice(0, 10) === value
+          );
+        }, "Invalid start date"),
+
+      end: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "end must be in YYYY-MM-DD format")
+        .refine((value) => {
+          const parsed = new Date(`${value}T00:00:00.000Z`);
+
+          return (
+            !Number.isNaN(parsed.getTime()) &&
+            parsed.toISOString().slice(0, 10) === value
+          );
+        }, "Invalid end date"),
+    })
+    .superRefine((data, ctx) => {
+      const startDate = new Date(`${data.start}T00:00:00.000Z`);
+      const endDate = new Date(`${data.end}T00:00:00.000Z`);
+
+      if (
+        Number.isNaN(startDate.getTime()) ||
+        Number.isNaN(endDate.getTime())
+      ) {
+        return;
+      }
+
+      if (startDate > endDate) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["end"],
+          message: "end date must be greater than or equal to start date",
+        });
+
+        return;
+      }
+
+      const totalDays =
+        Math.round(
+          (endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000),
+        ) + 1;
+
+      if (totalDays > 366) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["end"],
+          message: "Date range cannot exceed 366 days",
+        });
+      }
+    }),
+});
+
 export const branchValidation = {
   createBranchValidationSchema,
   updateBranchValidationSchema,
@@ -211,4 +353,7 @@ export const branchValidation = {
   updateBusinessHoursValidationSchema,
   updateBookingPolicyValidationSchema,
   customerOperationalSearchValidationSchema,
+  getBranchDailySummaryValidationSchema,
+  getBranchDailySeriesValidationSchema,
+  getBranchStaffOutputValidationSchema,
 };

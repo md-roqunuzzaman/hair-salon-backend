@@ -3,10 +3,12 @@ import { ServiceStatus } from "../../../../generated/prisma/client.js";
 // =====================================================
 // SERVICE TRANSLATIONS
 // =====================================================
-
 export interface IServiceLocale {
   name?: string;
   description?: string | null;
+
+  processSteps?: string[];
+  bookingNotes?: string[];
 }
 
 export interface IServiceTranslations {
@@ -16,10 +18,20 @@ export interface IServiceTranslations {
 }
 
 // =====================================================
+// SERVICE DISPLAY FIELDS
+// =====================================================
+
+export interface IServiceDisplayFields {
+  isPopular?: boolean;
+  processSteps?: string[];
+  bookingNotes?: string[];
+}
+
+// =====================================================
 // CREATE SERVICE
 // =====================================================
 
-export interface ICreateServicePayload {
+export interface ICreateServicePayload extends IServiceDisplayFields {
   name: string;
   description?: string;
   price: number;
@@ -34,7 +46,7 @@ export interface ICreateServicePayload {
 // UPDATE SERVICE
 // =====================================================
 
-export interface IUpdateServicePayload {
+export interface IUpdateServicePayload extends IServiceDisplayFields {
   name?: string;
   description?: string;
   price?: number;

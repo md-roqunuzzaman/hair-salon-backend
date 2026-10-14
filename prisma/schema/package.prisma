@@ -5,6 +5,19 @@ model Package {
   description  String?
   translations Json?
 
+  // =====================================================
+  // PACKAGE DISPLAY INFORMATION
+  // =====================================================
+
+  validDays      Int?
+  applicableFor  String[] @default([])
+  purchaseNotice String[] @default([])
+  howToUse       String[] @default([])
+
+  // =====================================================
+  // PRICING
+  // =====================================================
+
   regularPrice    Decimal @db.Decimal(10, 2)
   packagePrice    Decimal @db.Decimal(10, 2)
   durationMinutes Int
@@ -12,12 +25,20 @@ model Package {
   status        PackageStatus @default(ACTIVE)
   listingStatus ListingStatus @default(LISTED)
 
+  // =====================================================
+  // GROUP PURCHASE SETTINGS
+  // =====================================================
+
   capacity                 Int?
   soldQuantity             Int       @default(0)
   reservedQuantity         Int       @default(0)
   purchaseLimitPerCustomer Int?
   salesStartAt             DateTime?
   salesEndAt               DateTime?
+
+  // =====================================================
+  // RELATIONS
+  // =====================================================
 
   groupPurchases GroupPurchase[]
   staff          StaffPackage[]

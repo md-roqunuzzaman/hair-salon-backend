@@ -1,6 +1,7 @@
 import app from "./app.js";
 import config from "./app/config/index.js";
 import { startAppointmentExpiryJob } from "./app/jobs/appointment-expiry.job.js";
+import { startGroupPurchaseExpiryJob } from "./app/jobs/group-purchase-expiry.job.js";
 import { verifyEmailConnection } from "./app/lib/nodemailer.js";
 import { prisma } from "./app/lib/prisma.js";
 import { connectRedis } from "./app/lib/redis.js";
@@ -20,6 +21,8 @@ const main = async () => {
     app.listen(PORT, () => {
       console.log(`Server is running on port ${PORT}`);
       startAppointmentExpiryJob();
+      // New Group Purchase expiry job
+      startGroupPurchaseExpiryJob();
     });
   } catch (error) {
     console.error("Error starting the server:", error);

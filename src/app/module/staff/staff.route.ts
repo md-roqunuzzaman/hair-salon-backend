@@ -93,6 +93,8 @@ router.get(
   auth(Role.STAFF),
   staffController.getMyStaffSchedule,
 );
+
+router.get("/me/reviews", auth(Role.STAFF), reviewController.getMyStaffReview);
 router.get(
   "/:staffId/schedule",
   auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER, Role.STAFF),

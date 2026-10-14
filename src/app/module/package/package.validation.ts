@@ -1,12 +1,34 @@
 import { z } from "zod";
 
+// =====================================================
+// 1. REUSABLE PACKAGE DISPLAY ARRAY VALIDATION
+// =====================================================
+
+const packageTextArraySchema = z.array(
+  z.string().trim().min(1, "Array items cannot be empty").max(500),
+);
+
+// =====================================================
+// 2. MULTILINGUAL PACKAGE LOCALE
+// =====================================================
+
 const packageLocaleSchema = z
   .object({
     name: z.string().trim().min(2).max(120).optional(),
 
     description: z.string().trim().max(1500).optional(),
+
+    applicableFor: packageTextArraySchema.optional(),
+
+    purchaseNotice: packageTextArraySchema.optional(),
+
+    howToUse: packageTextArraySchema.optional(),
   })
   .strict();
+
+// =====================================================
+// 3. SUPPORTED TRANSLATION LANGUAGES
+// =====================================================
 
 const packageTranslationsSchema = z
   .object({
@@ -17,6 +39,10 @@ const packageTranslationsSchema = z
     "zh-HK": packageLocaleSchema.optional(),
   })
   .strict();
+
+// =====================================================
+// 4. CREATE PACKAGE VALIDATION
+// =====================================================
 
 const createPackageValidationSchema = z
   .object({
@@ -33,9 +59,34 @@ const createPackageValidationSchema = z
         .max(1500, "Description must not exceed 1500 characters")
         .optional(),
 
+      // ===============================================
+      // NEW PACKAGE DISPLAY FIELDS
+      // ===============================================
+
+      validDays: z
+        .number()
+        .int("Valid days must be an integer")
+        .positive("Valid days must be greater than 0")
+        .nullable()
+        .optional(),
+
+      applicableFor: packageTextArraySchema.optional(),
+
+      purchaseNotice: packageTextArraySchema.optional(),
+
+      howToUse: packageTextArraySchema.optional(),
+
+      // ===============================================
+      // SERVICES
+      // ===============================================
+
       serviceIds: z
         .array(z.string().uuid("Invalid service ID"))
         .min(1, "At least one service is required"),
+
+      // ===============================================
+      // PRICING
+      // ===============================================
 
       regularPrice: z.number().positive("Regular price must be greater than 0"),
 
@@ -46,15 +97,32 @@ const createPackageValidationSchema = z
         .int()
         .positive("Duration must be greater than 0"),
 
+      // ===============================================
+      // BRANCHES
+      // ===============================================
+
       branchIds: z
         .array(z.string().uuid("Invalid branch ID"))
         .min(1, "At least one branch is required"),
 
+      // ===============================================
+      // IMAGES
+      // ===============================================
+
       imageObjectKeys: z
-        .array(z.string().min(1, "Invalid image object key"))
-        .min(1, "At least one package image is required"),
+        .array(z.string().trim().min(1, "Invalid image object key"))
+        .optional()
+        .default([]),
+
+      // ===============================================
+      // LISTING STATUS
+      // ===============================================
 
       listingStatus: z.enum(["LISTED", "DELISTED"]),
+
+      // ===============================================
+      // GROUP PURCHASE SETTINGS
+      // ===============================================
 
       capacity: z
         .number()
@@ -71,11 +139,20 @@ const createPackageValidationSchema = z
       salesStartAt: z.string().datetime({ offset: true }).optional(),
 
       salesEndAt: z.string().datetime({ offset: true }).optional(),
+
+      // ===============================================
+      // MULTILINGUAL TRANSLATIONS
+      // ===============================================
+
       translations: packageTranslationsSchema.optional(),
     }),
   })
   .superRefine((data, ctx) => {
     const body = data.body;
+
+    // =================================================
+    // PRICE VALIDATION
+    // =================================================
 
     if (body.packagePrice > body.regularPrice) {
       ctx.addIssue({
@@ -84,6 +161,10 @@ const createPackageValidationSchema = z
         message: "Package price cannot be greater than regular price",
       });
     }
+
+    // =================================================
+    // STANDARD SERVICE PACKAGE RULES
+    // =================================================
 
     if (body.type === "STANDARD_SERVICE_PACKAGE") {
       if (body.capacity !== undefined) {
@@ -121,6 +202,10 @@ const createPackageValidationSchema = z
         });
       }
     }
+
+    // =================================================
+    // GROUP PURCHASE PACKAGE RULES
+    // =================================================
 
     if (body.type === "GROUP_PURCHASE_PACKAGE") {
       if (body.capacity === undefined) {
@@ -182,11 +267,36 @@ const createPackageValidationSchema = z
     }
   });
 
+// =====================================================
+// 5. UPDATE PACKAGE VALIDATION
+// =====================================================
+
 const updatePackageValidationSchema = z.object({
   body: z.object({
     name: z.string().min(2).max(120).optional(),
 
     description: z.string().max(1500).optional(),
+
+    // ===============================================
+    // NEW PACKAGE DISPLAY FIELDS
+    // ===============================================
+
+    validDays: z
+      .number()
+      .int("Valid days must be an integer")
+      .positive("Valid days must be greater than 0")
+      .nullable()
+      .optional(),
+
+    applicableFor: packageTextArraySchema.optional(),
+
+    purchaseNotice: packageTextArraySchema.optional(),
+
+    howToUse: packageTextArraySchema.optional(),
+
+    // ===============================================
+    // PRICING + DURATION
+    // ===============================================
 
     regularPrice: z.number().positive().optional(),
 
@@ -194,10 +304,17 @@ const updatePackageValidationSchema = z.object({
 
     durationMinutes: z.number().int().positive().optional(),
 
+    // ===============================================
+    // IMAGES
+    // ===============================================
+
     imageObjectKeys: z
       .array(z.string().trim().min(1, "Invalid image object key"))
-      .min(1, "At least one package image is required")
       .optional(),
+
+    // ===============================================
+    // GROUP PURCHASE SETTINGS
+    // ===============================================
 
     capacity: z.number().int().positive().optional(),
 
@@ -206,19 +323,38 @@ const updatePackageValidationSchema = z.object({
     salesStartAt: z.string().datetime({ offset: true }).optional(),
 
     salesEndAt: z.string().datetime({ offset: true }).optional(),
+
+    // ===============================================
+    // MULTILINGUAL TRANSLATIONS
+    // ===============================================
+
     translations: packageTranslationsSchema.optional(),
   }),
 });
+
+// =====================================================
+// 6. UPDATE PACKAGE STATUS
+// =====================================================
+
 const updatePackageStatusValidationSchema = z.object({
   body: z.object({
     status: z.enum(["ACTIVE", "INACTIVE"]),
   }),
 });
+
+// =====================================================
+// 7. UPDATE PACKAGE LISTING
+// =====================================================
+
 const updatePackageListingValidationSchema = z.object({
   body: z.object({
     listingStatus: z.enum(["LISTED", "DELISTED"]),
   }),
 });
+
+// =====================================================
+// 8. ASSIGN PACKAGE BRANCHES
+// =====================================================
 
 const assignPackageBranchesValidationSchema = z.object({
   body: z.object({
@@ -227,6 +363,10 @@ const assignPackageBranchesValidationSchema = z.object({
       .min(1, "At least one branch is required"),
   }),
 });
+
+// =====================================================
+// 9. EXPORT
+// =====================================================
 
 export const packageValidation = {
   createPackageValidationSchema,

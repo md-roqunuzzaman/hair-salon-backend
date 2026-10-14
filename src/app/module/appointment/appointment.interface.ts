@@ -119,7 +119,7 @@ export interface IMyAppointmentItem {
 
   // Deposit/payment summary
   depositPercentage: number;
-  depositAmount: number;
+  depositAmount: number | null;
   remainingAmount: number;
 
   amountPaid: number;
@@ -177,8 +177,16 @@ export interface IAppointmentDetails {
   price: number;
   currency: string;
 
+  // =====================================================
+  // G8 — DEPOSIT & REMAINING BALANCE
+  // =====================================================
+
   depositPercentage: number;
-  depositAmount: number;
+
+  // Null for non-DEPOSIT bookings
+  depositAmount: number | null;
+
+  // Current outstanding balance; 0 when fully paid
   remainingAmount: number;
 
   amountPaid: number;
@@ -289,13 +297,89 @@ export interface IBranchAppointmentsQuery {
   limit?: string;
 
   date?: string;
+
   staffId?: string;
 
   bookingMethod?: BookingMethodType;
 
+  status?: AppointmentStatusType;
   appointmentStatus?: AppointmentStatusType;
 
   paymentStatus?: PaymentStatusType;
+}
+export interface IBranchAppointmentItem {
+  id: string;
+
+  bookingMethod: BookingMethodType;
+  appointmentStatus: AppointmentStatusType;
+  paymentStatus: PaymentStatusType;
+
+  customer: {
+    id: string;
+    name: string;
+    phone: string | null;
+  };
+
+  branch: {
+    id: string;
+    name: string;
+  };
+
+  staff: {
+    id: string;
+    name: string;
+  } | null;
+
+  service: {
+    id: string;
+    name: string;
+  } | null;
+
+  package: {
+    id: string;
+    name: string;
+  } | null;
+
+  date: string;
+  startTime: string;
+  endTime: string;
+
+  durationMinutes: number;
+
+  price: number;
+  currency: string;
+
+  // =====================================================
+  // G3 REVIEW STATUS
+  // =====================================================
+
+  reviewed: boolean;
+
+  // =====================================================
+  // G3 QR VERIFICATION
+  // =====================================================
+
+  qrToken: string | null;
+
+  qrVerifiedAt: Date | null;
+
+  qrVerifiedBy: {
+    id: string;
+    name: string;
+  } | null;
+}
+
+export interface IBranchAppointmentsResult {
+  items: IBranchAppointmentItem[];
+
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    hasNextPage: boolean;
+    hasPreviousPage: boolean;
+  };
 }
 
 export interface IAllAppointmentsQuery {

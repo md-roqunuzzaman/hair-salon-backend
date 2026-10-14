@@ -21,14 +21,25 @@ import {
 
 const createService = async (payload: ICreateServicePayload) => {
   // =====================================================
-  // 1. NORMALIZE SERVICE NAME
+  // 1. NORMALIZE SERVICE INFORMATION
   // =====================================================
 
   const serviceName = payload.name.trim();
+
   const serviceDescription = payload.description?.trim() || null;
 
   // =====================================================
-  // 2. DUPLICATE SERVICE CHECK
+  // 2. PREPARE SERVICE DISPLAY INFORMATION
+  // =====================================================
+
+  const isPopular = payload.isPopular ?? false;
+
+  const processSteps = payload.processSteps ?? [];
+
+  const bookingNotes = payload.bookingNotes ?? [];
+
+  // =====================================================
+  // 3. DUPLICATE SERVICE CHECK
   // =====================================================
 
   const existingService = await prisma.service.findFirst({
@@ -45,7 +56,7 @@ const createService = async (payload: ICreateServicePayload) => {
   }
 
   // =====================================================
-  // 3. UNIQUE BRANCH IDS
+  // 4. UNIQUE BRANCH IDS
   // =====================================================
 
   const uniqueBranchIds = [...new Set(payload.branchIds)];
@@ -55,7 +66,7 @@ const createService = async (payload: ICreateServicePayload) => {
   }
 
   // =====================================================
-  // 4. VALIDATE BRANCHES
+  // 5. VALIDATE BRANCHES
   // =====================================================
 
   const branches = await prisma.branch.findMany({
@@ -84,14 +95,27 @@ const createService = async (payload: ICreateServicePayload) => {
   }
 
   // =====================================================
-  // 5. PREPARE MULTILINGUAL TRANSLATIONS
+  // 6. PREPARE MULTILINGUAL TRANSLATIONS
   // =====================================================
 
   const translations: Prisma.InputJsonObject = {
+    // ===================================================
+    // ENGLISH - DEFAULT LANGUAGE
+    // ===================================================
+
     en: {
       name: serviceName,
+
       description: serviceDescription,
+
+      processSteps,
+
+      bookingNotes,
     },
+
+    // ===================================================
+    // SIMPLIFIED CHINESE - zh-CN
+    // ===================================================
 
     ...(payload.translations?.["zh-CN"] && {
       "zh-CN": {
@@ -102,8 +126,20 @@ const createService = async (payload: ICreateServicePayload) => {
         ...(payload.translations["zh-CN"].description !== undefined && {
           description: payload.translations["zh-CN"].description,
         }),
+
+        ...(payload.translations["zh-CN"].processSteps !== undefined && {
+          processSteps: payload.translations["zh-CN"].processSteps,
+        }),
+
+        ...(payload.translations["zh-CN"].bookingNotes !== undefined && {
+          bookingNotes: payload.translations["zh-CN"].bookingNotes,
+        }),
       },
     }),
+
+    // ===================================================
+    // TRADITIONAL CHINESE - zh-HK
+    // ===================================================
 
     ...(payload.translations?.["zh-HK"] && {
       "zh-HK": {
@@ -114,14 +150,27 @@ const createService = async (payload: ICreateServicePayload) => {
         ...(payload.translations["zh-HK"].description !== undefined && {
           description: payload.translations["zh-HK"].description,
         }),
+
+        ...(payload.translations["zh-HK"].processSteps !== undefined && {
+          processSteps: payload.translations["zh-HK"].processSteps,
+        }),
+
+        ...(payload.translations["zh-HK"].bookingNotes !== undefined && {
+          bookingNotes: payload.translations["zh-HK"].bookingNotes,
+        }),
       },
     }),
   };
+
   // =====================================================
-  // 6. CREATE SERVICE + BRANCH ASSIGNMENTS
+  // 7. CREATE SERVICE + BRANCH ASSIGNMENTS
   // =====================================================
 
   const service = await prisma.$transaction(async (tx) => {
+    // ===================================================
+    // CREATE SERVICE
+    // ===================================================
+
     const createdService = await tx.service.create({
       data: {
         name: serviceName,
@@ -132,14 +181,27 @@ const createService = async (payload: ICreateServicePayload) => {
 
         durationMinutes: payload.durationMinutes,
 
-        // NEW: Multilingual JSON
+        // ===============================================
+        // SERVICE DISPLAY INFORMATION
+        // ===============================================
+
+        isPopular,
+
+        processSteps,
+
+        bookingNotes,
+
+        // ===============================================
+        // MULTILINGUAL SUPPORT
+        // ===============================================
+
         translations,
       },
     });
 
-    // ===============================================
+    // ===================================================
     // ASSIGN SERVICE TO BRANCHES
-    // ===============================================
+    // ===================================================
 
     await tx.serviceBranch.createMany({
       data: uniqueBranchIds.map((branchId) => ({
@@ -152,7 +214,7 @@ const createService = async (payload: ICreateServicePayload) => {
   });
 
   // =====================================================
-  // 7. RESPONSE
+  // 8. FINAL RESPONSE
   // =====================================================
 
   return {
@@ -168,12 +230,30 @@ const createService = async (payload: ICreateServicePayload) => {
 
     status: service.status,
 
+    // ===================================================
+    // SERVICE DISPLAY INFORMATION
+    // ===================================================
+
+    isPopular: service.isPopular,
+
+    processSteps: service.processSteps,
+
+    bookingNotes: service.bookingNotes,
+
+    // ===================================================
+    // IMAGES
+    // ===================================================
+
     images: [],
 
-    // NEW: Admin can access all translations
+    // ===================================================
+    // MULTILINGUAL TRANSLATIONS
+    // ===================================================
+
     translations: service.translations,
   };
 };
+
 const getServices = async (
   query: Record<string, any>,
   language: Language = DEFAULT_LANGUAGE,
@@ -260,8 +340,6 @@ const getServices = async (
               select: {
                 id: true,
                 name: true,
-
-                // NEW: Branch translations
                 translations: true,
               },
             },
@@ -284,7 +362,7 @@ const getServices = async (
   const items = await Promise.all(
     services.map(async (service) => {
       // ===============================================
-      // LOCALIZE SERVICE NAME + DESCRIPTION
+      // LOCALIZE SERVICE INFORMATION
       // ===============================================
 
       const localizedService = getLocalizedContent(
@@ -293,6 +371,8 @@ const getServices = async (
         {
           name: service.name,
           description: service.description,
+          processSteps: service.processSteps,
+          bookingNotes: service.bookingNotes,
         },
       );
 
@@ -342,12 +422,30 @@ const getServices = async (
 
         status: service.status,
 
+        // =============================================
+        // SERVICE DISPLAY INFORMATION
+        // =============================================
+
+        isPopular: service.isPopular,
+
+        processSteps: localizedService.processSteps,
+
+        bookingNotes: localizedService.bookingNotes,
+
+        // =============================================
+        // PRIMARY IMAGE
+        // =============================================
+
         primaryImage: primaryImageObjectKey
           ? {
               objectKey: primaryImageObjectKey,
               url: primaryImageUrl,
             }
           : null,
+
+        // =============================================
+        // BRANCHES
+        // =============================================
 
         branches: localizedBranches,
       };
@@ -425,24 +523,33 @@ const getServiceById = async (
   }
 
   // =====================================================
-  // 2. LOCALIZE SERVICE
+  // 2. LOCALIZE SERVICE INFORMATION
   // =====================================================
 
   const localizedService = getLocalizedContent(service.translations, language, {
     name: service.name,
+
     description: service.description,
+
+    processSteps: service.processSteps,
+
+    bookingNotes: service.bookingNotes,
   });
 
   // =====================================================
-  // 3. GENERATE SIGNED IMAGE URLS
+  // 3. GENERATE CLOUDFLARE R2 SIGNED IMAGE URLS
   // =====================================================
 
   const images = await Promise.all(
     service.images.map(async (image) => ({
       id: image.id,
+
       objectKey: image.objectKey,
+
       url: await uploadService.getImageUrl(image.objectKey),
+
       isPrimary: image.isPrimary,
+
       sortOrder: image.sortOrder,
     })),
   );
@@ -462,7 +569,9 @@ const getServiceById = async (
 
     return {
       id: item.branch.id,
+
       name: localizedBranch.name,
+
       status: item.branch.status,
     };
   });
@@ -474,9 +583,17 @@ const getServiceById = async (
   return {
     id: service.id,
 
+    // ===================================================
+    // LOCALIZED SERVICE INFORMATION
+    // ===================================================
+
     name: localizedService.name,
 
     description: localizedService.description,
+
+    // ===================================================
+    // PRICING + DURATION
+    // ===================================================
 
     price: Number(service.price),
 
@@ -484,7 +601,25 @@ const getServiceById = async (
 
     status: service.status,
 
+    // ===================================================
+    // SERVICE DISPLAY INFORMATION
+    // ===================================================
+
+    isPopular: service.isPopular,
+
+    processSteps: localizedService.processSteps,
+
+    bookingNotes: localizedService.bookingNotes,
+
+    // ===================================================
+    // IMAGES
+    // ===================================================
+
     images,
+
+    // ===================================================
+    // ASSIGNED BRANCHES
+    // ===================================================
 
     branches,
   };
@@ -593,6 +728,7 @@ const updateService = async (
 
   const updatedService = await prisma.$transaction(async (tx) => {
     // Fetch latest service state for translation merging.
+
     const currentService = await tx.service.findUnique({
       where: {
         id: serviceId,
@@ -610,7 +746,9 @@ const updateService = async (
     const shouldUpdateTranslations =
       payload.translations !== undefined ||
       payload.name !== undefined ||
-      payload.description !== undefined;
+      payload.description !== undefined ||
+      payload.processSteps !== undefined ||
+      payload.bookingNotes !== undefined;
 
     let mergedTranslations: Prisma.InputJsonObject | undefined;
 
@@ -625,7 +763,10 @@ const updateService = async (
         ...existingTranslations,
       };
 
-      // Merge only supplied language fields.
+      // ===================================================
+      // MERGE SIMPLIFIED + TRADITIONAL CHINESE
+      // ===================================================
+
       for (const locale of ["zh-CN", "zh-HK"] as const) {
         const incoming = incomingTranslations?.[locale];
 
@@ -640,11 +781,22 @@ const updateService = async (
             ...(incoming.description !== undefined && {
               description: incoming.description,
             }),
+
+            ...(incoming.processSteps !== undefined && {
+              processSteps: incoming.processSteps,
+            }),
+
+            ...(incoming.bookingNotes !== undefined && {
+              bookingNotes: incoming.bookingNotes,
+            }),
           };
         }
       }
 
-      // English base fields remain source of truth.
+      // ===================================================
+      // ENGLISH BASE FIELDS REMAIN SOURCE OF TRUTH
+      // ===================================================
+
       nextTranslations.en = {
         ...(nextTranslations.en ?? {}),
 
@@ -657,6 +809,16 @@ const updateService = async (
           payload.description !== undefined
             ? payload.description.trim()
             : currentService.description,
+
+        processSteps:
+          payload.processSteps !== undefined
+            ? payload.processSteps
+            : currentService.processSteps,
+
+        bookingNotes:
+          payload.bookingNotes !== undefined
+            ? payload.bookingNotes
+            : currentService.bookingNotes,
       };
 
       mergedTranslations = nextTranslations as Prisma.InputJsonObject;
@@ -687,6 +849,26 @@ const updateService = async (
         ...(payload.durationMinutes !== undefined && {
           durationMinutes: payload.durationMinutes,
         }),
+
+        // ===============================================
+        // SERVICE DISPLAY INFORMATION
+        // ===============================================
+
+        ...(payload.isPopular !== undefined && {
+          isPopular: payload.isPopular,
+        }),
+
+        ...(payload.processSteps !== undefined && {
+          processSteps: payload.processSteps,
+        }),
+
+        ...(payload.bookingNotes !== undefined && {
+          bookingNotes: payload.bookingNotes,
+        }),
+
+        // ===============================================
+        // MULTILINGUAL TRANSLATIONS
+        // ===============================================
 
         ...(mergedTranslations !== undefined && {
           translations: mergedTranslations,
@@ -794,7 +976,25 @@ const updateService = async (
 
     status: updatedService.status,
 
+    // ===================================================
+    // SERVICE DISPLAY INFORMATION
+    // ===================================================
+
+    isPopular: updatedService.isPopular,
+
+    processSteps: updatedService.processSteps,
+
+    bookingNotes: updatedService.bookingNotes,
+
+    // ===================================================
+    // IMAGES
+    // ===================================================
+
     images,
+
+    // ===================================================
+    // BRANCHES
+    // ===================================================
 
     branches: updatedService.branches.map((item) => ({
       id: item.branch.id,
@@ -802,9 +1002,14 @@ const updateService = async (
       status: item.branch.status,
     })),
 
+    // ===================================================
+    // MULTILINGUAL TRANSLATIONS
+    // ===================================================
+
     translations: updatedService.translations,
   };
 };
+
 const updateServiceStatus = async (
   serviceId: string,
   payload: IUpdateServiceStatusPayload,
@@ -1035,7 +1240,7 @@ const getBranchServices = async (
   const items = await Promise.all(
     services.map(async (service) => {
       // ===============================================
-      // LOCALIZE SERVICE
+      // LOCALIZE SERVICE INFORMATION
       // ===============================================
 
       const localizedService = getLocalizedContent(
@@ -1043,7 +1248,12 @@ const getBranchServices = async (
         language,
         {
           name: service.name,
+
           description: service.description,
+
+          processSteps: service.processSteps,
+
+          bookingNotes: service.bookingNotes,
         },
       );
 
@@ -1058,17 +1268,41 @@ const getBranchServices = async (
         : null;
 
       // ===============================================
-      // RESPONSE
+      // FINAL SERVICE RESPONSE
       // ===============================================
 
       return {
         id: service.id,
 
+        // =============================================
+        // LOCALIZED INFORMATION
+        // =============================================
+
         name: localizedService.name,
+
+        description: localizedService.description,
+
+        // =============================================
+        // PRICE + DURATION
+        // =============================================
 
         price: Number(service.price),
 
         durationMinutes: service.durationMinutes,
+
+        // =============================================
+        // SERVICE DISPLAY INFORMATION
+        // =============================================
+
+        isPopular: service.isPopular,
+
+        processSteps: localizedService.processSteps,
+
+        bookingNotes: localizedService.bookingNotes,
+
+        // =============================================
+        // PRIMARY IMAGE
+        // =============================================
 
         primaryImage: primaryImageObjectKey
           ? {
@@ -1103,6 +1337,7 @@ const getBranchServices = async (
     },
   };
 };
+
 export const serviceService = {
   createService,
   getServices,

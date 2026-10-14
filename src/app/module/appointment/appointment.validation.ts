@@ -165,50 +165,126 @@ const markNoShowValidationSchema = z.object({
 });
 
 const getBranchAppointmentsValidationSchema = z.object({
-  body: z.object({
-    page: z
-      .string()
-      .regex(/^\d+$/, "page must be a positive integer")
-      .optional(),
+  body: z
+    .object({
+      // =====================================================
+      // PAGINATION
+      // =====================================================
 
-    limit: z
-      .string()
-      .regex(/^\d+$/, "limit must be a positive integer")
-      .optional(),
+      page: z
+        .string()
+        .regex(/^\d+$/, "page must be a positive integer")
+        .refine(
+          (value) => Number.isSafeInteger(Number(value)) && Number(value) >= 1,
+          "page must be at least 1",
+        )
+        .optional(),
 
-    date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")
-      .optional(),
+      limit: z
+        .string()
+        .regex(/^\d+$/, "limit must be a positive integer")
+        .refine((value) => {
+          const limit = Number(value);
 
-    staffId: z.uuid("Invalid staffId").optional(),
+          return Number.isSafeInteger(limit) && limit >= 1 && limit <= 100;
+        }, "limit must be between 1 and 100")
+        .optional(),
 
-    bookingMethod: z.enum(["PAY_NOW", "RESERVE_NOW", "DEPOSIT"]).optional(),
+      // =====================================================
+      // REQUIRED DATE
+      // =====================================================
 
-    appointmentStatus: z
-      .enum([
-        "PENDING_PAYMENT",
-        "RESERVED",
-        "CONFIRMED",
-        "COMPLETED",
-        "CANCELLED",
-        "NO_SHOW",
-        "EXPIRED",
-      ])
-      .optional(),
+      date: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")
+        .refine((value) => {
+          const parsedDate = new Date(`${value}T00:00:00.000Z`);
 
-    paymentStatus: z
-      .enum([
-        "UNPAID",
-        "PENDING",
-        "PARTIALLY_PAID",
-        "PAID",
-        "FAILED",
-        "REFUNDED",
-        "PARTIALLY_REFUNDED",
-      ])
-      .optional(),
-  }),
+          return (
+            !Number.isNaN(parsedDate.getTime()) &&
+            parsedDate.toISOString().slice(0, 10) === value
+          );
+        }, "Invalid appointment date")
+        .optional(),
+      // =====================================================
+      // STAFF FILTER
+      // =====================================================
+
+      staffId: z.uuid("Invalid staffId").optional(),
+
+      // =====================================================
+      // BOOKING METHOD
+      // =====================================================
+
+      bookingMethod: z
+        .enum(["PAY_NOW", "RESERVE_NOW", "DEPOSIT", "GROUP_PURCHASE"])
+        .optional(),
+
+      // =====================================================
+      // G3 STATUS FILTER
+      // =====================================================
+
+      status: z
+        .enum([
+          "PENDING_PAYMENT",
+          "RESERVED",
+          "CONFIRMED",
+          "COMPLETED",
+          "CANCELLED",
+          "NO_SHOW",
+          "EXPIRED",
+        ])
+        .optional(),
+
+      // =====================================================
+      // EXISTING STATUS FILTER
+      // =====================================================
+
+      appointmentStatus: z
+        .enum([
+          "PENDING_PAYMENT",
+          "RESERVED",
+          "CONFIRMED",
+          "COMPLETED",
+          "CANCELLED",
+          "NO_SHOW",
+          "EXPIRED",
+        ])
+        .optional(),
+
+      // =====================================================
+      // PAYMENT STATUS
+      // =====================================================
+
+      paymentStatus: z
+        .enum([
+          "UNPAID",
+          "PENDING",
+          "PARTIALLY_PAID",
+          "PAID",
+          "FAILED",
+          "REFUNDED",
+          "PARTIALLY_REFUNDED",
+        ])
+        .optional(),
+    })
+    .superRefine((data, ctx) => {
+      // ===================================================
+      // PREVENT CONFLICTING STATUS FILTERS
+      // ===================================================
+
+      if (
+        data.status &&
+        data.appointmentStatus &&
+        data.status !== data.appointmentStatus
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["status"],
+          message: "status and appointmentStatus must have the same value",
+        });
+      }
+    }),
 });
 
 const getAllAppointmentsValidationSchema = z.object({

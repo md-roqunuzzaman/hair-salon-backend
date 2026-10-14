@@ -181,7 +181,141 @@ const searchBranchCustomers = catchAsync(
     });
   },
 );
+const getBranchDailySummary = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. AUTHENTICATION CHECK
+    // =====================================================
 
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    // =====================================================
+    // 2. REQUEST PARAMETERS
+    // =====================================================
+
+    const branchId = req.params.branchId as string;
+
+    const { date } = req.body as {
+      date: string;
+    };
+
+    // =====================================================
+    // 3. GET BRANCH DAILY SUMMARY
+    // =====================================================
+
+    const result = await branchService.getBranchDailySummary(
+      branchId,
+      req.user.userId,
+      req.user.role,
+      date,
+    );
+
+    // =====================================================
+    // 4. SEND RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      success: true,
+      statusCode: 200,
+      message: "Branch daily summary fetched successfully",
+      data: result,
+    });
+  },
+);
+
+const getBranchDailySeries = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. AUTHENTICATION CHECK
+  // =====================================================
+
+  if (!req.user) {
+    throw new AppError("Unauthorized", 401);
+  }
+
+  // =====================================================
+  // 2. REQUEST PARAMETERS
+  // =====================================================
+
+  const branchId = req.params.branchId as string;
+
+  const { start, end } = req.body as {
+    start: string;
+    end: string;
+  };
+
+  // =====================================================
+  // 3. GET DAILY SERIES
+  // =====================================================
+
+  const result = await branchService.getBranchDailySeries(
+    branchId,
+    req.user.userId,
+    req.user.role,
+    {
+      start,
+      end,
+    },
+  );
+
+  // =====================================================
+  // 4. SEND RESPONSE
+  // =====================================================
+
+  sendResponse(res, {
+    success: true,
+    statusCode: 200,
+    message: "Branch daily series fetched successfully",
+    data: result,
+  });
+});
+
+const getBranchStaffOutput = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. AUTHENTICATION CHECK
+  // =====================================================
+
+  if (!req.user) {
+    throw new AppError("Unauthorized", 401);
+  }
+
+  // =====================================================
+  // 2. REQUEST PARAMETERS
+  // =====================================================
+
+  const branchId = req.params.branchId as string;
+
+  const { start, end } = req.body as {
+    start: string;
+    end: string;
+  };
+
+  // =====================================================
+  // 3. GET STAFF OUTPUT
+  // =====================================================
+
+  const result = await branchService.getBranchStaffOutput(
+    branchId,
+    req.user.userId,
+    req.user.role,
+    {
+      start,
+      end,
+    },
+  );
+
+  // =====================================================
+  // 4. SEND RESPONSE
+  // =====================================================
+
+  sendResponse(res, {
+    success: true,
+    statusCode: 200,
+    message: "Branch staff output fetched successfully",
+    data: result,
+  });
+});
 export const branchController = {
   createBranch,
   getBranches,
@@ -193,4 +327,7 @@ export const branchController = {
   getBookingPolicy,
   updateBookingPolicy,
   searchBranchCustomers,
+  getBranchDailySummary,
+  getBranchDailySeries,
+  getBranchStaffOutput,
 };

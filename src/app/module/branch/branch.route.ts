@@ -132,4 +132,72 @@ router.get(
   validateRequest(branchValidation.customerOperationalSearchValidationSchema),
   branchController.searchBranchCustomers,
 );
+const dailySummaryQueryToBody = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  req.body = {
+    date: req.query.date,
+  };
+
+  next();
+};
+
+router.get(
+  "/:branchId/reports/daily-summary",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  dailySummaryQueryToBody,
+  validateRequest(branchValidation.getBranchDailySummaryValidationSchema),
+  branchController.getBranchDailySummary,
+);
+
+const dailySeriesQueryToBody = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  req.body = {
+    start: req.query.start,
+    end: req.query.end,
+  };
+
+  next();
+};
+router.get(
+  "/:branchId/reports/daily-series",
+
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+
+  dailySeriesQueryToBody,
+
+  validateRequest(branchValidation.getBranchDailySeriesValidationSchema),
+
+  branchController.getBranchDailySeries,
+);
+
+const staffOutputQueryToBody = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  req.body = {
+    start: req.query.start,
+    end: req.query.end,
+  };
+
+  next();
+};
+
+router.get(
+  "/:branchId/reports/staff-output",
+
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+
+  staffOutputQueryToBody,
+
+  validateRequest(branchValidation.getBranchStaffOutputValidationSchema),
+
+  branchController.getBranchStaffOutput,
+);
 export const BranchRoutes = router;

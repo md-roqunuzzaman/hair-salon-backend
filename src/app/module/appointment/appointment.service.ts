@@ -55,7 +55,32 @@ const MAX_TRANSACTION_RETRIES = 3;
 // =====================================================
 // EXPIRED PAYMENT HOLD LIFECYCLE
 // =====================================================
+const testPrismaTransaction = async () => {
+  console.log("[DB TEST] Starting transaction test");
 
+  const startedAt = Date.now();
+
+  try {
+    const result = await prisma.$transaction(
+      async (tx) => {
+        console.log("[DB TEST] Transaction started");
+
+        const rows = await tx.$queryRaw<{ value: number }[]>`SELECT 1 AS value`;
+
+        return rows;
+      },
+      {
+        maxWait: 10000,
+        timeout: 15000,
+      },
+    );
+
+    console.log("[DB TEST] SUCCESS:", result);
+    console.log("[DB TEST] Duration:", Date.now() - startedAt, "ms");
+  } catch (error) {
+    console.error("[DB TEST] FAILED:", error);
+  }
+};
 const expirePendingAppointmentIfNeeded = async (appointmentId: string) => {
   const now = new Date();
 
@@ -765,6 +790,7 @@ const createDepositAppointment = async (
   customerId: string,
   payload: ICreateDepositAppointmentPayload,
 ): Promise<IDepositAppointmentResponse> => {
+  await testPrismaTransaction();
   console.log("🔥🔥🔥 DEPOSIT SERVICE FUNCTION CALLED 🔥🔥🔥");
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
@@ -1886,7 +1912,6 @@ const getMyAppointments = async (
           },
         },
 
-        // NEW: Package relation + translations
         package: {
           select: {
             id: true,
@@ -1899,6 +1924,22 @@ const getMyAppointments = async (
           select: {
             id: true,
             name: true,
+          },
+        },
+
+        // Actual payment and refund records
+        payments: {
+          select: {
+            amount: true,
+            status: true,
+            refunds: {
+              where: {
+                status: "SUCCEEDED",
+              },
+              select: {
+                amount: true,
+              },
+            },
           },
         },
       },
@@ -1928,7 +1969,6 @@ const getMyAppointments = async (
         })
       : null;
 
-    // NEW: Package localization
     const localizedPackage = appointment.package
       ? getLocalizedContent(appointment.package.translations, language, {
           name: appointment.itemName,
@@ -1947,36 +1987,122 @@ const getMyAppointments = async (
       !appointment.qrVerifiedAt;
 
     // =====================================================
-    // 6. PAYMENT SUMMARY
+    // 6. G8 — PAYMENT SUMMARY
     // =====================================================
 
     const price = Number(appointment.price);
 
-    const depositPercentage = Number(appointment.depositPercentage ?? 0);
+    const isDepositBooking =
+      appointment.bookingMethod === BookingMethod.DEPOSIT;
 
-    const depositAmount = Number(appointment.depositAmount ?? 0);
+    const depositPercentage = isDepositBooking
+      ? Number(appointment.depositPercentage ?? 0)
+      : 0;
 
-    const remainingAmount = Number(appointment.remainingAmount ?? price);
+    const depositAmount = isDepositBooking
+      ? Number(appointment.depositAmount ?? 0)
+      : null;
+
+    const originalRemainingAmount = isDepositBooking
+      ? Number(appointment.remainingAmount ?? price - (depositAmount ?? 0))
+      : price;
+
+    // =====================================================
+    // 7. CALCULATE ACTUAL SUCCESSFUL PAYMENTS
+    // =====================================================
+
+    const grossPaid = appointment.payments.reduce((total, payment) => {
+      if (
+        payment.status === PaymentStatus.PAID ||
+        payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+        payment.status === PaymentStatus.REFUNDED
+      ) {
+        return total + Number(payment.amount);
+      }
+
+      return total;
+    }, 0);
+
+    const totalRefunded = appointment.payments.reduce((total, payment) => {
+      const refunded = payment.refunds.reduce(
+        (sum, refund) => sum + Number(refund.amount),
+        0,
+      );
+
+      return total + refunded;
+    }, 0);
+
+    const netPaid = Math.max(0, Number((grossPaid - totalRefunded).toFixed(2)));
+
+    // =====================================================
+    // 8. APPOINTMENT COLLECTION STATE
+    // =====================================================
+
+    const closedStatuses: AppointmentStatus[] = [
+      AppointmentStatus.CANCELLED,
+      AppointmentStatus.EXPIRED,
+      AppointmentStatus.NO_SHOW,
+    ];
+    const isClosedWithoutCollection = closedStatuses.includes(
+      appointment.appointmentStatus,
+    );
 
     let amountPaid = 0;
-    let amountDue = price;
+    let amountDue = 0;
 
     if (appointment.paymentStatus === PaymentStatus.PAID) {
       amountPaid = price;
       amountDue = 0;
     } else if (appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID) {
-      amountPaid = depositAmount;
-      amountDue = remainingAmount;
+      amountPaid = netPaid;
+      amountDue = Math.max(0, Number((price - amountPaid).toFixed(2)));
+    } else if (appointment.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED) {
+      amountPaid = netPaid;
+      amountDue = 0;
     } else if (appointment.paymentStatus === PaymentStatus.REFUNDED) {
       amountPaid = 0;
       amountDue = 0;
-    } else if (appointment.paymentStatus === PaymentStatus.FAILED) {
-      amountPaid = 0;
-      amountDue = price;
+    } else {
+      amountPaid = netPaid;
+
+      amountDue = Math.max(0, Number((price - amountPaid).toFixed(2)));
+    }
+
+    if (isClosedWithoutCollection) {
+      amountDue = 0;
     }
 
     // =====================================================
-    // 7. FINAL RESPONSE DTO
+    // 9. G8 — REMAINING BALANCE
+    // =====================================================
+
+    let remainingAmount = amountDue;
+
+    if (appointment.paymentStatus === PaymentStatus.PAID) {
+      remainingAmount = 0;
+    }
+
+    if (
+      appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID &&
+      isDepositBooking
+    ) {
+      remainingAmount = Math.max(
+        0,
+        Number(
+          (
+            originalRemainingAmount -
+            Math.max(0, amountPaid - (depositAmount ?? 0))
+          ).toFixed(2),
+        ),
+      );
+    }
+
+    if (isClosedWithoutCollection) {
+      remainingAmount = 0;
+    }
+
+    // =====================================================
+    // 10. FINAL RESPONSE DTO
     // =====================================================
 
     return {
@@ -1998,7 +2124,6 @@ const getMyAppointments = async (
           }
         : null,
 
-      // NEW: Package field
       package: appointment.package
         ? {
             id: appointment.package.id,
@@ -2030,7 +2155,7 @@ const getMyAppointments = async (
   });
 
   // =====================================================
-  // 8. PAGINATION RESPONSE
+  // 11. PAGINATION RESPONSE
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
@@ -2048,7 +2173,6 @@ const getMyAppointments = async (
     },
   };
 };
-
 const getAppointmentById = async (
   appointmentId: string,
   userId: string,
@@ -2088,19 +2212,27 @@ const getAppointmentById = async (
       },
 
       payments: {
-        where: {
-          status: PaymentStatus.PAID,
-        },
-
         orderBy: {
-          paidAt: "desc",
+          createdAt: "desc",
         },
 
         select: {
           id: true,
+          amount: true,
+          status: true,
           provider: true,
           salonPaymentMethod: true,
           paidAt: true,
+
+          refunds: {
+            where: {
+              status: "SUCCEEDED",
+            },
+
+            select: {
+              amount: true,
+            },
+          },
         },
       },
     },
@@ -2155,7 +2287,7 @@ const getAppointmentById = async (
     },
   );
 
-  // Keep booking-time snapshot as fallback.
+  // Booking-time snapshot fallback.
   let localizedItemName = appointment.itemName;
 
   if (appointment.serviceId) {
@@ -2163,6 +2295,7 @@ const getAppointmentById = async (
       where: {
         id: appointment.serviceId,
       },
+
       select: {
         translations: true,
       },
@@ -2184,6 +2317,7 @@ const getAppointmentById = async (
       where: {
         id: appointment.packageId,
       },
+
       select: {
         translations: true,
       },
@@ -2245,42 +2379,127 @@ const getAppointmentById = async (
     appointment.appointmentStatus === AppointmentStatus.COMPLETED;
 
   // =====================================================
-  // 7. FINANCIAL STATE
+  // 7. G8 — DEPOSIT INFORMATION
   // =====================================================
 
   const price = Number(appointment.price);
 
-  const depositPercentage = Number(appointment.depositPercentage ?? 0);
+  const isDepositBooking = appointment.bookingMethod === BookingMethod.DEPOSIT;
 
-  const depositAmount = Number(appointment.depositAmount ?? 0);
+  const depositPercentage = isDepositBooking
+    ? Number(appointment.depositPercentage ?? 0)
+    : 0;
 
-  const remainingAmount = Number(appointment.remainingAmount ?? price);
+  const depositAmount: number | null = isDepositBooking
+    ? Number(appointment.depositAmount ?? 0)
+    : null;
 
-  let amountPaid = 0;
-  let amountDue = price;
+  // =====================================================
+  // 8. ACTUAL PAYMENT & REFUND CALCULATION
+  // =====================================================
 
-  if (appointment.paymentStatus === PaymentStatus.PAID) {
-    amountPaid = price;
+  const successfulPaymentStatuses: PaymentStatus[] = [
+    PaymentStatus.PAID,
+    PaymentStatus.PARTIALLY_REFUNDED,
+    PaymentStatus.REFUNDED,
+  ];
+
+  const grossPaid = appointment.payments.reduce((total, payment) => {
+    if (successfulPaymentStatuses.includes(payment.status)) {
+      return total + Number(payment.amount);
+    }
+
+    return total;
+  }, 0);
+
+  const totalRefunded = appointment.payments.reduce((total, payment) => {
+    const refundedAmount = payment.refunds.reduce(
+      (sum, refund) => sum + Number(refund.amount),
+      0,
+    );
+
+    return total + refundedAmount;
+  }, 0);
+
+  const netPaid = Math.max(0, Number((grossPaid - totalRefunded).toFixed(2)));
+
+  // =====================================================
+  // 9. FINANCIAL STATE
+  // =====================================================
+
+  const closedStatuses: AppointmentStatus[] = [
+    AppointmentStatus.CANCELLED,
+    AppointmentStatus.EXPIRED,
+    AppointmentStatus.NO_SHOW,
+  ];
+
+  const isClosedWithoutCollection = closedStatuses.includes(
+    appointment.appointmentStatus,
+  );
+
+  let amountPaid = netPaid;
+  let amountDue = 0;
+
+  switch (appointment.paymentStatus) {
+    case PaymentStatus.PAID:
+      amountDue = 0;
+      break;
+
+    case PaymentStatus.PARTIALLY_PAID:
+      amountDue = Math.max(0, Number((price - amountPaid).toFixed(2)));
+      break;
+
+    case PaymentStatus.PARTIALLY_REFUNDED:
+      // Refund does not automatically reopen a salon payment obligation.
+      amountDue = 0;
+      break;
+
+    case PaymentStatus.REFUNDED:
+      amountDue = 0;
+      break;
+
+    case PaymentStatus.UNPAID:
+    case PaymentStatus.PENDING:
+    case PaymentStatus.FAILED:
+      amountDue = Math.max(0, Number((price - amountPaid).toFixed(2)));
+      break;
+
+    default:
+      amountDue = 0;
+      break;
+  }
+
+  if (isClosedWithoutCollection) {
     amountDue = 0;
-  } else if (appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID) {
-    amountPaid = depositAmount;
-    amountDue = remainingAmount;
-  } else if (appointment.paymentStatus === PaymentStatus.REFUNDED) {
-    amountPaid = 0;
-    amountDue = 0;
-  } else if (appointment.paymentStatus === PaymentStatus.FAILED) {
-    amountPaid = 0;
-    amountDue = price;
   }
 
   // =====================================================
-  // 8. LATEST SUCCESSFUL PAYMENT
+  // 10. G8 — REMAINING BALANCE
   // =====================================================
 
-  const latestPayment = appointment.payments[0] ?? null;
+  // Current amount collectible at salon.
+  // Fully paid, refunded and closed bookings have no
+  // remaining collection obligation.
+
+  const remainingAmount = amountDue;
 
   // =====================================================
-  // 9. RESPONSE DTO
+  // 11. LATEST SUCCESSFUL PAYMENT
+  // =====================================================
+
+  const latestPayment =
+    appointment.payments
+      .filter(
+        (payment) =>
+          payment.paidAt !== null &&
+          successfulPaymentStatuses.includes(payment.status),
+      )
+      .sort(
+        (a, b) => (b.paidAt?.getTime() ?? 0) - (a.paidAt?.getTime() ?? 0),
+      )[0] ?? null;
+
+  // =====================================================
+  // 12. RESPONSE DTO
   // =====================================================
 
   return {
@@ -4157,19 +4376,14 @@ const getBranchAppointments = async (
   query: IBranchAppointmentsQuery,
   language: Language = DEFAULT_LANGUAGE,
 ) => {
-  console.log("========== BRANCH APPOINTMENTS CALLED ==========");
-  console.log("Branch ID:", branchId);
-  console.log("Language:", language);
-  console.log("================================================");
-
   // =====================================================
-  // 0. EXPIRE OLD PAYMENT HOLDS
+  // 0. EXPIRE OLD PENDING APPOINTMENTS
   // =====================================================
 
   await expirePendingAppointments();
 
   // =====================================================
-  // 1. BRANCH EXISTS
+  // 1. CHECK BRANCH
   // =====================================================
 
   const branch = await prisma.branch.findUnique({
@@ -4179,6 +4393,8 @@ const getBranchAppointments = async (
 
     select: {
       id: true,
+      name: true,
+      translations: true,
     },
   });
 
@@ -4187,10 +4403,25 @@ const getBranchAppointments = async (
   }
 
   // =====================================================
-  // 2. ROLE / BRANCH SCOPE
+  // 2. ROLE ACCESS CONTROL
   // =====================================================
 
+  if (
+    role !== Role.BRAND_OWNER &&
+    role !== Role.BRANCH_MANAGER &&
+    role !== Role.STAFF
+  ) {
+    throw new AppError(
+      "You are not allowed to access branch appointments",
+      403,
+    );
+  }
+
   let staffProfileId: string | null = null;
+
+  // =====================================================
+  // 2.1 BRANCH MANAGER ACCESS
+  // =====================================================
 
   if (role === Role.BRANCH_MANAGER) {
     const managerBranch = await prisma.branchManagerBranch.findUnique({
@@ -4213,6 +4444,10 @@ const getBranchAppointments = async (
       );
     }
   }
+
+  // =====================================================
+  // 2.2 STAFF ACCESS
+  // =====================================================
 
   if (role === Role.STAFF) {
     const staff = await prisma.staff.findUnique({
@@ -4249,7 +4484,7 @@ const getBranchAppointments = async (
     staffProfileId = staff.id;
   }
 
-  // BRAND_OWNER = any branch.
+  // BRAND_OWNER can access appointments from any branch.
 
   // =====================================================
   // 3. PAGINATION
@@ -4258,49 +4493,124 @@ const getBranchAppointments = async (
   const page = Number(query.page ?? 1);
   const limit = Number(query.limit ?? 20);
 
-  if (page < 1) {
-    throw new AppError("page must be at least 1", 400);
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new AppError("page must be a positive integer", 400);
   }
 
-  if (limit < 1 || limit > 100) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new AppError("limit must be between 1 and 100", 400);
   }
 
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 4. FILTERS
+  // 4. OPTIONAL DATE VALIDATION
+  // =====================================================
+
+  let appointmentDate: Date | undefined;
+
+  if (query.date) {
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+    if (!datePattern.test(query.date)) {
+      throw new AppError("date must be in YYYY-MM-DD format", 400);
+    }
+
+    const parsedDate = new Date(`${query.date}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== query.date
+    ) {
+      throw new AppError("Invalid appointment date", 400);
+    }
+
+    appointmentDate = parsedDate;
+  }
+
+  // =====================================================
+  // 5. STATUS FILTER
+  // =====================================================
+
+  if (
+    query.status &&
+    query.appointmentStatus &&
+    query.status !== query.appointmentStatus
+  ) {
+    throw new AppError(
+      "status and appointmentStatus must have the same value",
+      400,
+    );
+  }
+
+  const status = query.status ?? query.appointmentStatus;
+
+  if (
+    status &&
+    !Object.values(AppointmentStatus).includes(status as AppointmentStatus)
+  ) {
+    throw new AppError("Invalid appointment status", 400);
+  }
+
+  // =====================================================
+  // 6. BOOKING METHOD VALIDATION
+  // =====================================================
+
+  if (
+    query.bookingMethod &&
+    !Object.values(BookingMethod).includes(query.bookingMethod as BookingMethod)
+  ) {
+    throw new AppError("Invalid booking method", 400);
+  }
+
+  // =====================================================
+  // 7. PAYMENT STATUS VALIDATION
+  // =====================================================
+
+  if (
+    query.paymentStatus &&
+    !Object.values(PaymentStatus).includes(query.paymentStatus as PaymentStatus)
+  ) {
+    throw new AppError("Invalid payment status", 400);
+  }
+
+  // =====================================================
+  // 8. BUILD PRISMA FILTER
   // =====================================================
 
   const where: Prisma.AppointmentWhereInput = {
     branchId,
+
+    ...(appointmentDate && {
+      date: appointmentDate,
+    }),
+
+    ...(status && {
+      appointmentStatus: status as AppointmentStatus,
+    }),
+
+    ...(query.bookingMethod && {
+      bookingMethod: query.bookingMethod as BookingMethod,
+    }),
+
+    ...(query.paymentStatus && {
+      paymentStatus: query.paymentStatus as PaymentStatus,
+    }),
   };
 
-  if (query.date) {
-    where.date = new Date(`${query.date}T00:00:00.000Z`);
-  }
+  // =====================================================
+  // 8.1 STAFF FILTER
+  // =====================================================
 
-  if (query.bookingMethod) {
-    where.bookingMethod = query.bookingMethod as BookingMethod;
-  }
-
-  if (query.appointmentStatus) {
-    where.appointmentStatus = query.appointmentStatus as AppointmentStatus;
-  }
-
-  if (query.paymentStatus) {
-    where.paymentStatus = query.paymentStatus as PaymentStatus;
-  }
-
-  // STAFF may only see own assigned appointments.
   if (role === Role.STAFF) {
+    // Staff can only view their own appointments.
     where.staffId = staffProfileId!;
   } else if (query.staffId) {
     where.staffId = query.staffId;
   }
 
   // =====================================================
-  // 5. FETCH APPOINTMENTS WITH TRANSLATIONS
+  // 9. FETCH APPOINTMENTS + COUNT
   // =====================================================
 
   const [appointments, total] = await prisma.$transaction([
@@ -4312,14 +4622,21 @@ const getBranchAppointments = async (
 
       orderBy: [
         {
-          date: "asc",
+          date: "desc",
         },
         {
           startTime: "asc",
         },
+        {
+          id: "asc",
+        },
       ],
 
       select: {
+        // -----------------------------------------------
+        // APPOINTMENT
+        // -----------------------------------------------
+
         id: true,
 
         bookingMethod: true,
@@ -4331,9 +4648,48 @@ const getBranchAppointments = async (
         endTime: true,
 
         itemName: true,
+        itemNameTranslations: true,
+
         durationMinutes: true,
+
         price: true,
         currency: true,
+
+        // -----------------------------------------------
+        // DEPOSIT
+        // -----------------------------------------------
+
+        depositPercentage: true,
+        depositAmount: true,
+        remainingAmount: true,
+
+        // -----------------------------------------------
+        // QR VERIFICATION
+        // -----------------------------------------------
+
+        qrToken: true,
+        qrVerifiedAt: true,
+
+        verifiedByUser: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        // -----------------------------------------------
+        // REVIEW
+        // -----------------------------------------------
+
+        review: {
+          select: {
+            id: true,
+          },
+        },
+
+        // -----------------------------------------------
+        // CUSTOMER
+        // -----------------------------------------------
 
         customer: {
           select: {
@@ -4343,6 +4699,10 @@ const getBranchAppointments = async (
           },
         },
 
+        // -----------------------------------------------
+        // STAFF
+        // -----------------------------------------------
+
         staff: {
           select: {
             id: true,
@@ -4350,12 +4710,11 @@ const getBranchAppointments = async (
           },
         },
 
-        serviceId: true,
-        packageId: true,
+        // -----------------------------------------------
+        // SERVICE
+        // -----------------------------------------------
 
-        // =================================================
-        // SERVICE TRANSLATIONS
-        // =================================================
+        serviceId: true,
 
         service: {
           select: {
@@ -4365,9 +4724,11 @@ const getBranchAppointments = async (
           },
         },
 
-        // =================================================
-        // PACKAGE TRANSLATIONS
-        // =================================================
+        // -----------------------------------------------
+        // PACKAGE
+        // -----------------------------------------------
+
+        packageId: true,
 
         package: {
           select: {
@@ -4385,39 +4746,86 @@ const getBranchAppointments = async (
   ]);
 
   // =====================================================
-  // 6. RESPONSE DTO WITH LOCALIZATION
+  // 10. LOCALIZE BRANCH NAME
   // =====================================================
-  console.log("========== LOCALIZATION DEBUG ==========");
 
-  console.log("Requested Language:", language);
+  const localizedBranch = getLocalizedContent(branch.translations, language, {
+    name: branch.name,
+  });
 
-  console.log("Service Translation:", appointments[0]?.service?.translations);
+  // =====================================================
+  // 11. FORMAT RESPONSE ITEMS
+  // =====================================================
 
-  console.log("Package Translation:", appointments[0]?.package?.translations);
-
-  console.log("========================================");
   const items = appointments.map((appointment) => {
-    // ===================================================
-    // LOCALIZED SERVICE NAME
-    // ===================================================
+    // ---------------------------------------------------
+    // LOCALIZE APPOINTMENT ITEM
+    // ---------------------------------------------------
+
+    const localizedItem = getLocalizedContent(
+      appointment.itemNameTranslations,
+      language,
+      {
+        name: appointment.itemName,
+      },
+    );
+
+    // ---------------------------------------------------
+    // LOCALIZE SERVICE
+    // ---------------------------------------------------
 
     const localizedService = appointment.service
       ? getLocalizedContent(appointment.service.translations, language, {
-          name: appointment.itemName,
+          name: appointment.service.name,
         })
       : null;
 
-    // ===================================================
-    // LOCALIZED PACKAGE NAME
-    // ===================================================
+    // ---------------------------------------------------
+    // LOCALIZE PACKAGE
+    // ---------------------------------------------------
 
     const localizedPackage = appointment.package
       ? getLocalizedContent(appointment.package.translations, language, {
-          name: appointment.itemName,
+          name: appointment.package.name,
         })
       : null;
 
+    // ---------------------------------------------------
+    // PAYMENT VALUES
+    // ---------------------------------------------------
+
+    const price = Number(appointment.price);
+
+    const depositPercentage = Number(appointment.depositPercentage ?? 0);
+
+    const depositAmount = Number(appointment.depositAmount ?? 0);
+
+    const remainingAmount = Number(appointment.remainingAmount ?? 0);
+
+    // ---------------------------------------------------
+    // QR STATUS
+    // ---------------------------------------------------
+
+    const qrAvailable = Boolean(appointment.qrToken);
+
+    const qrVerified = Boolean(appointment.qrVerifiedAt);
+
+    const verifiedBy = appointment.verifiedByUser
+      ? {
+          id: appointment.verifiedByUser.id,
+          name: appointment.verifiedByUser.name,
+        }
+      : null;
+
+    // ---------------------------------------------------
+    // RESPONSE
+    // ---------------------------------------------------
+
     return {
+      // ================================================
+      // BASIC
+      // ================================================
+
       id: appointment.id,
 
       bookingMethod: appointment.bookingMethod,
@@ -4426,30 +4834,67 @@ const getBranchAppointments = async (
 
       paymentStatus: appointment.paymentStatus,
 
+      // ================================================
+      // CUSTOMER
+      // ================================================
+
       customer: {
         id: appointment.customer.id,
         name: appointment.customer.name,
         phone: appointment.customer.phone,
       },
 
+      // ================================================
+      // BRANCH
+      // ================================================
+
+      branch: {
+        id: branch.id,
+        name: localizedBranch.name ?? branch.name,
+      },
+
+      // ================================================
+      // STAFF
+      // ================================================
+
       staff: {
         id: appointment.staff.id,
         name: appointment.staff.name,
       },
 
+      // ================================================
+      // SERVICE
+      // ================================================
+
       service: appointment.serviceId
         ? {
             id: appointment.serviceId,
-            name: localizedService?.name ?? appointment.itemName,
+
+            name:
+              localizedService?.name ??
+              localizedItem.name ??
+              appointment.itemName,
           }
         : null,
+
+      // ================================================
+      // PACKAGE
+      // ================================================
 
       package: appointment.packageId
         ? {
             id: appointment.packageId,
-            name: localizedPackage?.name ?? appointment.itemName,
+
+            name:
+              localizedPackage?.name ??
+              localizedItem.name ??
+              appointment.itemName,
           }
         : null,
+
+      // ================================================
+      // DATE / TIME
+      // ================================================
 
       date: appointment.date.toISOString().slice(0, 10),
 
@@ -4458,16 +4903,53 @@ const getBranchAppointments = async (
 
       durationMinutes: appointment.durationMinutes,
 
-      price: Number(appointment.price),
+      // ================================================
+      // PAYMENT
+      // ================================================
+
+      price,
       currency: appointment.currency,
+
+      depositPercentage,
+      depositAmount,
+      remainingAmount,
+
+      // ================================================
+      // REVIEW
+      // ================================================
+
+      reviewed: appointment.review !== null,
+
+      // ================================================
+      // QR VERIFICATION
+      // ================================================
+
+      qrToken: appointment.qrToken,
+
+      qrVerifiedAt: appointment.qrVerifiedAt,
+
+      qrVerifiedBy: verifiedBy,
+
+      // ================================================
+      // QR SUMMARY
+      // ================================================
+
+      qr: {
+        available: qrAvailable,
+        verified: qrVerified,
+
+        verifiedAt: appointment.qrVerifiedAt,
+
+        verifiedBy,
+      },
     };
   });
 
   // =====================================================
-  // 7. PAGINATION RESPONSE
+  // 12. PAGINATION
   // =====================================================
 
-  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+  const totalPages = Math.ceil(total / limit);
 
   return {
     items,
@@ -4477,7 +4959,9 @@ const getBranchAppointments = async (
       limit,
       total,
       totalPages,
+
       hasNextPage: page < totalPages,
+
       hasPreviousPage: page > 1,
     },
   };

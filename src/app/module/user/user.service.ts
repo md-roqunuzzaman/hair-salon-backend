@@ -11,6 +11,10 @@ import { AppError } from "../../utils/app-error.js";
 import { uploadService } from "../upload/upload.service.js";
 
 const getMe = async (userId: string) => {
+  // =====================================================
+  // 1. FETCH USER WITH STAFF RELATION
+  // =====================================================
+
   const user = await prisma.user.findUnique({
     where: {
       id: userId,
@@ -26,6 +30,13 @@ const getMe = async (userId: string) => {
 
       role: true,
       status: true,
+
+      staffProfile: {
+        select: {
+          id: true,
+        },
+      },
+
       createdAt: true,
       updatedAt: true,
     },
@@ -35,12 +46,25 @@ const getMe = async (userId: string) => {
     throw new AppError("User not found", 404);
   }
 
+  // =====================================================
+  // 2. GENERATE SIGNED AVATAR URL
+  // =====================================================
+
   const avatarUrl = user.avatarObjectKey
     ? await uploadService.getImageUrl(user.avatarObjectKey)
     : null;
 
+  // =====================================================
+  // 3. RESPONSE
+  // =====================================================
+
   return {
     id: user.id,
+
+    // Only STAFF receives staffId.
+    ...(user.role === "STAFF" && {
+      staffId: user.staffProfile?.id ?? null,
+    }),
 
     name: user.name,
 
@@ -61,7 +85,6 @@ const getMe = async (userId: string) => {
     updatedAt: user.updatedAt,
   };
 };
-
 const updateMe = async (userId: string, payload: IUpdateProfilePayload) => {
   // =====================================================
   // 1. CHECK USER
@@ -147,13 +170,24 @@ const updateMe = async (userId: string, payload: IUpdateProfilePayload) => {
 
       role: true,
       status: true,
+
+      // =================================================
+      // STAFF PROFILE RELATION
+      // =================================================
+
+      staffProfile: {
+        select: {
+          id: true,
+        },
+      },
+
       createdAt: true,
       updatedAt: true,
     },
   });
 
   // =====================================================
-  // 5. SIGNED AVATAR URL
+  // 5. GENERATE SIGNED AVATAR URL
   // =====================================================
 
   const avatarUrl = updatedUser.avatarObjectKey
@@ -166,6 +200,11 @@ const updateMe = async (userId: string, payload: IUpdateProfilePayload) => {
 
   return {
     id: updatedUser.id,
+
+    // Only STAFF receives staffId
+    ...(updatedUser.role === "STAFF" && {
+      staffId: updatedUser.staffProfile?.id ?? null,
+    }),
 
     name: updatedUser.name,
 

@@ -50,6 +50,27 @@ const readPackageTranslations = (value: unknown): IPackageTranslations => {
       ...(typeof locale.description === "string" && {
         description: locale.description,
       }),
+
+      ...(Array.isArray(locale.applicableFor) &&
+        locale.applicableFor.every(
+          (item): item is string => typeof item === "string",
+        ) && {
+          applicableFor: locale.applicableFor as string[],
+        }),
+
+      ...(Array.isArray(locale.purchaseNotice) &&
+        locale.purchaseNotice.every(
+          (item): item is string => typeof item === "string",
+        ) && {
+          purchaseNotice: locale.purchaseNotice as string[],
+        }),
+
+      ...(Array.isArray(locale.howToUse) &&
+        locale.howToUse.every(
+          (item): item is string => typeof item === "string",
+        ) && {
+          howToUse: locale.howToUse as string[],
+        }),
     };
   }
 
@@ -62,6 +83,9 @@ const buildPackageTranslations = (
   base: {
     name: string;
     description: string | null;
+    applicableFor: string[];
+    purchaseNotice: string[];
+    howToUse: string[];
   },
 ): Prisma.InputJsonObject => {
   const previous = readPackageTranslations(existing);
@@ -73,6 +97,12 @@ const buildPackageTranslations = (
       ...(base.description !== null && {
         description: base.description,
       }),
+
+      applicableFor: base.applicableFor,
+
+      purchaseNotice: base.purchaseNotice,
+
+      howToUse: base.howToUse,
     },
 
     "zh-CN": {
@@ -91,13 +121,23 @@ const localizePackage = (
   packageData: {
     name: string;
     description: string | null;
+    applicableFor: string[];
+    purchaseNotice: string[];
+    howToUse: string[];
     translations: unknown;
   },
   language: Language,
 ) => {
   return getLocalizedContent(packageData.translations, language, {
     name: packageData.name,
+
     description: packageData.description,
+
+    applicableFor: packageData.applicableFor,
+
+    purchaseNotice: packageData.purchaseNotice,
+
+    howToUse: packageData.howToUse,
   });
 };
 
@@ -117,13 +157,36 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   const packageName = payload.name.trim();
   const packageDescription = payload.description?.trim() || null;
 
+  // =====================================================
+  // 1. PREPARE PACKAGE DISPLAY FIELDS
+  // =====================================================
+
+  const validDays = payload.validDays ?? null;
+
+  const applicableFor = (payload.applicableFor ?? []).map((item) =>
+    item.trim(),
+  );
+
+  const purchaseNotice = (payload.purchaseNotice ?? []).map((item) =>
+    item.trim(),
+  );
+
+  const howToUse = (payload.howToUse ?? []).map((item) => item.trim());
+
+  // =====================================================
+  // 2. BUILD MULTILINGUAL TRANSLATIONS
+  // =====================================================
+
   const translations = buildPackageTranslations(null, payload.translations, {
     name: packageName,
     description: packageDescription,
+    applicableFor,
+    purchaseNotice,
+    howToUse,
   });
 
   // =====================================================
-  // 1. DUPLICATE PACKAGE NAME
+  // 3. DUPLICATE PACKAGE NAME
   // =====================================================
 
   const existingPackage = await prisma.package.findFirst({
@@ -140,7 +203,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 2. UNIQUE SERVICE IDS
+  // 4. UNIQUE SERVICE IDS
   // =====================================================
 
   const uniqueServiceIds = [...new Set(payload.serviceIds)];
@@ -150,7 +213,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 3. UNIQUE BRANCH IDS
+  // 5. UNIQUE BRANCH IDS
   // =====================================================
 
   const uniqueBranchIds = [...new Set(payload.branchIds)];
@@ -160,14 +223,15 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 4. VALIDATE IMAGE OBJECT KEYS
+  // 6. VALIDATE OPTIONAL IMAGE OBJECT KEYS
   // =====================================================
 
-  const imageObjectKeys = payload.imageObjectKeys.map((key) => key.trim());
+  // Images are optional.
+  // Missing imageObjectKeys will be treated as [].
 
-  if (imageObjectKeys.length === 0) {
-    throw new AppError("At least one package image is required", 400);
-  }
+  const imageObjectKeys = (payload.imageObjectKeys ?? []).map((key) =>
+    key.trim(),
+  );
 
   if (imageObjectKeys.some((key) => !key)) {
     throw new AppError("Invalid image object key", 400);
@@ -180,7 +244,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 5. CHECK SERVICES
+  // 7. CHECK SERVICES
   // =====================================================
 
   const services = await prisma.service.findMany({
@@ -218,7 +282,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 6. CHECK BRANCHES
+  // 8. CHECK BRANCHES
   // =====================================================
 
   const branches = await prisma.branch.findMany({
@@ -247,7 +311,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 7. SERVICES MUST EXIST IN EVERY PACKAGE BRANCH
+  // 9. SERVICES MUST EXIST IN EVERY PACKAGE BRANCH
   // =====================================================
 
   for (const service of services) {
@@ -268,7 +332,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 8. PRICE VALIDATION
+  // 10. PRICE VALIDATION
   // =====================================================
 
   if (payload.packagePrice > payload.regularPrice) {
@@ -279,7 +343,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 9. GROUP PURCHASE VALIDATION
+  // 11. GROUP PURCHASE VALIDATION
   // =====================================================
 
   if (payload.type === PackageType.GROUP_PURCHASE_PACKAGE) {
@@ -311,11 +375,14 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 10. CREATE PACKAGE + RELATIONS + IMAGES
+  // 12. CREATE PACKAGE + RELATIONS + OPTIONAL IMAGES
   // =====================================================
 
   const createdPackage = await prisma.$transaction(async (tx) => {
+    // =================================================
     // CREATE PACKAGE
+    // =================================================
+
     const packageData = await tx.package.create({
       data: {
         type: payload.type,
@@ -325,11 +392,28 @@ const createPackage = async (payload: ICreatePackagePayload) => {
 
         translations,
 
+        // =============================================
+        // PACKAGE DISPLAY FIELDS
+        // =============================================
+
+        validDays,
+        applicableFor,
+        purchaseNotice,
+        howToUse,
+
+        // =============================================
+        // PRICING
+        // =============================================
+
         regularPrice: payload.regularPrice,
         packagePrice: payload.packagePrice,
         durationMinutes: payload.durationMinutes,
 
         listingStatus: payload.listingStatus,
+
+        // =============================================
+        // GROUP PURCHASE SETTINGS
+        // =============================================
 
         capacity:
           payload.type === PackageType.GROUP_PURCHASE_PACKAGE
@@ -357,7 +441,10 @@ const createPackage = async (payload: ICreatePackagePayload) => {
       },
     });
 
+    // =================================================
     // ASSIGN SERVICES
+    // =================================================
+
     await tx.packageService.createMany({
       data: uniqueServiceIds.map((serviceId) => ({
         packageId: packageData.id,
@@ -365,7 +452,10 @@ const createPackage = async (payload: ICreatePackagePayload) => {
       })),
     });
 
+    // =================================================
     // ASSIGN BRANCHES
+    // =================================================
+
     await tx.packageBranch.createMany({
       data: uniqueBranchIds.map((branchId) => ({
         packageId: packageData.id,
@@ -373,21 +463,32 @@ const createPackage = async (payload: ICreatePackagePayload) => {
       })),
     });
 
-    // SAVE PACKAGE IMAGES
-    await tx.packageImage.createMany({
-      data: uniqueImageObjectKeys.map((objectKey, index) => ({
-        packageId: packageData.id,
-        objectKey,
-        isPrimary: index === 0,
-        sortOrder: index,
-      })),
-    });
+    // =================================================
+    // SAVE PACKAGE IMAGES (OPTIONAL)
+    // =================================================
 
+    // Only create image records when images are provided.
+
+    if (uniqueImageObjectKeys.length > 0) {
+      await tx.packageImage.createMany({
+        data: uniqueImageObjectKeys.map((objectKey, index) => ({
+          packageId: packageData.id,
+          objectKey,
+          isPrimary: index === 0,
+          sortOrder: index,
+        })),
+      });
+    }
+
+    // =================================================
     // FETCH SAVED IMAGES
+    // =================================================
+
     const images = await tx.packageImage.findMany({
       where: {
         packageId: packageData.id,
       },
+
       orderBy: {
         sortOrder: "asc",
       },
@@ -400,8 +501,10 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   });
 
   // =====================================================
-  // 11. FORMAT IMAGE RESPONSE
+  // 13. FORMAT IMAGE RESPONSE
   // =====================================================
+
+  // Returns [] when the package has no images.
 
   const images = createdPackage.images.map((image) => ({
     id: image.id,
@@ -411,15 +514,23 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }));
 
   // =====================================================
-  // 12. STANDARD PACKAGE RESPONSE
+  // 14. STANDARD PACKAGE RESPONSE
   // =====================================================
 
   if (createdPackage.type === PackageType.STANDARD_SERVICE_PACKAGE) {
     return {
       id: createdPackage.id,
       type: createdPackage.type,
-      name: createdPackage.name,
 
+      name: createdPackage.name,
+      description: createdPackage.description,
+
+      validDays: createdPackage.validDays,
+      applicableFor: createdPackage.applicableFor,
+      purchaseNotice: createdPackage.purchaseNotice,
+      howToUse: createdPackage.howToUse,
+
+      regularPrice: Number(createdPackage.regularPrice),
       packagePrice: Number(createdPackage.packagePrice),
       durationMinutes: createdPackage.durationMinutes,
 
@@ -431,7 +542,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 13. GROUP PURCHASE RESPONSE
+  // 15. GROUP PURCHASE RESPONSE
   // =====================================================
 
   const capacity = createdPackage.capacity ?? 0;
@@ -441,6 +552,18 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   return {
     id: createdPackage.id,
     type: createdPackage.type,
+
+    name: createdPackage.name,
+    description: createdPackage.description,
+
+    validDays: createdPackage.validDays,
+    applicableFor: createdPackage.applicableFor,
+    purchaseNotice: createdPackage.purchaseNotice,
+    howToUse: createdPackage.howToUse,
+
+    regularPrice: Number(createdPackage.regularPrice),
+    packagePrice: Number(createdPackage.packagePrice),
+    durationMinutes: createdPackage.durationMinutes,
 
     capacity,
     soldQuantity: createdPackage.soldQuantity,
@@ -459,9 +582,17 @@ const getPackages = async (
   query: Record<string, any>,
   language: Language = DEFAULT_LANGUAGE,
 ) => {
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
+
   const limit = query.limit ? Number(query.limit) : 20;
   const page = query.page ? Number(query.page) : 1;
   const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 2. FILTERS
+  // =====================================================
 
   const type = query.type as PackageType | undefined;
   const status = query.status as PackageStatus | undefined;
@@ -482,7 +613,7 @@ const getPackages = async (
   }
 
   // =====================================================
-  // 1. FETCH PACKAGES
+  // 3. FETCH PACKAGES
   // =====================================================
 
   const [packages, totalPackageCount] = await Promise.all([
@@ -499,6 +630,10 @@ const getPackages = async (
       },
 
       include: {
+        // ===============================================
+        // PRIMARY PACKAGE IMAGE
+        // ===============================================
+
         images: {
           where: {
             isPrimary: true,
@@ -511,6 +646,10 @@ const getPackages = async (
           },
         },
 
+        // ===============================================
+        // PACKAGE SERVICES
+        // ===============================================
+
         services: {
           select: {
             service: {
@@ -522,6 +661,10 @@ const getPackages = async (
             },
           },
         },
+
+        // ===============================================
+        // PACKAGE BRANCHES
+        // ===============================================
 
         branches: {
           select: {
@@ -545,17 +688,29 @@ const getPackages = async (
   ]);
 
   // =====================================================
-  // 2. LOCALIZED RESPONSE ITEMS
+  // 4. LOCALIZED RESPONSE ITEMS
   // =====================================================
 
   const items = await Promise.all(
     packages.map(async (item) => {
+      // ===============================================
+      // LOCALIZE PACKAGE
+      // ===============================================
+
       const localized = localizePackage(item, language);
+
+      // ===============================================
+      // CAPACITY + REMAINING QUANTITY
+      // ===============================================
 
       const capacity = item.capacity ?? null;
 
       const remainingQuantity =
         capacity !== null ? capacity - item.soldQuantity : null;
+
+      // ===============================================
+      // PRIMARY IMAGE SIGNED URL
+      // ===============================================
 
       const primaryImageObjectKey = item.images[0]?.objectKey ?? null;
 
@@ -563,22 +718,61 @@ const getPackages = async (
         ? await uploadService.getImageUrl(primaryImageObjectKey)
         : null;
 
+      // ===============================================
+      // RESPONSE
+      // ===============================================
+
       return {
         id: item.id,
+
         type: item.type,
 
+        // =============================================
+        // MULTILINGUAL PACKAGE INFORMATION
+        // =============================================
+
         name: localized.name,
+
         description: localized.description,
 
+        // =============================================
+        // NEW PACKAGE DISPLAY FIELDS
+        // =============================================
+
+        validDays: item.validDays,
+
+        applicableFor: localized.applicableFor,
+
+        purchaseNotice: localized.purchaseNotice,
+
+        howToUse: localized.howToUse,
+
+        // =============================================
+        // PRICING + DURATION
+        // =============================================
+
         regularPrice: Number(item.regularPrice),
+
         packagePrice: Number(item.packagePrice),
+
         durationMinutes: item.durationMinutes,
 
+        // =============================================
+        // PACKAGE STATUS
+        // =============================================
+
         status: item.status,
+
         listingStatus: item.listingStatus,
 
+        // =============================================
+        // GROUP PURCHASE INFORMATION
+        // =============================================
+
         capacity,
+
         soldQuantity: item.soldQuantity,
+
         remainingQuantity,
 
         soldOut:
@@ -586,17 +780,28 @@ const getPackages = async (
             ? remainingQuantity !== null && remainingQuantity <= 0
             : false,
 
+        // =============================================
+        // PRIMARY IMAGE
+        // =============================================
+
         primaryImageObjectKey,
+
         primaryImageUrl,
 
+        // =============================================
         // LOCALIZED SERVICES
+        // =============================================
+
         services: item.services.map((serviceItem) => ({
           id: serviceItem.service.id,
 
           name: localizeName(serviceItem.service, language),
         })),
 
+        // =============================================
         // LOCALIZED BRANCHES
+        // =============================================
+
         branches: item.branches.map((branchItem) => ({
           id: branchItem.branch.id,
 
@@ -607,7 +812,7 @@ const getPackages = async (
   );
 
   // =====================================================
-  // 3. PAGINATION
+  // 5. PAGINATION RESPONSE
   // =====================================================
 
   const totalPages = Math.ceil(totalPackageCount / limit);
@@ -617,10 +822,15 @@ const getPackages = async (
 
     pagination: {
       page,
+
       limit,
+
       total: totalPackageCount,
+
       totalPages,
+
       hasNextPage: page < totalPages,
+
       hasPreviousPage: page > 1,
     },
   };
@@ -630,12 +840,20 @@ const getPackageById = async (
   packageId: string,
   language: Language = DEFAULT_LANGUAGE,
 ) => {
+  // =====================================================
+  // 1. FETCH PACKAGE DETAILS
+  // =====================================================
+
   const packageData = await prisma.package.findUnique({
     where: {
       id: packageId,
     },
 
     include: {
+      // ===============================================
+      // PACKAGE IMAGES
+      // ===============================================
+
       images: {
         orderBy: {
           sortOrder: "asc",
@@ -648,6 +866,10 @@ const getPackageById = async (
           sortOrder: true,
         },
       },
+
+      // ===============================================
+      // INCLUDED SERVICES
+      // ===============================================
 
       services: {
         select: {
@@ -665,6 +887,10 @@ const getPackageById = async (
         },
       },
 
+      // ===============================================
+      // ASSIGNED BRANCHES
+      // ===============================================
+
       branches: {
         select: {
           branch: {
@@ -681,18 +907,22 @@ const getPackageById = async (
     },
   });
 
+  // =====================================================
+  // 2. CHECK PACKAGE
+  // =====================================================
+
   if (!packageData) {
     throw new AppError("Package not found", 404);
   }
 
   // =====================================================
-  // 1. LOCALIZE PACKAGE
+  // 3. LOCALIZE PACKAGE INFORMATION
   // =====================================================
 
   const localized = localizePackage(packageData, language);
 
   // =====================================================
-  // 2. CAPACITY
+  // 4. GROUP PURCHASE CAPACITY
   // =====================================================
 
   const capacity = packageData.capacity ?? null;
@@ -701,46 +931,84 @@ const getPackageById = async (
     capacity !== null ? capacity - packageData.soldQuantity : null;
 
   // =====================================================
-  // 3. GENERATE SIGNED IMAGE URLS
+  // 5. GENERATE SIGNED IMAGE URLS
   // =====================================================
 
   const images = await Promise.all(
     packageData.images.map(async (image) => ({
       id: image.id,
+
       objectKey: image.objectKey,
 
       url: await uploadService.getImageUrl(image.objectKey),
 
       isPrimary: image.isPrimary,
+
       sortOrder: image.sortOrder,
     })),
   );
 
   // =====================================================
-  // 4. RESPONSE
+  // 6. PACKAGE DETAILS RESPONSE
   // =====================================================
 
   return {
     id: packageData.id,
+
     type: packageData.type,
 
+    // ===============================================
+    // MULTILINGUAL PACKAGE INFORMATION
+    // ===============================================
+
     name: localized.name,
+
     description: localized.description,
 
+    // ===============================================
+    // NEW PACKAGE DISPLAY FIELDS
+    // ===============================================
+
+    validDays: packageData.validDays,
+
+    applicableFor: localized.applicableFor,
+
+    purchaseNotice: localized.purchaseNotice,
+
+    howToUse: localized.howToUse,
+
+    // ===============================================
+    // PACKAGE PRICING
+    // ===============================================
+
     regularPrice: Number(packageData.regularPrice),
+
     packagePrice: Number(packageData.packagePrice),
+
     durationMinutes: packageData.durationMinutes,
 
+    // ===============================================
+    // PACKAGE STATUS
+    // ===============================================
+
     status: packageData.status,
+
     listingStatus: packageData.listingStatus,
 
+    // ===============================================
+    // GROUP PURCHASE INFORMATION
+    // ===============================================
+
     capacity,
+
     soldQuantity: packageData.soldQuantity,
+
     remainingQuantity,
 
     purchaseLimitPerCustomer: packageData.purchaseLimitPerCustomer,
 
     salesStartAt: packageData.salesStartAt,
+
     salesEndAt: packageData.salesEndAt,
 
     soldOut:
@@ -748,20 +1016,32 @@ const getPackageById = async (
         ? remainingQuantity !== null && remainingQuantity <= 0
         : false,
 
+    // ===============================================
+    // PACKAGE IMAGES
+    // ===============================================
+
     images,
 
-    // LOCALIZED SERVICES
+    // ===============================================
+    // LOCALIZED INCLUDED SERVICES
+    // ===============================================
+
     services: packageData.services.map((item) => ({
       id: item.service.id,
 
       name: localizeName(item.service, language),
 
       price: Number(item.service.price),
+
       durationMinutes: item.service.durationMinutes,
+
       status: item.service.status,
     })),
 
-    // LOCALIZED BRANCHES
+    // ===============================================
+    // LOCALIZED ASSIGNED BRANCHES
+    // ===============================================
+
     branches: packageData.branches.map((item) => ({
       id: item.branch.id,
 
@@ -812,17 +1092,52 @@ const updatePackage = async (
         ? payload.translations.en.description.trim()
         : packageData.description;
 
+  // =====================================================
+  // 3. RESOLVE NEW PACKAGE DISPLAY FIELDS
+  // =====================================================
+
+  const nextValidDays =
+    payload.validDays !== undefined ? payload.validDays : packageData.validDays;
+
+  const normalizeStringArray = (items: string[]) =>
+    items.map((item) => item.trim());
+
+  const nextApplicableFor = normalizeStringArray(
+    payload.applicableFor ??
+      payload.translations?.en?.applicableFor ??
+      packageData.applicableFor,
+  );
+
+  const nextPurchaseNotice = normalizeStringArray(
+    payload.purchaseNotice ??
+      payload.translations?.en?.purchaseNotice ??
+      packageData.purchaseNotice,
+  );
+
+  const nextHowToUse = normalizeStringArray(
+    payload.howToUse ??
+      payload.translations?.en?.howToUse ??
+      packageData.howToUse,
+  );
+
+  // =====================================================
+  // 4. BUILD MULTILINGUAL TRANSLATIONS
+  // =====================================================
+
   const nextTranslations = buildPackageTranslations(
     packageData.translations,
     payload.translations,
     {
       name: nextName,
       description: nextDescription,
+      applicableFor: nextApplicableFor,
+      purchaseNotice: nextPurchaseNotice,
+      howToUse: nextHowToUse,
     },
   );
 
   // =====================================================
-  // 3. DUPLICATE NAME
+  // 5. DUPLICATE NAME
   // =====================================================
 
   if (nextName !== packageData.name) {
@@ -845,7 +1160,7 @@ const updatePackage = async (
   }
 
   // =====================================================
-  // 4. PRICE VALIDATION
+  // 6. PRICE VALIDATION
   // =====================================================
 
   const regularPrice = payload.regularPrice ?? Number(packageData.regularPrice);
@@ -860,7 +1175,18 @@ const updatePackage = async (
   }
 
   // =====================================================
-  // 5. STANDARD PACKAGE VALIDATION
+  // 7. VALID DAYS VALIDATION
+  // =====================================================
+
+  if (
+    nextValidDays !== null &&
+    (!Number.isInteger(nextValidDays) || nextValidDays <= 0)
+  ) {
+    throw new AppError("validDays must be a positive integer or null", 400);
+  }
+
+  // =====================================================
+  // 8. STANDARD PACKAGE VALIDATION
   // =====================================================
 
   if (
@@ -877,7 +1203,7 @@ const updatePackage = async (
   }
 
   // =====================================================
-  // 6. GROUP PURCHASE VALIDATION
+  // 9. GROUP PURCHASE VALIDATION
   // =====================================================
 
   if (packageData.type === PackageType.GROUP_PURCHASE_PACKAGE) {
@@ -886,13 +1212,15 @@ const updatePackage = async (
     const purchaseLimit =
       payload.purchaseLimitPerCustomer ?? packageData.purchaseLimitPerCustomer;
 
-    const salesStartAt = payload.salesStartAt
-      ? new Date(payload.salesStartAt)
-      : packageData.salesStartAt;
+    const salesStartAt =
+      payload.salesStartAt !== undefined
+        ? new Date(payload.salesStartAt)
+        : packageData.salesStartAt;
 
-    const salesEndAt = payload.salesEndAt
-      ? new Date(payload.salesEndAt)
-      : packageData.salesEndAt;
+    const salesEndAt =
+      payload.salesEndAt !== undefined
+        ? new Date(payload.salesEndAt)
+        : packageData.salesEndAt;
 
     if (capacity !== null && capacity < packageData.soldQuantity) {
       throw new AppError("Capacity cannot be lower than sold quantity", 400);
@@ -918,7 +1246,7 @@ const updatePackage = async (
   }
 
   // =====================================================
-  // 7. IMAGE VALIDATION
+  // 10. IMAGE VALIDATION
   // =====================================================
 
   let uniqueImageObjectKeys: string[] | undefined;
@@ -950,7 +1278,7 @@ const updatePackage = async (
   }
 
   // =====================================================
-  // 8. UPDATE PACKAGE + IMAGES
+  // 11. UPDATE PACKAGE + IMAGES
   // =====================================================
 
   const updatedPackage = await prisma.$transaction(async (tx) => {
@@ -960,12 +1288,35 @@ const updatePackage = async (
       },
 
       data: {
-        // ENGLISH BASE FIELDS
+        // ===========================================
+        // ENGLISH BASE
+        // ===========================================
+
         name: nextName,
+
         description: nextDescription,
 
+        // ===========================================
         // MULTILINGUAL
+        // ===========================================
+
         translations: nextTranslations,
+
+        // ===========================================
+        // NEW PACKAGE DISPLAY FIELDS
+        // ===========================================
+
+        validDays: nextValidDays,
+
+        applicableFor: nextApplicableFor,
+
+        purchaseNotice: nextPurchaseNotice,
+
+        howToUse: nextHowToUse,
+
+        // ===========================================
+        // PRICING
+        // ===========================================
 
         ...(payload.regularPrice !== undefined && {
           regularPrice: payload.regularPrice,
@@ -978,6 +1329,10 @@ const updatePackage = async (
         ...(payload.durationMinutes !== undefined && {
           durationMinutes: payload.durationMinutes,
         }),
+
+        // ===========================================
+        // GROUP PURCHASE
+        // ===========================================
 
         ...(packageData.type === PackageType.GROUP_PURCHASE_PACKAGE && {
           ...(payload.capacity !== undefined && {
@@ -1042,7 +1397,7 @@ const updatePackage = async (
   }
 
   // =====================================================
-  // 9. LOCALIZED RESPONSE
+  // 12. LOCALIZED RESPONSE
   // =====================================================
 
   const localized = localizePackage(updatedPackage, language);
@@ -1050,11 +1405,47 @@ const updatePackage = async (
   return {
     id: updatedPackage.id,
 
+    type: updatedPackage.type,
+
     name: localized.name,
+
+    description: localized.description,
+
+    // NEW DISPLAY FIELDS
+
+    validDays: updatedPackage.validDays,
+
+    applicableFor: localized.applicableFor,
+
+    purchaseNotice: localized.purchaseNotice,
+
+    howToUse: localized.howToUse,
+
+    // PRICING
+
+    regularPrice: Number(updatedPackage.regularPrice),
 
     packagePrice: Number(updatedPackage.packagePrice),
 
+    durationMinutes: updatedPackage.durationMinutes,
+
+    status: updatedPackage.status,
+
+    listingStatus: updatedPackage.listingStatus,
+
+    // GROUP PURCHASE
+
     capacity: updatedPackage.capacity,
+
+    soldQuantity: updatedPackage.soldQuantity,
+
+    purchaseLimitPerCustomer: updatedPackage.purchaseLimitPerCustomer,
+
+    salesStartAt: updatedPackage.salesStartAt,
+
+    salesEndAt: updatedPackage.salesEndAt,
+
+    // IMAGES
 
     images: updatedPackage.images.map((image) => ({
       objectKey: image.objectKey,
@@ -1312,6 +1703,10 @@ const getBranchPackages = async (
   query: Record<string, any>,
   language: Language = DEFAULT_LANGUAGE,
 ) => {
+  // =====================================================
+  // 1. PAGINATION
+  // =====================================================
+
   const limit = query.limit ? Number(query.limit) : 20;
   const page = query.page ? Number(query.page) : 1;
   const skip = (page - 1) * limit;
@@ -1319,7 +1714,7 @@ const getBranchPackages = async (
   const type = query.type as PackageType | undefined;
 
   // =====================================================
-  // 1. CHECK BRANCH
+  // 2. CHECK BRANCH
   // =====================================================
 
   const branch = await prisma.branch.findUnique({
@@ -1342,7 +1737,7 @@ const getBranchPackages = async (
   }
 
   // =====================================================
-  // 2. BUILD FILTER
+  // 3. BUILD PACKAGE FILTER
   // =====================================================
 
   const andConditions: Prisma.PackageWhereInput[] = [
@@ -1368,7 +1763,7 @@ const getBranchPackages = async (
   }
 
   // =====================================================
-  // 3. FETCH PACKAGES
+  // 4. FETCH BRANCH PACKAGES
   // =====================================================
 
   const [packages, totalPackageCount] = await Promise.all([
@@ -1385,6 +1780,10 @@ const getBranchPackages = async (
       },
 
       include: {
+        // ===============================================
+        // PRIMARY IMAGE
+        // ===============================================
+
         images: {
           where: {
             isPrimary: true,
@@ -1396,6 +1795,10 @@ const getBranchPackages = async (
             objectKey: true,
           },
         },
+
+        // ===============================================
+        // INCLUDED SERVICES
+        // ===============================================
 
         services: {
           select: {
@@ -1421,12 +1824,20 @@ const getBranchPackages = async (
   const now = new Date();
 
   // =====================================================
-  // 4. LOCALIZED RESPONSE ITEMS
+  // 5. LOCALIZED RESPONSE ITEMS
   // =====================================================
 
   const items = await Promise.all(
     packages.map(async (item) => {
+      // ===============================================
+      // LOCALIZE PACKAGE
+      // ===============================================
+
       const localized = localizePackage(item, language);
+
+      // ===============================================
+      // GROUP PURCHASE CAPACITY
+      // ===============================================
 
       const capacity = item.capacity ?? null;
 
@@ -1438,6 +1849,10 @@ const getBranchPackages = async (
           ? item.soldQuantity >= capacity
           : false;
 
+      // ===============================================
+      // GROUP PURCHASE AVAILABILITY
+      // ===============================================
+
       const groupPurchaseAvailable =
         item.type === PackageType.GROUP_PURCHASE_PACKAGE
           ? !soldOut &&
@@ -1447,44 +1862,92 @@ const getBranchPackages = async (
             now <= item.salesEndAt
           : null;
 
+      // ===============================================
+      // PRIMARY IMAGE SIGNED URL
+      // ===============================================
+
       const primaryImageObjectKey = item.images[0]?.objectKey ?? null;
 
       const primaryImageUrl = primaryImageObjectKey
         ? await uploadService.getImageUrl(primaryImageObjectKey)
         : null;
 
+      // ===============================================
+      // RESPONSE
+      // ===============================================
+
       return {
         id: item.id,
+
         type: item.type,
 
+        // =============================================
+        // MULTILINGUAL PACKAGE INFORMATION
+        // =============================================
+
         name: localized.name,
+
         description: localized.description,
 
+        // =============================================
+        // NEW PACKAGE DISPLAY FIELDS
+        // =============================================
+
+        validDays: item.validDays,
+
+        applicableFor: localized.applicableFor,
+
+        purchaseNotice: localized.purchaseNotice,
+
+        howToUse: localized.howToUse,
+
+        // =============================================
+        // PRICING AND DURATION
+        // =============================================
+
         regularPrice: Number(item.regularPrice),
+
         packagePrice: Number(item.packagePrice),
+
         durationMinutes: item.durationMinutes,
 
+        // =============================================
+        // PRIMARY IMAGE
+        // =============================================
+
         primaryImageObjectKey,
+
         primaryImageUrl,
 
+        // =============================================
         // LOCALIZED SERVICES
+        // =============================================
+
         services: item.services.map((serviceItem) => ({
           id: serviceItem.service.id,
 
           name: localizeName(serviceItem.service, language),
         })),
 
+        // =============================================
+        // GROUP PURCHASE INFORMATION
+        // =============================================
+
         ...(item.type === PackageType.GROUP_PURCHASE_PACKAGE && {
           capacity: item.capacity,
+
           soldQuantity: item.soldQuantity,
+
           remainingQuantity,
 
           purchaseLimitPerCustomer: item.purchaseLimitPerCustomer,
 
           salesStartAt: item.salesStartAt,
+
           salesEndAt: item.salesEndAt,
 
           soldOut,
+
           purchaseAvailable: groupPurchaseAvailable,
         }),
       };
@@ -1492,7 +1955,7 @@ const getBranchPackages = async (
   );
 
   // =====================================================
-  // 5. PAGINATION
+  // 6. PAGINATION
   // =====================================================
 
   const totalPages = Math.ceil(totalPackageCount / limit);

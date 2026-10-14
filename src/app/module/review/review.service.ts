@@ -608,226 +608,226 @@ const getBranchReviews = async (
   };
 };
 
-const getStaffReviews = async (
-  staffId: string,
-  query: IGetReviewsQuery,
-  language: Language = DEFAULT_LANGUAGE,
-) => {
-  // =====================================================
-  // 1. CHECK STAFF
-  // =====================================================
+// const getStaffReviews = async (
+//   staffId: string,
+//   query: IGetReviewsQuery,
+//   language: Language = DEFAULT_LANGUAGE,
+// ) => {
+//   // =====================================================
+//   // 1. CHECK STAFF
+//   // =====================================================
 
-  const staff = await prisma.staff.findUnique({
-    where: {
-      id: staffId,
-    },
+//   const staff = await prisma.staff.findUnique({
+//     where: {
+//       id: staffId,
+//     },
 
-    select: {
-      id: true,
-    },
-  });
+//     select: {
+//       id: true,
+//     },
+//   });
 
-  if (!staff) {
-    throw new AppError("STAFF_NOT_FOUND", 404);
-  }
+//   if (!staff) {
+//     throw new AppError("STAFF_NOT_FOUND", 404);
+//   }
 
-  // =====================================================
-  // 2. PAGINATION
-  // =====================================================
+//   // =====================================================
+//   // 2. PAGINATION
+//   // =====================================================
 
-  const page = query.page ?? 1;
-  const limit = query.limit ?? 20;
+//   const page = query.page ?? 1;
+//   const limit = query.limit ?? 20;
 
-  const skip = (page - 1) * limit;
+//   const skip = (page - 1) * limit;
 
-  // =====================================================
-  // 3. FILTER
-  // =====================================================
+//   // =====================================================
+//   // 3. FILTER
+//   // =====================================================
 
-  const where = {
-    staffId,
+//   const where = {
+//     staffId,
 
-    moderationStatus: ReviewModerationStatus.VISIBLE,
+//     moderationStatus: ReviewModerationStatus.VISIBLE,
 
-    ...(query.rating !== undefined && {
-      rating: query.rating,
-    }),
-  };
+//     ...(query.rating !== undefined && {
+//       rating: query.rating,
+//     }),
+//   };
 
-  // =====================================================
-  // 4. FETCH REVIEWS + TOTAL
-  // =====================================================
+//   // =====================================================
+//   // 4. FETCH REVIEWS + TOTAL
+//   // =====================================================
 
-  const [reviews, total] = await prisma.$transaction([
-    prisma.review.findMany({
-      where,
+//   const [reviews, total] = await prisma.$transaction([
+//     prisma.review.findMany({
+//       where,
 
-      skip,
-      take: limit,
+//       skip,
+//       take: limit,
 
-      orderBy: {
-        createdAt: "desc",
-      },
+//       orderBy: {
+//         createdAt: "desc",
+//       },
 
-      select: {
-        id: true,
-        rating: true,
-        comment: true,
-        createdAt: true,
+//       select: {
+//         id: true,
+//         rating: true,
+//         comment: true,
+//         createdAt: true,
 
-        replyText: true,
-        repliedAt: true,
+//         replyText: true,
+//         repliedAt: true,
 
-        customer: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
+//         customer: {
+//           select: {
+//             id: true,
+//             name: true,
+//           },
+//         },
 
-        branch: {
-          select: {
-            id: true,
-            name: true,
-            translations: true,
-          },
-        },
+//         branch: {
+//           select: {
+//             id: true,
+//             name: true,
+//             translations: true,
+//           },
+//         },
 
-        // Booking-time multilingual snapshot
-        appointment: {
-          select: {
-            id: true,
-            itemName: true,
-            itemNameTranslations: true,
-          },
-        },
+//         // Booking-time multilingual snapshot
+//         appointment: {
+//           select: {
+//             id: true,
+//             itemName: true,
+//             itemNameTranslations: true,
+//           },
+//         },
 
-        images: {
-          orderBy: {
-            sortOrder: "asc",
-          },
+//         images: {
+//           orderBy: {
+//             sortOrder: "asc",
+//           },
 
-          select: {
-            objectKey: true,
-            sortOrder: true,
-          },
-        },
-      },
-    }),
+//           select: {
+//             objectKey: true,
+//             sortOrder: true,
+//           },
+//         },
+//       },
+//     }),
 
-    prisma.review.count({
-      where,
-    }),
-  ]);
+//     prisma.review.count({
+//       where,
+//     }),
+//   ]);
 
-  // =====================================================
-  // 5. RESPONSE + LOCALIZATION
-  // =====================================================
+//   // =====================================================
+//   // 5. RESPONSE + LOCALIZATION
+//   // =====================================================
 
-  const items = await Promise.all(
-    reviews.map(async (review) => {
-      // ===============================================
-      // SIGNED IMAGE URLS
-      // ===============================================
+//   const items = await Promise.all(
+//     reviews.map(async (review) => {
+//       // ===============================================
+//       // SIGNED IMAGE URLS
+//       // ===============================================
 
-      const images = await Promise.all(
-        review.images.map(async (image) => ({
-          objectKey: image.objectKey,
+//       const images = await Promise.all(
+//         review.images.map(async (image) => ({
+//           objectKey: image.objectKey,
 
-          url: await uploadService.getImageUrl(image.objectKey),
+//           url: await uploadService.getImageUrl(image.objectKey),
 
-          sortOrder: image.sortOrder,
-        })),
-      );
+//           sortOrder: image.sortOrder,
+//         })),
+//       );
 
-      // ===============================================
-      // LOCALIZE BRANCH NAME
-      // ===============================================
+//       // ===============================================
+//       // LOCALIZE BRANCH NAME
+//       // ===============================================
 
-      const localizedBranch = getLocalizedContent(
-        review.branch.translations,
-        language,
-        {
-          name: review.branch.name,
-        },
-      );
+//       const localizedBranch = getLocalizedContent(
+//         review.branch.translations,
+//         language,
+//         {
+//           name: review.branch.name,
+//         },
+//       );
 
-      // ===============================================
-      // LOCALIZE APPOINTMENT ITEM NAME
-      // ===============================================
+//       // ===============================================
+//       // LOCALIZE APPOINTMENT ITEM NAME
+//       // ===============================================
 
-      const localizedItem = getLocalizedContent(
-        review.appointment.itemNameTranslations,
-        language,
-        {
-          name: review.appointment.itemName,
-        },
-      );
+//       const localizedItem = getLocalizedContent(
+//         review.appointment.itemNameTranslations,
+//         language,
+//         {
+//           name: review.appointment.itemName,
+//         },
+//       );
 
-      // ===============================================
-      // RESPONSE
-      // ===============================================
+//       // ===============================================
+//       // RESPONSE
+//       // ===============================================
 
-      return {
-        id: review.id,
+//       return {
+//         id: review.id,
 
-        rating: review.rating,
+//         rating: review.rating,
 
-        comment: review.comment,
+//         comment: review.comment,
 
-        customer: {
-          id: review.customer.id,
-          name: review.customer.name,
-        },
+//         customer: {
+//           id: review.customer.id,
+//           name: review.customer.name,
+//         },
 
-        branch: {
-          id: review.branch.id,
-          name: localizedBranch.name,
-        },
+//         branch: {
+//           id: review.branch.id,
+//           name: localizedBranch.name,
+//         },
 
-        appointment: {
-          id: review.appointment.id,
-          itemName: localizedItem.name,
-        },
+//         appointment: {
+//           id: review.appointment.id,
+//           itemName: localizedItem.name,
+//         },
 
-        reply: review.replyText
-          ? {
-              text: review.replyText,
+//         reply: review.replyText
+//           ? {
+//               text: review.replyText,
 
-              repliedAt: review.repliedAt
-                ? review.repliedAt.toISOString()
-                : null,
-            }
-          : null,
+//               repliedAt: review.repliedAt
+//                 ? review.repliedAt.toISOString()
+//                 : null,
+//             }
+//           : null,
 
-        images,
+//         images,
 
-        createdAt: review.createdAt.toISOString(),
-      };
-    }),
-  );
+//         createdAt: review.createdAt.toISOString(),
+//       };
+//     }),
+//   );
 
-  // =====================================================
-  // 6. PAGINATION RESPONSE
-  // =====================================================
+//   // =====================================================
+//   // 6. PAGINATION RESPONSE
+//   // =====================================================
 
-  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+//   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
-  return {
-    items,
+//   return {
+//     items,
 
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages,
+//     pagination: {
+//       page,
+//       limit,
+//       total,
+//       totalPages,
 
-      hasNextPage: page < totalPages,
+//       hasNextPage: page < totalPages,
 
-      hasPreviousPage: page > 1,
-    },
-  };
-};
+//       hasPreviousPage: page > 1,
+//     },
+//   };
+// };
 
 const getMyReviews = async (
   customerId: string,
@@ -1085,7 +1085,232 @@ const getMyReviews = async (
     },
   };
 };
+const getStaffReviews = async (
+  staffId: string,
+  query: Record<string, any>,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. CHECK STAFF
+  // =====================================================
 
+  const staff = await prisma.staff.findUnique({
+    where: {
+      id: staffId,
+    },
+
+    select: {
+      id: true,
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("STAFF_NOT_FOUND", 404);
+  }
+
+  // =====================================================
+  // 2. PARSE & VALIDATE QUERY PARAMETERS
+  // =====================================================
+
+  const page = Number(query.page ?? 1);
+  const limit = Number(query.limit ?? 10);
+
+  if (!Number.isInteger(page) || page < 1) {
+    throw new AppError("Page must be a positive integer", 400);
+  }
+
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new AppError("Limit must be between 1 and 100", 400);
+  }
+
+  let rating: number | undefined;
+
+  if (query.rating !== undefined && query.rating !== "") {
+    rating = Number(query.rating);
+
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      throw new AppError("Rating must be between 1 and 5", 400);
+    }
+  }
+
+  const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 3. BUILD REVIEW FILTER
+  // =====================================================
+
+  const where = {
+    staffId,
+
+    moderationStatus: "VISIBLE" as const,
+
+    ...(rating !== undefined && {
+      rating,
+    }),
+  };
+
+  // =====================================================
+  // 4. FETCH REVIEWS & TOTAL COUNT
+  // =====================================================
+
+  const [reviews, total] = await prisma.$transaction([
+    prisma.review.findMany({
+      where,
+
+      skip,
+
+      take: limit,
+
+      orderBy: {
+        createdAt: "desc",
+      },
+
+      select: {
+        id: true,
+        rating: true,
+        comment: true,
+        createdAt: true,
+
+        replyText: true,
+        repliedAt: true,
+
+        customer: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        branch: {
+          select: {
+            id: true,
+            name: true,
+            translations: true,
+          },
+        },
+
+        appointment: {
+          select: {
+            id: true,
+            itemName: true,
+            itemNameTranslations: true,
+          },
+        },
+
+        images: {
+          orderBy: {
+            sortOrder: "asc",
+          },
+
+          select: {
+            objectKey: true,
+            sortOrder: true,
+          },
+        },
+      },
+    }),
+
+    prisma.review.count({
+      where,
+    }),
+  ]);
+
+  // =====================================================
+  // 5. GENERATE SIGNED REVIEW IMAGE URLS
+  // =====================================================
+
+  const items = await Promise.all(
+    reviews.map(async (review) => {
+      const images = await Promise.all(
+        review.images.map(async (image) => ({
+          objectKey: image.objectKey,
+
+          imageUrl: await uploadService.getImageUrl(image.objectKey),
+
+          sortOrder: image.sortOrder,
+        })),
+      );
+
+      return {
+        id: review.id,
+
+        rating: review.rating,
+
+        comment: review.comment,
+
+        customer: review.customer,
+
+        branch: review.branch,
+
+        appointment: review.appointment,
+
+        images,
+
+        reply: review.replyText
+          ? {
+              text: review.replyText,
+              repliedAt: review.repliedAt,
+            }
+          : null,
+
+        createdAt: review.createdAt,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 6. PAGINATION
+  // =====================================================
+
+  const totalPages = Math.ceil(total / limit);
+
+  return {
+    items,
+
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    },
+  };
+};
+
+// =====================================================
+// GET LOGGED-IN STAFF REVIEWS
+// =====================================================
+
+const getMyStaffReview = async (
+  userId: string,
+  query: Record<string, any>,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. RESOLVE STAFF ID USING JWT USER ID
+  // =====================================================
+
+  const staff = await prisma.staff.findUnique({
+    where: {
+      userId,
+    },
+
+    select: {
+      id: true,
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("STAFF_NOT_FOUND", 404);
+  }
+
+  // =====================================================
+  // 2. REUSE EXISTING STAFF REVIEWS SERVICE
+  // =====================================================
+
+  return getStaffReviews(staff.id, query, language);
+};
 const updateReview = async (
   customerId: string,
   reviewId: string,
@@ -1839,6 +2064,7 @@ export const reviewService = {
   getBranchReviews,
   getStaffReviews,
   getMyReviews,
+  getMyStaffReview,
   updateReview,
   deleteReview,
   moderateReview,

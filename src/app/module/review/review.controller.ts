@@ -96,7 +96,44 @@ const getMyReviews = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+const getMyStaffReview = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. CHECK AUTHENTICATION
+  // =====================================================
 
+  if (!req.user) {
+    throw new AppError("AUTH_REQUIRED", 401);
+  }
+
+  // =====================================================
+  // 2. RESOLVE LANGUAGE
+  // =====================================================
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  // =====================================================
+  // 3. GET LOGGED-IN STAFF REVIEWS
+  // =====================================================
+
+  const result = await reviewService.getMyStaffReview(
+    req.user.userId,
+    req.query,
+    language,
+  );
+
+  // =====================================================
+  // 4. SEND RESPONSE
+  // =====================================================
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: "My staff reviews fetched successfully",
+    data: result,
+  });
+});
 const updateReview = catchAsync(async (req: Request, res: Response) => {
   const customerId = req.user!.userId;
 
@@ -216,6 +253,7 @@ export const reviewController = {
   getBranchReviews,
   getStaffReviews,
   getMyReviews,
+  getMyStaffReview,
   updateReview,
   deleteReview,
   moderateReview,

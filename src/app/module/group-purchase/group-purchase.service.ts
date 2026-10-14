@@ -20,10 +20,11 @@ import {
   timeToMinutes,
 } from "../appointment/appointment.service.js";
 import { AvailabilityService } from "../availability/availability.service.js";
+import { uploadService } from "../upload/upload.service.js";
 
 import { ICreateGroupPurchasePayload } from "./group-purchase.interface.js";
 
-const GROUP_PURCHASE_RESERVATION_MINUTES = 15;
+const GROUP_PURCHASE_RESERVATION_MINUTES = 5;
 
 const createGroupPurchase = async (
   customerId: string,
@@ -285,68 +286,128 @@ const getMyGroupPurchases = async (
   language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
-  // 1. PAGINATION
+  // 1. PAGINATION VALIDATION
   // =====================================================
 
-  const limit = query.limit ? Number(query.limit) : 20;
-  const page = query.page ? Number(query.page) : 1;
+  const page = query.page === undefined ? 1 : Number(query.page);
+  const limit = query.limit === undefined ? 20 : Number(query.limit);
+
+  if (!Number.isInteger(page) || page < 1) {
+    throw new AppError("page must be a positive integer", 400);
+  }
+
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new AppError("limit must be between 1 and 100", 400);
+  }
+
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 2. FETCH CUSTOMER GROUP PURCHASES
+  // 2. STATUS FILTER VALIDATION
   // =====================================================
 
-  const purchases = await prisma.groupPurchase.findMany({
-    where: {
-      customerId,
-    },
+  const status = query.status as string | undefined;
 
-    take: limit,
-    skip,
+  if (status !== undefined && status !== "ACTIVE" && status !== "EXPIRED") {
+    throw new AppError("status must be ACTIVE or EXPIRED", 400);
+  }
 
-    orderBy: {
-      createdAt: "desc",
-    },
+  const now = new Date();
 
-    include: {
-      package: {
-        select: {
-          id: true,
-          name: true,
+  // =====================================================
+  // 3. DEFINE EXPIRED CONDITION
+  // =====================================================
 
-          // NEW: Multilingual translations
-          translations: true,
+  // Existing Group Purchase lifecycle:
+  //
+  // PENDING + deadline passed -> expired
+  // FAILED                    -> expired
+  // PAID                      -> not payment-expired
+  //
+  // FAILED is treated as expired because the existing
+  // expiry and late-payment flows use this status.
 
-          type: true,
+  const expiredCondition: Prisma.GroupPurchaseWhereInput = {
+    OR: [
+      {
+        paymentStatus: PaymentStatus.FAILED,
+      },
+      {
+        paymentStatus: PaymentStatus.PENDING,
 
-          images: {
-            where: {
-              isPrimary: true,
-            },
+        reservationExpiresAt: {
+          lte: now,
+        },
+      },
+    ],
+  };
 
-            take: 1,
+  // =====================================================
+  // 4. BUILD CUSTOMER FILTER
+  // =====================================================
 
-            select: {
-              objectKey: true,
+  const where: Prisma.GroupPurchaseWhereInput = {
+    customerId,
+
+    ...(status === "ACTIVE"
+      ? {
+          NOT: expiredCondition,
+        }
+      : {}),
+
+    ...(status === "EXPIRED"
+      ? {
+          AND: [expiredCondition],
+        }
+      : {}),
+  };
+
+  // =====================================================
+  // 5. FETCH CUSTOMER GROUP PURCHASES + COUNT
+  // =====================================================
+
+  const [purchases, totalPurchaseCount] = await prisma.$transaction([
+    prisma.groupPurchase.findMany({
+      where,
+
+      take: limit,
+      skip,
+
+      orderBy: {
+        createdAt: "desc",
+      },
+
+      include: {
+        package: {
+          select: {
+            id: true,
+            name: true,
+            translations: true,
+            type: true,
+
+            images: {
+              where: {
+                isPrimary: true,
+              },
+
+              take: 1,
+
+              select: {
+                objectKey: true,
+              },
             },
           },
         },
       },
-    },
-  });
+    }),
+
+    prisma.groupPurchase.count({
+      where,
+    }),
+  ]);
 
   // =====================================================
-  // 3. TOTAL PURCHASE COUNT
-  // =====================================================
-
-  const totalPurchaseCount = await prisma.groupPurchase.count({
-    where: {
-      customerId,
-    },
-  });
-
-  // =====================================================
-  // 4. GET REDEMPTION COUNTS FOR CURRENT PAGE
+  // 6. GET REDEMPTION COUNTS FOR CURRENT PAGE
   // =====================================================
 
   const purchaseIds = purchases.map((purchase) => purchase.id);
@@ -372,89 +433,173 @@ const getMyGroupPurchases = async (
         })
       : [];
 
-  // Avoid separate count queries for each purchase.
+  // Avoid separate count queries for every purchase.
+
   const redemptionCountMap = new Map(
     redemptionCounts.map((item) => [item.groupPurchaseId, item._count._all]),
   );
 
   // =====================================================
-  // 5. RESPONSE WITH MULTILINGUAL PACKAGE NAME
+  // 7. GENERATE SIGNED PRIMARY IMAGE URLS
   // =====================================================
 
-  return {
-    items: purchases.map((purchase) => {
-      // NEW: Localize package name
-      // Fallback: selected language -> English -> original name
-      const localizedPackage = getLocalizedContent(
-        purchase.package.translations,
-        language,
-        {
-          name: purchase.package.name,
-        },
-      );
+  // Same package can appear in multiple purchases.
+  // Generate a signed URL once per unique object key.
 
-      const purchasedQuantity = purchase.quantity;
+  const imageKeys = [
+    ...new Set(
+      purchases
+        .map((purchase) => purchase.package.images[0]?.objectKey)
+        .filter((key): key is string => Boolean(key)),
+    ),
+  ];
 
-      const redeemedQuantity = redemptionCountMap.get(purchase.id) ?? 0;
+  const signedImageEntries = await Promise.all(
+    imageKeys.map(async (objectKey) => {
+      const imageUrl = await uploadService.getImageUrl(objectKey);
 
-      const remainingQuantity = Math.max(
-        0,
-        purchasedQuantity - redeemedQuantity,
-      );
-
-      const canBookAppointment =
-        purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
-
-      return {
-        id: purchase.id,
-
-        package: {
-          id: purchase.package.id,
-
-          // Localized package name
-          name: localizedPackage.name,
-
-          type: purchase.package.type,
-
-          primaryImageObjectKey: purchase.package.images[0]?.objectKey || null,
-        },
-
-        quantity: purchase.quantity,
-
-        unitPrice: Number(purchase.unitPrice),
-
-        amount: Number(purchase.amount),
-
-        paymentStatus: purchase.paymentStatus,
-
-        reservationExpiresAt: purchase.reservationExpiresAt,
-
-        purchasedAt: purchase.purchasedAt,
-
-        createdAt: purchase.createdAt,
-
-        redemption: {
-          purchasedQuantity,
-          redeemedQuantity,
-          remainingQuantity,
-          canBookAppointment,
-        },
-      };
+      return [objectKey, imageUrl] as const;
     }),
+  );
+
+  const signedImageMap = new Map(signedImageEntries);
+
+  // =====================================================
+  // 8. BUILD MULTILINGUAL RESPONSE
+  // =====================================================
+
+  const items = purchases.map((purchase) => {
+    // ===================================================
+    // 8.1 LOCALIZED PACKAGE NAME
+    // ===================================================
+
+    const localizedPackage = getLocalizedContent(
+      purchase.package.translations,
+      language,
+      {
+        name: purchase.package.name,
+      },
+    );
+
+    // ===================================================
+    // 8.2 PAYMENT EXPIRY
+    // ===================================================
+
+    const deadlinePassed =
+      purchase.reservationExpiresAt !== null &&
+      purchase.reservationExpiresAt <= now;
+
+    const paymentExpired =
+      purchase.paymentStatus === PaymentStatus.FAILED ||
+      (purchase.paymentStatus === PaymentStatus.PENDING && deadlinePassed);
+
+    // Keep actual database payment status unchanged.
+    // The scheduled expiry job persists FAILED and
+    // releases reserved inventory.
+
+    const effectivePaymentStatus =
+      paymentExpired && purchase.paymentStatus === PaymentStatus.PENDING
+        ? PaymentStatus.FAILED
+        : purchase.paymentStatus;
+
+    // ===================================================
+    // 8.3 REDEMPTION SUMMARY
+    // ===================================================
+
+    const purchasedQuantity = purchase.quantity;
+
+    const redeemedQuantity = redemptionCountMap.get(purchase.id) ?? 0;
+
+    const remainingQuantity = Math.max(0, purchasedQuantity - redeemedQuantity);
+
+    const canBookAppointment =
+      purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
+
+    // ===================================================
+    // 8.4 PRIMARY IMAGE
+    // ===================================================
+
+    const primaryImageObjectKey = purchase.package.images[0]?.objectKey ?? null;
+
+    const primaryImageUrl = primaryImageObjectKey
+      ? (signedImageMap.get(primaryImageObjectKey) ?? null)
+      : null;
+
+    // ===================================================
+    // 8.5 FINAL PURCHASE RESPONSE
+    // ===================================================
+
+    return {
+      id: purchase.id,
+
+      package: {
+        id: purchase.package.id,
+
+        name: localizedPackage.name,
+
+        type: purchase.package.type,
+
+        primaryImageObjectKey,
+
+        primaryImageUrl,
+      },
+
+      quantity: purchase.quantity,
+
+      unitPrice: Number(purchase.unitPrice),
+
+      amount: Number(purchase.amount),
+
+      // Actual persisted database status.
+      paymentStatus: purchase.paymentStatus,
+
+      // Frontend-friendly calculated status.
+      effectivePaymentStatus,
+
+      // G5: payment reservation expiry indicator.
+      paymentExpired,
+
+      reservationExpiresAt: purchase.reservationExpiresAt,
+
+      purchasedAt: purchase.purchasedAt,
+
+      createdAt: purchase.createdAt,
+
+      redemption: {
+        purchasedQuantity,
+
+        redeemedQuantity,
+
+        remainingQuantity,
+
+        canBookAppointment,
+      },
+    };
+  });
+
+  // =====================================================
+  // 9. PAGINATION
+  // =====================================================
+
+  const totalPages = Math.ceil(totalPurchaseCount / limit);
+
+  return {
+    items,
 
     pagination: {
       page,
       limit,
-      total: totalPurchaseCount,
-      totalPages: Math.ceil(totalPurchaseCount / limit),
 
-      hasNextPage: page < Math.ceil(totalPurchaseCount / limit),
+      total: totalPurchaseCount,
+
+      totalPages,
+
+      hasNextPage: page < totalPages,
 
       hasPreviousPage: page > 1,
     },
   };
 };
-
 const getGroupPurchaseById = async (
   purchaseId: string,
   userId: string,

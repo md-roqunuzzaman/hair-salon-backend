@@ -2,6 +2,7 @@ import {
   AppointmentStatus,
   BranchStatus,
   Prisma,
+  ReviewModerationStatus,
   Role,
   StaffStatus,
   UserStatus,
@@ -17,6 +18,11 @@ import { notificationTemplates } from "../notification/notification.templates.js
 import { uploadService } from "../upload/upload.service.js";
 
 import {
+  IBranchDailySeriesQuery,
+  IBranchDailySeriesResult,
+  IBranchDailySummaryResult,
+  IBranchStaffOutputQuery,
+  IBranchStaffOutputResult,
   IBranchTranslations,
   ICreateBranchPayload,
   ICustomerOperationalSearchQuery,
@@ -1299,6 +1305,657 @@ const searchBranchCustomers = async (
   };
 };
 
+const getBranchDailySummary = async (
+  branchId: string,
+  userId: string,
+  role: Role,
+  date: string,
+): Promise<IBranchDailySummaryResult> => {
+  // =====================================================
+  // 1. CHECK ROLE
+  // =====================================================
+
+  if (role !== Role.BRAND_OWNER && role !== Role.BRANCH_MANAGER) {
+    throw new AppError("You are not allowed to access branch reports", 403);
+  }
+
+  // =====================================================
+  // 2. CHECK BRANCH
+  // =====================================================
+
+  const branch = await prisma.branch.findUnique({
+    where: {
+      id: branchId,
+    },
+
+    select: {
+      id: true,
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  // =====================================================
+  // 3. BRANCH MANAGER ACCESS CONTROL
+  // =====================================================
+
+  if (role === Role.BRANCH_MANAGER) {
+    const managerBranch = await prisma.branchManagerBranch.findUnique({
+      where: {
+        userId_branchId: {
+          userId,
+          branchId,
+        },
+      },
+
+      select: {
+        userId: true,
+      },
+    });
+
+    if (!managerBranch) {
+      throw new AppError(
+        "You are not allowed to access reports for this branch",
+        403,
+      );
+    }
+  }
+
+  // =====================================================
+  // 4. VALIDATE DATE
+  // =====================================================
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new AppError("date must be in YYYY-MM-DD format", 400);
+  }
+
+  const reportDate = new Date(`${date}T00:00:00.000Z`);
+
+  if (
+    Number.isNaN(reportDate.getTime()) ||
+    reportDate.toISOString().slice(0, 10) !== date
+  ) {
+    throw new AppError("Invalid date", 400);
+  }
+
+  // =====================================================
+  // 5. FETCH APPOINTMENT STATUS COUNTS
+  // =====================================================
+
+  const groupedAppointments = await prisma.appointment.groupBy({
+    by: ["appointmentStatus"],
+
+    where: {
+      branchId,
+      date: reportDate,
+    },
+
+    _count: {
+      _all: true,
+    },
+  });
+
+  // =====================================================
+  // 6. BUILD STATUS COUNT MAP
+  // =====================================================
+
+  const statusCounts = new Map<AppointmentStatus, number>();
+
+  for (const group of groupedAppointments) {
+    statusCounts.set(group.appointmentStatus, group._count._all);
+  }
+
+  const countStatus = (status: AppointmentStatus): number =>
+    statusCounts.get(status) ?? 0;
+
+  // =====================================================
+  // 7. CALCULATE INDIVIDUAL STATUS COUNTS
+  // =====================================================
+
+  const pendingPayment = countStatus(AppointmentStatus.PENDING_PAYMENT);
+
+  const reserved = countStatus(AppointmentStatus.RESERVED);
+
+  const confirmed = countStatus(AppointmentStatus.CONFIRMED);
+
+  const completed = countStatus(AppointmentStatus.COMPLETED);
+
+  const cancelled = countStatus(AppointmentStatus.CANCELLED);
+
+  const noShow = countStatus(AppointmentStatus.NO_SHOW);
+
+  const expired = countStatus(AppointmentStatus.EXPIRED);
+
+  // =====================================================
+  // 8. CALCULATE TOTAL APPOINTMENTS
+  // =====================================================
+
+  const total = groupedAppointments.reduce(
+    (sum, group) => sum + group._count._all,
+    0,
+  );
+
+  // =====================================================
+  // 9. CALCULATE PENDING APPOINTMENTS
+  // =====================================================
+
+  // Pending includes:
+  // - PENDING_PAYMENT
+  // - RESERVED
+  // - CONFIRMED
+  //
+  // EXPIRED is NOT considered pending.
+
+  const pending = pendingPayment + reserved + confirmed;
+
+  // =====================================================
+  // 10. CALCULATE COMPLETED APPOINTMENT REVENUE
+  // =====================================================
+
+  // Revenue definition:
+  // Sum of appointment.price for COMPLETED appointments.
+  //
+  // GROUP_PURCHASE redemption appointments may have
+  // price = 0 because payment happened earlier.
+  //
+  // This is completed booking value, not a full
+  // payment-ledger / cash-flow report.
+
+  const revenueAggregation = await prisma.appointment.aggregate({
+    where: {
+      branchId,
+      date: reportDate,
+
+      appointmentStatus: AppointmentStatus.COMPLETED,
+    },
+
+    _sum: {
+      price: true,
+    },
+  });
+
+  const revenue = Number(revenueAggregation._sum.price ?? 0);
+
+  // =====================================================
+  // 11. CALCULATE AVERAGE TICKET
+  // =====================================================
+
+  const averageTicket =
+    completed > 0 ? Number((revenue / completed).toFixed(2)) : 0;
+
+  // =====================================================
+  // 12. RETURN DAILY SUMMARY
+  // =====================================================
+
+  return {
+    date,
+
+    total,
+    completed,
+    cancelled,
+    noShow,
+    pending,
+    expired,
+
+    statusBreakdown: {
+      pendingPayment,
+      reserved,
+      confirmed,
+      completed,
+      cancelled,
+      noShow,
+      expired,
+    },
+
+    revenue: Number(revenue.toFixed(2)),
+    averageTicket,
+  };
+};
+
+const getBranchDailySeries = async (
+  branchId: string,
+  userId: string,
+  role: Role,
+  query: IBranchDailySeriesQuery,
+): Promise<IBranchDailySeriesResult> => {
+  // =====================================================
+  // 1. CHECK ROLE
+  // =====================================================
+
+  if (role !== Role.BRAND_OWNER && role !== Role.BRANCH_MANAGER) {
+    throw new AppError("You are not allowed to access branch reports", 403);
+  }
+
+  // =====================================================
+  // 2. CHECK BRANCH
+  // =====================================================
+
+  const branch = await prisma.branch.findUnique({
+    where: {
+      id: branchId,
+    },
+
+    select: {
+      id: true,
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  // =====================================================
+  // 3. BRANCH MANAGER ACCESS CONTROL
+  // =====================================================
+
+  if (role === Role.BRANCH_MANAGER) {
+    const managerBranch = await prisma.branchManagerBranch.findUnique({
+      where: {
+        userId_branchId: {
+          userId,
+          branchId,
+        },
+      },
+
+      select: {
+        userId: true,
+      },
+    });
+
+    if (!managerBranch) {
+      throw new AppError(
+        "You are not allowed to access reports for this branch",
+        403,
+      );
+    }
+  }
+
+  // =====================================================
+  // 4. VALIDATE DATE RANGE
+  // =====================================================
+
+  const { start, end } = query;
+
+  const isValidDate = (value: string): boolean => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      return false;
+    }
+
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+
+    return (
+      !Number.isNaN(parsed.getTime()) &&
+      parsed.toISOString().slice(0, 10) === value
+    );
+  };
+
+  if (!isValidDate(start) || !isValidDate(end)) {
+    throw new AppError("Invalid date range. Use YYYY-MM-DD format", 400);
+  }
+
+  const startDate = new Date(`${start}T00:00:00.000Z`);
+  const endDate = new Date(`${end}T00:00:00.000Z`);
+
+  if (startDate > endDate) {
+    throw new AppError(
+      "end date must be greater than or equal to start date",
+      400,
+    );
+  }
+
+  const DAY_IN_MS = 24 * 60 * 60 * 1000;
+
+  const totalDays =
+    Math.round((endDate.getTime() - startDate.getTime()) / DAY_IN_MS) + 1;
+
+  if (totalDays > 366) {
+    throw new AppError("Date range cannot exceed 366 days", 400);
+  }
+
+  // =====================================================
+  // 5. FETCH APPOINTMENT COUNTS BY DATE
+  // =====================================================
+
+  const groupedAppointments = await prisma.appointment.groupBy({
+    by: ["date"],
+
+    where: {
+      branchId,
+
+      date: {
+        gte: startDate,
+        lte: endDate,
+      },
+    },
+
+    _count: {
+      _all: true,
+    },
+
+    orderBy: {
+      date: "asc",
+    },
+  });
+
+  // =====================================================
+  // 6. BUILD DATE -> COUNT MAP
+  // =====================================================
+
+  const appointmentCountMap = new Map<string, number>();
+
+  for (const group of groupedAppointments) {
+    const dateKey = group.date.toISOString().slice(0, 10);
+
+    appointmentCountMap.set(dateKey, group._count._all);
+  }
+
+  // =====================================================
+  // 7. GENERATE COMPLETE DAILY SERIES
+  // =====================================================
+
+  // Include dates without appointments as count = 0.
+  // This makes frontend chart rendering easier.
+
+  const items: IBranchDailySeriesResult["items"] = [];
+
+  for (let dayIndex = 0; dayIndex < totalDays; dayIndex++) {
+    const currentDate = new Date(startDate.getTime() + dayIndex * DAY_IN_MS);
+
+    const dateKey = currentDate.toISOString().slice(0, 10);
+
+    items.push({
+      date: dateKey,
+      count: appointmentCountMap.get(dateKey) ?? 0,
+    });
+  }
+
+  // =====================================================
+  // 8. RETURN RESULT
+  // =====================================================
+
+  return {
+    items,
+  };
+};
+
+const getBranchStaffOutput = async (
+  branchId: string,
+  userId: string,
+  role: Role,
+  query: IBranchStaffOutputQuery,
+): Promise<IBranchStaffOutputResult> => {
+  // =====================================================
+  // 1. CHECK ROLE
+  // =====================================================
+
+  if (role !== Role.BRAND_OWNER && role !== Role.BRANCH_MANAGER) {
+    throw new AppError("You are not allowed to access branch reports", 403);
+  }
+
+  // =====================================================
+  // 2. CHECK BRANCH
+  // =====================================================
+
+  const branch = await prisma.branch.findUnique({
+    where: {
+      id: branchId,
+    },
+
+    select: {
+      id: true,
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  // =====================================================
+  // 3. BRANCH MANAGER ACCESS CONTROL
+  // =====================================================
+
+  if (role === Role.BRANCH_MANAGER) {
+    const managerBranch = await prisma.branchManagerBranch.findUnique({
+      where: {
+        userId_branchId: {
+          userId,
+          branchId,
+        },
+      },
+
+      select: {
+        userId: true,
+      },
+    });
+
+    if (!managerBranch) {
+      throw new AppError(
+        "You are not allowed to access reports for this branch",
+        403,
+      );
+    }
+  }
+
+  // =====================================================
+  // 4. VALIDATE DATE RANGE
+  // =====================================================
+
+  const { start, end } = query;
+
+  const isValidDate = (value: string): boolean => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      return false;
+    }
+
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+
+    return (
+      !Number.isNaN(parsed.getTime()) &&
+      parsed.toISOString().slice(0, 10) === value
+    );
+  };
+
+  if (!isValidDate(start) || !isValidDate(end)) {
+    throw new AppError("Invalid date range. Use YYYY-MM-DD format", 400);
+  }
+
+  const startDate = new Date(`${start}T00:00:00.000Z`);
+  const endDate = new Date(`${end}T00:00:00.000Z`);
+
+  if (startDate > endDate) {
+    throw new AppError(
+      "end date must be greater than or equal to start date",
+      400,
+    );
+  }
+
+  const DAY_IN_MS = 24 * 60 * 60 * 1000;
+
+  const totalDays =
+    Math.round((endDate.getTime() - startDate.getTime()) / DAY_IN_MS) + 1;
+
+  if (totalDays > 366) {
+    throw new AppError("Date range cannot exceed 366 days", 400);
+  }
+
+  // =====================================================
+  // 5. FETCH APPOINTMENT COUNTS BY STAFF
+  // =====================================================
+
+  const appointmentGroups = await prisma.appointment.groupBy({
+    by: ["staffId", "appointmentStatus"],
+
+    where: {
+      branchId,
+
+      date: {
+        gte: startDate,
+        lte: endDate,
+      },
+    },
+
+    _count: {
+      _all: true,
+    },
+
+    _sum: {
+      price: true,
+    },
+  });
+
+  // =====================================================
+  // 6. BUILD STAFF PERFORMANCE MAP
+  // =====================================================
+
+  const staffMap = new Map<
+    string,
+    {
+      appointmentCount: number;
+      completedCount: number;
+      revenue: number;
+    }
+  >();
+
+  for (const group of appointmentGroups) {
+    const current = staffMap.get(group.staffId) ?? {
+      appointmentCount: 0,
+      completedCount: 0,
+      revenue: 0,
+    };
+
+    current.appointmentCount += group._count._all;
+
+    if (group.appointmentStatus === AppointmentStatus.COMPLETED) {
+      current.completedCount += group._count._all;
+
+      current.revenue += Number(group._sum.price ?? 0);
+    }
+
+    staffMap.set(group.staffId, current);
+  }
+
+  // =====================================================
+  // 7. FETCH STAFF INFORMATION
+  // =====================================================
+
+  const staffIds = [...staffMap.keys()];
+
+  if (staffIds.length === 0) {
+    return {
+      items: [],
+    };
+  }
+
+  const staffRecords = await prisma.staff.findMany({
+    where: {
+      id: {
+        in: staffIds,
+      },
+    },
+
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  const staffNameMap = new Map(
+    staffRecords.map((staff) => [staff.id, staff.name]),
+  );
+
+  // =====================================================
+  // 8. FETCH VISIBLE REVIEW RATINGS
+  // =====================================================
+
+  // Rating is based on reviews linked to appointments
+  // completed within the selected date range.
+  //
+  // Only VISIBLE reviews are included.
+
+  const reviewGroups = await prisma.review.groupBy({
+    by: ["staffId"],
+
+    where: {
+      branchId,
+
+      staffId: {
+        in: staffIds,
+      },
+
+      moderationStatus: ReviewModerationStatus.VISIBLE,
+
+      appointment: {
+        date: {
+          gte: startDate,
+          lte: endDate,
+        },
+
+        appointmentStatus: AppointmentStatus.COMPLETED,
+      },
+    },
+
+    _avg: {
+      rating: true,
+    },
+  });
+
+  const ratingMap = new Map<string, number | null>();
+
+  for (const group of reviewGroups) {
+    ratingMap.set(
+      group.staffId,
+      group._avg.rating === null ? null : Number(group._avg.rating.toFixed(2)),
+    );
+  }
+
+  // =====================================================
+  // 9. BUILD FINAL STAFF OUTPUT
+  // =====================================================
+
+  const items: IBranchStaffOutputResult["items"] = [];
+
+  for (const [staffId, stats] of staffMap.entries()) {
+    items.push({
+      staffId,
+
+      staffName: staffNameMap.get(staffId) ?? "Unknown Staff",
+
+      appointmentCount: stats.appointmentCount,
+
+      completedCount: stats.completedCount,
+
+      revenue: Number(stats.revenue.toFixed(2)),
+
+      averageRating: ratingMap.get(staffId) ?? null,
+    });
+  }
+
+  // =====================================================
+  // 10. SORT BY COMPLETED APPOINTMENTS
+  // =====================================================
+
+  items.sort((a, b) => {
+    if (b.completedCount !== a.completedCount) {
+      return b.completedCount - a.completedCount;
+    }
+
+    if (b.revenue !== a.revenue) {
+      return b.revenue - a.revenue;
+    }
+
+    return a.staffName.localeCompare(b.staffName);
+  });
+
+  // =====================================================
+  // 11. RETURN RESULT
+  // =====================================================
+
+  return {
+    items,
+  };
+};
 export const branchService = {
   createBranch,
 
@@ -1318,4 +1975,7 @@ export const branchService = {
 
   updateBookingPolicy,
   searchBranchCustomers,
+  getBranchDailySummary,
+  getBranchDailySeries,
+  getBranchStaffOutput,
 };

@@ -15,7 +15,13 @@ router.get(
   validateRequest(reviewValidation.getReviewsValidationSchema),
   reviewController.getMyReviews,
 );
+// router.get(
+//   "/staff/me/reviews",
+//   auth(Role.STAFF),
 
+//   validateRequest(reviewValidation.getReviewsValidationSchema),
+//   reviewController.getMyReviews,
+// );
 router.put(
   "/:reviewId/reply",
   auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
