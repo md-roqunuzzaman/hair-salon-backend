@@ -32,8 +32,9 @@ model Payment {
   walletTopupId String?
   walletTopup   WalletTopup? @relation(fields: [walletTopupId], references: [id], onDelete: Restrict)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  refundRequests RefundRequest[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 
   @@index([walletTopupId])
   @@index([customerId])
@@ -67,8 +68,9 @@ model Refund {
 
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  refundRequest RefundRequest?
 
   @@index([paymentId])
   @@index([status])

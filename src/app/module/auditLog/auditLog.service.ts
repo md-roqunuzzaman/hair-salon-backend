@@ -1,9 +1,14 @@
 import { Prisma } from "../../../../generated/prisma/client.js";
 import { prisma } from "../../lib/prisma.js";
+
 import {
   IAuditLogQuery,
   ICreateAuditLogPayload,
 } from "./auditLog.interface.js";
+
+// =====================================================
+// CREATE AUDIT LOG
+// =====================================================
 
 const createAuditLog = async (
   payload: ICreateAuditLogPayload,
@@ -28,6 +33,10 @@ const createAuditLog = async (
     },
   });
 };
+
+// =====================================================
+// GET AUDIT LOGS
+// =====================================================
 
 const getAuditLogs = async (query: IAuditLogQuery) => {
   const page = Number(query.page ?? 1);
@@ -71,7 +80,7 @@ const getAuditLogs = async (query: IAuditLogQuery) => {
 
   // =====================================================
   // FILTER: DATE RANGE
-  // Hong Kong timezone
+  // Hong Kong timezone (UTC+08:00)
   // =====================================================
 
   if (query.from || query.to) {
@@ -87,7 +96,7 @@ const getAuditLogs = async (query: IAuditLogQuery) => {
   }
 
   // =====================================================
-  // FETCH
+  // FETCH AUDIT LOGS + TOTAL COUNT
   // =====================================================
 
   const [logs, total] = await prisma.$transaction([
@@ -105,6 +114,13 @@ const getAuditLogs = async (query: IAuditLogQuery) => {
         id: true,
 
         userId: true,
+
+        // Operator name
+        user: {
+          select: {
+            name: true,
+          },
+        },
 
         action: true,
 
@@ -137,6 +153,12 @@ const getAuditLogs = async (query: IAuditLogQuery) => {
 
       userId: log.userId,
 
+      // =================================================
+      // OPERATOR NAME
+      // =================================================
+
+      actorName: log.user?.name ?? null,
+
       action: log.action,
 
       entityType: log.entityType,
@@ -161,6 +183,10 @@ const getAuditLogs = async (query: IAuditLogQuery) => {
     },
   };
 };
+
+// =====================================================
+// EXPORT
+// =====================================================
 
 export const auditLogService = {
   createAuditLog,

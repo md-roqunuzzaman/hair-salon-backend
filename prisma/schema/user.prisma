@@ -1,25 +1,27 @@
 model User {
-  id                   String                @id @default(uuid())
-  name                 String
-  email                String                @unique
-  phone                String?               @unique
-  passwordHash         String
-  preferredLanguage    String                @default("en")
-  role                 Role                  @default(CUSTOMER)
-  status               UserStatus            @default(ACTIVE)
-  groupPurchases       GroupPurchase[]
-  mustChangePassword   Boolean               @default(false)
-  avatarObjectKey      String?
-  staffProfile         Staff?
-  managedBranches      BranchManagerBranch[]
-  appointments         Appointment[]         @relation("CustomerAppointments")
-  verifiedAppointments Appointment[]         @relation("AppointmentQrVerifier")
-  payments             Payment[]
-  wallet               Wallet?
-  reviews              Review[]              @relation("CustomerReviews")
-  reviewReplies        Review[]              @relation("ReviewRepliedBy")
-  notifications        Notification[]
-  auditLogs            AuditLog[]
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
+  id                     String                @id @default(uuid())
+  name                   String
+  email                  String                @unique
+  phone                  String?               @unique
+  passwordHash           String
+  preferredLanguage      String                @default("en")
+  role                   Role                  @default(CUSTOMER)
+  status                 UserStatus            @default(ACTIVE)
+  groupPurchases         GroupPurchase[]
+  mustChangePassword     Boolean               @default(false)
+  avatarObjectKey        String?
+  staffProfile           Staff?
+  managedBranches        BranchManagerBranch[]
+  appointments           Appointment[]         @relation("CustomerAppointments")
+  verifiedAppointments   Appointment[]         @relation("AppointmentQrVerifier")
+  payments               Payment[]
+  wallet                 Wallet?
+  reviews                Review[]              @relation("CustomerReviews")
+  reviewReplies          Review[]              @relation("ReviewRepliedBy")
+  notifications          Notification[]
+  auditLogs              AuditLog[]
+  refundRequests         RefundRequest[]       @relation("CustomerRefundRequests")
+  reviewedRefundRequests RefundRequest[]       @relation("ReviewedRefundRequests")
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
 }

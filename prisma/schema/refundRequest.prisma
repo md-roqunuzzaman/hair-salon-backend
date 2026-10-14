@@ -1,0 +1,39 @@
+enum RefundRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model RefundRequest {
+  id String @id @default(uuid())
+
+  customerId String
+  paymentId  String
+
+  amount Decimal @db.Decimal(10, 2)
+  reason String
+
+  status RefundRequestStatus @default(PENDING)
+
+  reviewedBy String?
+  reviewedAt DateTime?
+  reviewNote String?
+
+  refundId String? @unique
+
+  customer User  @relation("CustomerRefundRequests", fields: [customerId], references: [id], onDelete: Restrict)
+  reviewer User? @relation("ReviewedRefundRequests", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund  Refund? @relation(fields: [refundId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([paymentId])
+  @@index([status])
+}

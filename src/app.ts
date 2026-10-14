@@ -29,6 +29,7 @@ import { AuditLogRoutes } from "./app/module/auditLog/auditLog.route.js";
 import { UploadRoutes } from "./app/module/upload/upload.route.js";
 import { BranchHourlyCapacityRoutes } from "./app/module/branch-hourly-capacity/branch-hourly-capacity.route.js";
 import { languageMiddleware } from "./app/middleware/language.middleware.js";
+import { RefundRequestRoutes } from "./app/module/refund-request/refund-request.route.js";
 
 const app: Application = express();
 
@@ -85,6 +86,7 @@ app.use("/api/v1/dashboard", DashboardRoutes);
 app.use("/api/v1/reports", ReportRoutes);
 app.use("/api/v1/audit-logs", AuditLogRoutes);
 app.use("/api/v1/uploads", UploadRoutes);
+app.use("/api/v1/refund-requests", RefundRequestRoutes);
 // Basic route
 app.get("/", async (req: Request, res: Response) => {
   res.status(httpStatus.OK).json({
