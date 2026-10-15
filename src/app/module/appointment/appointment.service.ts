@@ -366,6 +366,7 @@ const createPayNowAppointment = async (
   payload: ICreatePayNowAppointmentPayload,
 ): Promise<IPayNowAppointmentResponse> => {
   console.log("🔥🔥🔥 CREATE PAY NOW FUNCTION CALLED 🔥🔥🔥");
+
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
   console.log("\n========== PAY NOW BOOKING START ==========");
@@ -382,11 +383,9 @@ const createPayNowAppointment = async (
 
   const availability = await AvailabilityService.getAvailableSlots({
     branchId,
-
     ...(serviceId ? { serviceId } : {}),
     ...(packageId ? { packageId } : {}),
     ...(staffId ? { staffId } : {}),
-
     date,
   });
 
@@ -423,9 +422,37 @@ const createPayNowAppointment = async (
 
       const result = await prisma.$transaction(
         async (tx) => {
-          // =============================================
-          // 4. BOOKING TARGET SNAPSHOT
-          // =============================================
+          // =====================================================
+          // 4. MERCHANT BOOKING METHOD VALIDATION - NEW
+          // =====================================================
+
+          const bookingPolicy = await tx.branchBookingPolicy.findUnique({
+            where: {
+              branchId,
+            },
+            select: {
+              allowedBookingMethods: true,
+            },
+          });
+
+          if (!bookingPolicy) {
+            throw new AppError("Branch booking policy not found", 404);
+          }
+
+          if (
+            !bookingPolicy.allowedBookingMethods.includes(BookingMethod.PAY_NOW)
+          ) {
+            throw new AppError(
+              "PAY_NOW booking is not enabled for this branch",
+              400,
+            );
+          }
+
+          console.log("[PAY_NOW] Merchant booking method verified");
+
+          // =====================================================
+          // 5. BOOKING TARGET SNAPSHOT
+          // =====================================================
 
           let itemName: string;
 
@@ -436,15 +463,14 @@ const createPayNowAppointment = async (
           let price: Prisma.Decimal;
 
           if (serviceId) {
-            // =============================================
+            // =====================================================
             // SERVICE BOOKING
-            // =============================================
+            // =====================================================
 
             const service = await tx.service.findUnique({
               where: {
                 id: serviceId,
               },
-
               select: {
                 id: true,
                 name: true,
@@ -452,12 +478,10 @@ const createPayNowAppointment = async (
                 price: true,
                 durationMinutes: true,
                 status: true,
-
                 branches: {
                   where: {
                     branchId,
                   },
-
                   select: {
                     branchId: true,
                   },
@@ -500,15 +524,14 @@ const createPayNowAppointment = async (
 
             price = service.price;
           } else {
-            // =============================================
+            // =====================================================
             // PACKAGE BOOKING
-            // =============================================
+            // =====================================================
 
             const packageData = await tx.package.findUnique({
               where: {
                 id: packageId!,
               },
-
               select: {
                 id: true,
                 name: true,
@@ -516,12 +539,10 @@ const createPayNowAppointment = async (
                 packagePrice: true,
                 durationMinutes: true,
                 status: true,
-
                 branches: {
                   where: {
                     branchId,
                   },
-
                   select: {
                     branchId: true,
                   },
@@ -565,9 +586,9 @@ const createPayNowAppointment = async (
             price = packageData.packagePrice;
           }
 
-          // =============================================
-          // 5. DEBUG BOOKING SNAPSHOT
-          // =============================================
+          // =====================================================
+          // 6. DEBUG BOOKING SNAPSHOT
+          // =====================================================
 
           console.log("\n========== BOOKING SNAPSHOT ==========");
           console.log("Item Name:", itemName);
@@ -585,9 +606,9 @@ const createPayNowAppointment = async (
             );
           }
 
-          // =============================================
-          // 6. REQUESTED TIME RANGE
-          // =============================================
+          // =====================================================
+          // 7. REQUESTED TIME RANGE
+          // =====================================================
 
           const requestedStart = timeToMinutes(startTime);
 
@@ -597,9 +618,9 @@ const createPayNowAppointment = async (
 
           const now = new Date();
 
-          // =============================================
-          // 7. FINAL STAFF AVAILABILITY RECHECK
-          // =============================================
+          // =====================================================
+          // 8. FINAL STAFF AVAILABILITY RECHECK
+          // =====================================================
 
           await assertStaffSlotAvailable(
             tx,
@@ -612,9 +633,9 @@ const createPayNowAppointment = async (
 
           console.log("[PAY_NOW] Staff availability verified");
 
-          // =============================================
-          // 8. FINAL BRANCH CAPACITY RECHECK
-          // =============================================
+          // =====================================================
+          // 9. FINAL BRANCH CAPACITY RECHECK
+          // =====================================================
 
           await assertBranchHourlyCapacityAvailable(
             tx,
@@ -628,17 +649,17 @@ const createPayNowAppointment = async (
 
           console.log("[PAY_NOW] Branch capacity verified");
 
-          // =============================================
-          // 9. TEMPORARY PAY-NOW HOLD
-          // =============================================
+          // =====================================================
+          // 10. TEMPORARY PAY-NOW HOLD
+          // =====================================================
 
           const holdExpiresAt = new Date(
             now.getTime() + PAY_NOW_HOLD_MINUTES * 60 * 1000,
           );
 
-          // =============================================
-          // 10. CREATE APPOINTMENT
-          // =============================================
+          // =====================================================
+          // 11. CREATE APPOINTMENT
+          // =====================================================
 
           const appointment = await tx.appointment.create({
             data: {
@@ -698,7 +719,6 @@ const createPayNowAppointment = async (
 
               holdExpiresAt: true,
 
-              // Debug: read saved snapshot
               itemName: true,
 
               itemNameTranslations: true,
@@ -722,14 +742,13 @@ const createPayNowAppointment = async (
 
           return appointment;
         },
-
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         },
       );
 
       // =====================================================
-      // 11. TRANSACTION COMMITTED
+      // 12. TRANSACTION COMMITTED
       // =====================================================
 
       console.log("\n========== TRANSACTION COMMITTED ==========");
@@ -741,7 +760,7 @@ const createPayNowAppointment = async (
       console.log("===========================================");
 
       // =====================================================
-      // 12. RESPONSE
+      // 13. RESPONSE
       // =====================================================
 
       return {
@@ -791,7 +810,9 @@ const createDepositAppointment = async (
   payload: ICreateDepositAppointmentPayload,
 ): Promise<IDepositAppointmentResponse> => {
   await testPrismaTransaction();
+
   console.log("🔥🔥🔥 DEPOSIT SERVICE FUNCTION CALLED 🔥🔥🔥");
+
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
   console.log("\n========== DEPOSIT BOOKING START ==========");
@@ -809,13 +830,9 @@ const createDepositAppointment = async (
 
   const availability = await AvailabilityService.getAvailableSlots({
     branchId,
-
     ...(serviceId ? { serviceId } : {}),
-
     ...(packageId ? { packageId } : {}),
-
     ...(staffId ? { staffId } : {}),
-
     date,
   });
 
@@ -860,7 +877,6 @@ const createDepositAppointment = async (
             where: {
               id: branchId,
             },
-
             include: {
               bookingPolicy: true,
             },
@@ -874,12 +890,24 @@ const createDepositAppointment = async (
             throw new AppError("Branch booking policy not found", 404);
           }
 
-          if (!branch.bookingPolicy.depositEnabled) {
+          // =================================================
+          // 4.1 MERCHANT DEPOSIT METHOD VALIDATION - NEW
+          // =================================================
+
+          if (
+            !branch.bookingPolicy.allowedBookingMethods.includes(
+              BookingMethod.DEPOSIT,
+            )
+          ) {
             throw new AppError(
-              "Deposit booking is not enabled for this branch",
+              "DEPOSIT booking is not enabled for this branch",
               400,
             );
           }
+
+          // =================================================
+          // 4.2 DEPOSIT PERCENTAGE VALIDATION
+          // =================================================
 
           if (branch.bookingPolicy.depositPercentage === null) {
             throw new AppError("Deposit percentage is not configured", 500);
@@ -895,7 +923,7 @@ const createDepositAppointment = async (
 
           console.log("\n========== DEPOSIT POLICY ==========");
           console.log("Branch ID:", branchId);
-          console.log("Deposit Enabled:", branch.bookingPolicy.depositEnabled);
+          console.log("Deposit Enabled:", true);
           console.log("Deposit Percentage:", depositPercentage.toString());
           console.log("====================================");
 
@@ -920,7 +948,6 @@ const createDepositAppointment = async (
               where: {
                 id: serviceId,
               },
-
               select: {
                 id: true,
                 name: true,
@@ -928,12 +955,10 @@ const createDepositAppointment = async (
                 price: true,
                 durationMinutes: true,
                 status: true,
-
                 branches: {
                   where: {
                     branchId,
                   },
-
                   select: {
                     branchId: true,
                   },
@@ -985,7 +1010,6 @@ const createDepositAppointment = async (
               where: {
                 id: packageId!,
               },
-
               select: {
                 id: true,
                 name: true,
@@ -993,12 +1017,10 @@ const createDepositAppointment = async (
                 packagePrice: true,
                 durationMinutes: true,
                 status: true,
-
                 branches: {
                   where: {
                     branchId,
                   },
-
                   select: {
                     branchId: true,
                   },
@@ -1199,7 +1221,6 @@ const createDepositAppointment = async (
 
               qrVerifiedBy: null,
             },
-
             select: {
               id: true,
 
@@ -1245,7 +1266,6 @@ const createDepositAppointment = async (
 
           return appointment;
         },
-
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         },
@@ -1342,11 +1362,9 @@ const createReserveAppointment = async (
 
   const availability = await AvailabilityService.getAvailableSlots({
     branchId,
-
     ...(serviceId ? { serviceId } : {}),
     ...(packageId ? { packageId } : {}),
     ...(staffId ? { staffId } : {}),
-
     date,
   });
 
@@ -1383,9 +1401,39 @@ const createReserveAppointment = async (
 
       const result = await prisma.$transaction(
         async (tx) => {
-          // =============================================
-          // 4. BOOKING TARGET + MULTILINGUAL SNAPSHOT
-          // =============================================
+          // =====================================================
+          // 4. MERCHANT BOOKING METHOD VALIDATION - NEW
+          // =====================================================
+
+          const bookingPolicy = await tx.branchBookingPolicy.findUnique({
+            where: {
+              branchId,
+            },
+            select: {
+              allowedBookingMethods: true,
+            },
+          });
+
+          if (!bookingPolicy) {
+            throw new AppError("Branch booking policy not found", 404);
+          }
+
+          if (
+            !bookingPolicy.allowedBookingMethods.includes(
+              BookingMethod.RESERVE_NOW,
+            )
+          ) {
+            throw new AppError(
+              "RESERVE_NOW booking is not enabled for this branch",
+              400,
+            );
+          }
+
+          console.log("[RESERVE_NOW] Merchant booking method verified");
+
+          // =====================================================
+          // 5. BOOKING TARGET + MULTILINGUAL SNAPSHOT
+          // =====================================================
 
           let itemName: string;
 
@@ -1396,15 +1444,14 @@ const createReserveAppointment = async (
           let price: Prisma.Decimal;
 
           if (serviceId) {
-            // ===========================================
+            // =============================================
             // SERVICE BOOKING
-            // ===========================================
+            // =============================================
 
             const service = await tx.service.findUnique({
               where: {
                 id: serviceId,
               },
-
               select: {
                 id: true,
                 name: true,
@@ -1412,12 +1459,10 @@ const createReserveAppointment = async (
                 price: true,
                 durationMinutes: true,
                 status: true,
-
                 branches: {
                   where: {
                     branchId,
                   },
-
                   select: {
                     branchId: true,
                   },
@@ -1450,7 +1495,6 @@ const createReserveAppointment = async (
             console.log("==========================================");
 
             // Booking-time service snapshot
-
             itemName = service.name;
 
             itemNameTranslations =
@@ -1462,15 +1506,14 @@ const createReserveAppointment = async (
 
             price = service.price;
           } else {
-            // ===========================================
+            // =============================================
             // PACKAGE BOOKING
-            // ===========================================
+            // =============================================
 
             const packageData = await tx.package.findUnique({
               where: {
                 id: packageId!,
               },
-
               select: {
                 id: true,
                 name: true,
@@ -1478,12 +1521,10 @@ const createReserveAppointment = async (
                 packagePrice: true,
                 durationMinutes: true,
                 status: true,
-
                 branches: {
                   where: {
                     branchId,
                   },
-
                   select: {
                     branchId: true,
                   },
@@ -1516,7 +1557,6 @@ const createReserveAppointment = async (
             console.log("==========================================");
 
             // Booking-time package snapshot
-
             itemName = packageData.name;
 
             itemNameTranslations =
@@ -1529,9 +1569,9 @@ const createReserveAppointment = async (
             price = packageData.packagePrice;
           }
 
-          // =============================================
-          // 5. DEBUG BOOKING SNAPSHOT
-          // =============================================
+          // =====================================================
+          // 6. DEBUG BOOKING SNAPSHOT
+          // =====================================================
 
           console.log("\n========== RESERVE BOOKING SNAPSHOT ==========");
           console.log("Item Name:", itemName);
@@ -1549,9 +1589,9 @@ const createReserveAppointment = async (
             );
           }
 
-          // =============================================
-          // 6. REQUESTED TIME RANGE
-          // =============================================
+          // =====================================================
+          // 7. REQUESTED TIME RANGE
+          // =====================================================
 
           const requestedStart = timeToMinutes(startTime);
 
@@ -1567,9 +1607,9 @@ const createReserveAppointment = async (
           console.log("Duration:", durationMinutes);
           console.log("========================================");
 
-          // =============================================
-          // 7. FINAL STAFF AVAILABILITY RECHECK
-          // =============================================
+          // =====================================================
+          // 8. FINAL STAFF AVAILABILITY RECHECK
+          // =====================================================
 
           await assertStaffSlotAvailable(
             tx,
@@ -1582,9 +1622,9 @@ const createReserveAppointment = async (
 
           console.log("[RESERVE_NOW] Staff availability verified");
 
-          // =============================================
-          // 8. FINAL BRANCH CAPACITY RECHECK
-          // =============================================
+          // =====================================================
+          // 9. FINAL BRANCH CAPACITY RECHECK
+          // =====================================================
 
           await assertBranchHourlyCapacityAvailable(
             tx,
@@ -1598,9 +1638,9 @@ const createReserveAppointment = async (
 
           console.log("[RESERVE_NOW] Branch capacity verified");
 
-          // =============================================
-          // 9. SECURE QR TOKEN
-          // =============================================
+          // =====================================================
+          // 10. SECURE QR TOKEN
+          // =====================================================
 
           const qrToken = crypto.randomBytes(32).toString("hex");
 
@@ -1608,9 +1648,9 @@ const createReserveAppointment = async (
 
           // Do not print QR token in logs.
 
-          // =============================================
-          // 10. CREATE RESERVED APPOINTMENT
-          // =============================================
+          // =====================================================
+          // 11. CREATE RESERVED APPOINTMENT
+          // =====================================================
 
           console.log("\n========== BEFORE RESERVE CREATE ==========");
           console.log("Item Name:", itemName);
@@ -1667,7 +1707,6 @@ const createReserveAppointment = async (
 
               qrVerifiedBy: null,
             },
-
             select: {
               id: true,
 
@@ -1701,9 +1740,9 @@ const createReserveAppointment = async (
             throw new AppError("Reservation QR could not be created", 500);
           }
 
-          // =============================================
-          // 11. MULTILINGUAL BOOKING RESERVED NOTIFICATION
-          // =============================================
+          // =====================================================
+          // 12. MULTILINGUAL BOOKING RESERVED NOTIFICATION
+          // =====================================================
 
           const translations = notificationTemplates.BOOKING_RESERVED(
             date,
@@ -1727,21 +1766,20 @@ const createReserveAppointment = async (
 
           console.log("[RESERVE_NOW] Booking reserved notification created");
 
-          // =============================================
-          // 12. RETURN APPOINTMENT FROM TRANSACTION
-          // =============================================
+          // =====================================================
+          // 13. RETURN APPOINTMENT FROM TRANSACTION
+          // =====================================================
 
           return appointment;
         },
-
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         },
       );
 
-      // =================================================
-      // 13. TRANSACTION COMMITTED
-      // =================================================
+      // =====================================================
+      // 14. TRANSACTION COMMITTED
+      // =====================================================
 
       console.log("\n========== RESERVE TRANSACTION COMMITTED ==========");
       console.log("Appointment ID:", result.id);
@@ -1754,9 +1792,9 @@ const createReserveAppointment = async (
       console.log("QR Available:", Boolean(result.qrToken));
       console.log("===================================================");
 
-      // =================================================
-      // 14. RESPONSE
-      // =================================================
+      // =====================================================
+      // 15. RESPONSE
+      // =====================================================
 
       return {
         appointmentId: result.id,

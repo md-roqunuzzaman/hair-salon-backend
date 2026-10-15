@@ -2461,6 +2461,7 @@ const getBranchStaff = async (
       name: true,
       roleTitle: true,
       specialization: true,
+      description: true,
       translations: true,
       avatarObjectKey: true,
     },
@@ -2525,14 +2526,27 @@ const getBranchStaff = async (
 
   const items = await Promise.all(
     staff.map(async (item) => {
+      // -------------------------------------------------
+      // LOCALIZE ROLE TITLE, SPECIALIZATION, DESCRIPTION
+      // -------------------------------------------------
+
       const localizedStaff = getLocalizedContent(item.translations, language, {
         roleTitle: item.roleTitle,
         specialization: item.specialization ?? "",
+        description: item.description ?? "",
       });
+
+      // -------------------------------------------------
+      // GENERATE SIGNED AVATAR URL
+      // -------------------------------------------------
 
       const avatarUrl = item.avatarObjectKey
         ? await uploadService.getImageUrl(item.avatarObjectKey)
         : null;
+
+      // -------------------------------------------------
+      // RESPONSE ITEM
+      // -------------------------------------------------
 
       return {
         id: item.id,
@@ -2542,6 +2556,8 @@ const getBranchStaff = async (
         roleTitle: localizedStaff.roleTitle,
 
         specialization: localizedStaff.specialization || null,
+
+        description: localizedStaff.description || null,
 
         avatarObjectKey: item.avatarObjectKey,
 
@@ -2560,7 +2576,6 @@ const getBranchStaff = async (
     items,
   };
 };
-
 const getEligibleStaffForService = async (
   branchId: string,
   serviceId: string,

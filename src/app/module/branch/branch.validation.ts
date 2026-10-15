@@ -162,39 +162,52 @@ const updateBusinessHoursValidationSchema = z.object({
 });
 
 const updateBookingPolicyValidationSchema = z.object({
-  body: z.object({
-    slotIntervalMinutes: z
-      .number()
-      .int()
-      .positive("Slot interval must be greater than 0"),
+  body: z
+    .object({
+      slotIntervalMinutes: z
+        .number()
+        .int()
+        .positive("Slot interval must be greater than 0"),
 
-    minimumBookingNoticeMinutes: z
-      .number()
-      .int()
-      .min(0, "Minimum booking notice cannot be negative"),
+      minimumBookingNoticeMinutes: z
+        .number()
+        .int()
+        .min(0, "Minimum booking notice cannot be negative"),
 
-    maximumAdvanceBookingDays: z
-      .number()
-      .int()
-      .positive("Maximum advance booking days must be greater than 0"),
+      maximumAdvanceBookingDays: z
+        .number()
+        .int()
+        .positive("Maximum advance booking days must be greater than 0"),
 
-    cancellationCutoffHours: z
-      .number()
-      .int()
-      .min(0, "Cancellation cutoff cannot be negative"),
+      cancellationCutoffHours: z
+        .number()
+        .int()
+        .min(0, "Cancellation cutoff cannot be negative"),
 
-    rescheduleCutoffHours: z
-      .number()
-      .int()
-      .min(0, "Reschedule cutoff cannot be negative"),
+      rescheduleCutoffHours: z
+        .number()
+        .int()
+        .min(0, "Reschedule cutoff cannot be negative"),
 
-    reserveExpiryRule: z.enum(["APPOINTMENT_TIME"]),
+      reserveExpiryRule: z.enum(["APPOINTMENT_TIME"]),
 
-    depositPercentage: z
-      .number()
-      .min(1, "Deposit percentage must be at least 1")
-      .max(100, "Deposit percentage cannot exceed 100"),
-  }),
+      // Merchant can enable one, multiple, or all three methods.
+      allowedBookingMethods: z
+        .array(z.enum(["PAY_NOW", "DEPOSIT", "RESERVE_NOW"]))
+        .min(1, "At least one booking method must be enabled")
+        .max(3, "Maximum three booking methods are allowed")
+        .refine(
+          (methods) => new Set(methods).size === methods.length,
+          "Duplicate booking methods are not allowed",
+        ),
+
+      // Existing deposit percentage setting.
+      depositPercentage: z
+        .number()
+        .min(1, "Deposit percentage must be at least 1")
+        .max(100, "Deposit percentage cannot exceed 100"),
+    })
+    .strict(),
 });
 
 const customerOperationalSearchValidationSchema = z.object({

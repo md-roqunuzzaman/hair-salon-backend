@@ -1,4 +1,5 @@
 import {
+  BookingMethod,
   DayOfWeek,
   ReserveExpiryRule,
 } from "../../../../generated/prisma/enums.js";
@@ -50,11 +51,13 @@ export interface IUpdateBookingPolicyPayload {
 
   reserveExpiryRule: ReserveExpiryRule;
 
-  // Deposit is always enabled.
-  // Only the percentage can be configured.
+  // Merchant-configurable booking methods.
+  // GROUP_PURCHASE is excluded by request validation.
+  allowedBookingMethods: BookingMethod[];
+
+  // Default 10%, configurable by merchant.
   depositPercentage: number;
 }
-
 export interface ICustomerOperationalSearchQuery {
   q: string;
 }

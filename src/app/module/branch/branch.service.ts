@@ -974,20 +974,29 @@ const getBookingPolicy = async (branchId: string) => {
     throw new AppError("Branch not found", 404);
   }
 
+  // =====================================================
+  // 1. GET BRANCH BOOKING POLICY
+  // =====================================================
+
   let bookingPolicy = await prisma.branchBookingPolicy.findUnique({
     where: {
       branchId,
     },
   });
 
-  // ---------------------------------------------------
-  // Safety fallback for old branches created before
-  // automatic booking-policy creation was introduced
-  // ---------------------------------------------------
+  // =====================================================
+  // 2. FALLBACK FOR OLD BRANCHES
+  // =====================================================
 
   if (!bookingPolicy) {
-    bookingPolicy = await prisma.branchBookingPolicy.create({
-      data: {
+    bookingPolicy = await prisma.branchBookingPolicy.upsert({
+      where: {
+        branchId,
+      },
+
+      update: {},
+
+      create: {
         branchId,
 
         slotIntervalMinutes: 30,
@@ -1002,12 +1011,26 @@ const getBookingPolicy = async (branchId: string) => {
 
         reserveExpiryRule: "APPOINTMENT_TIME",
 
+        allowedBookingMethods: ["PAY_NOW", "DEPOSIT", "RESERVE_NOW"],
+
         depositEnabled: true,
 
         depositPercentage: 10,
       },
     });
   }
+
+  // =====================================================
+  // 3. DERIVE DEPOSIT AVAILABILITY
+  // =====================================================
+
+  const allowedBookingMethods = bookingPolicy.allowedBookingMethods;
+
+  const depositEnabled = allowedBookingMethods.includes("DEPOSIT");
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
 
   return {
     slotIntervalMinutes: bookingPolicy.slotIntervalMinutes,
@@ -1022,8 +1045,10 @@ const getBookingPolicy = async (branchId: string) => {
 
     reserveExpiryRule: bookingPolicy.reserveExpiryRule,
 
-    // Deposit is always available
-    depositEnabled: true,
+    allowedBookingMethods,
+
+    // Backward-compatible response field
+    depositEnabled,
 
     depositPercentage:
       bookingPolicy.depositPercentage !== null
@@ -1041,6 +1066,10 @@ const updateBookingPolicy = async (
   payload: IUpdateBookingPolicyPayload,
   userId: string,
 ) => {
+  // =====================================================
+  // 1. CHECK BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
@@ -1052,20 +1081,39 @@ const updateBookingPolicy = async (
   }
 
   // =====================================================
-  // 1. GET EXISTING POLICY
+  // 2. VALIDATE ALLOWED BOOKING METHODS
   // =====================================================
 
-  const existingPolicy = await prisma.branchBookingPolicy.findUnique({
-    where: {
-      branchId,
-    },
-  });
+  const validMethods = ["PAY_NOW", "DEPOSIT", "RESERVE_NOW"];
+
+  if (
+    !Array.isArray(payload.allowedBookingMethods) ||
+    payload.allowedBookingMethods.length === 0 ||
+    payload.allowedBookingMethods.some(
+      (method) => !validMethods.includes(method),
+    ) ||
+    new Set(payload.allowedBookingMethods).size !==
+      payload.allowedBookingMethods.length
+  ) {
+    throw new AppError(
+      "At least one valid, unique booking method must be enabled",
+      400,
+    );
+  }
+
+  const depositEnabled = payload.allowedBookingMethods.includes("DEPOSIT");
 
   // =====================================================
-  // 2. UPDATE / CREATE + AUDIT
+  // 3. UPDATE POLICY + AUDIT LOG
   // =====================================================
 
   const result = await prisma.$transaction(async (tx) => {
+    const existingPolicy = await tx.branchBookingPolicy.findUnique({
+      where: {
+        branchId,
+      },
+    });
+
     const updatedPolicy = await tx.branchBookingPolicy.upsert({
       where: {
         branchId,
@@ -1084,10 +1132,10 @@ const updateBookingPolicy = async (
 
         reserveExpiryRule: payload.reserveExpiryRule,
 
-        // Deposit is always enabled
-        depositEnabled: true,
+        allowedBookingMethods: payload.allowedBookingMethods,
 
-        // Owner can only change percentage
+        depositEnabled,
+
         depositPercentage: payload.depositPercentage,
       },
 
@@ -1106,11 +1154,17 @@ const updateBookingPolicy = async (
 
         reserveExpiryRule: payload.reserveExpiryRule,
 
-        depositEnabled: true,
+        allowedBookingMethods: payload.allowedBookingMethods,
+
+        depositEnabled,
 
         depositPercentage: payload.depositPercentage,
       },
     });
+
+    // =====================================================
+    // 4. AUDIT LOG
+    // =====================================================
 
     await auditLogService.createAuditLog(
       {
@@ -1139,9 +1193,14 @@ const updateBookingPolicy = async (
 
                 reserveExpiryRule: existingPolicy.reserveExpiryRule,
 
+                allowedBookingMethods: existingPolicy.allowedBookingMethods,
+
                 depositEnabled: existingPolicy.depositEnabled,
 
-                depositPercentage: existingPolicy.depositPercentage,
+                depositPercentage:
+                  existingPolicy.depositPercentage !== null
+                    ? Number(existingPolicy.depositPercentage)
+                    : null,
               }
             : null,
 
@@ -1159,13 +1218,17 @@ const updateBookingPolicy = async (
 
             reserveExpiryRule: updatedPolicy.reserveExpiryRule,
 
+            allowedBookingMethods: updatedPolicy.allowedBookingMethods,
+
             depositEnabled: updatedPolicy.depositEnabled,
 
-            depositPercentage: updatedPolicy.depositPercentage,
+            depositPercentage:
+              updatedPolicy.depositPercentage !== null
+                ? Number(updatedPolicy.depositPercentage)
+                : null,
           },
         },
       },
-
       tx,
     );
 

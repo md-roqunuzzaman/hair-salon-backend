@@ -51,6 +51,8 @@ model BranchBookingPolicy {
   reserveExpiryRule           ReserveExpiryRule @default(APPOINTMENT_TIME)
   depositEnabled              Boolean           @default(true)
   depositPercentage           Decimal?          @db.Decimal(5, 2)
+  // Merchant-configurable booking methods
+  allowedBookingMethods       BookingMethod[]   @default([PAY_NOW, DEPOSIT, RESERVE_NOW])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

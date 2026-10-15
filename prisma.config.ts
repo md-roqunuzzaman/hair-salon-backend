@@ -7,6 +7,7 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: env("DATABASE_URL"),
+    // Migrations need session continuity; application traffic can stay pooled.
+    url: process.env.DIRECT_URL || env("DATABASE_URL"),
   },
 });
