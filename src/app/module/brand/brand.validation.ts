@@ -58,6 +58,30 @@ const updateBrandValidationSchema = z.object({
   }),
 });
 
+const hexColorSchema = z
+  .string()
+  .regex(/^#[0-9A-Fa-f]{6}$/, "Color must be a valid HEX value (#RRGGBB)");
+
+const updateBrandThemeValidationSchema = z.object({
+  body: z
+    .object({
+      primaryColor: hexColorSchema.optional(),
+      secondaryColor: hexColorSchema.optional(),
+      backgroundColor: hexColorSchema.optional(),
+      surfaceColor: hexColorSchema.optional(),
+      textColor: hexColorSchema.optional(),
+      mutedTextColor: hexColorSchema.optional(),
+      lineColor: hexColorSchema.optional(),
+      onPrimaryColor: hexColorSchema.optional(),
+    })
+    .strict()
+    .refine(
+      (data) => Object.keys(data).length > 0,
+      "At least one theme color must be provided",
+    ),
+});
+
 export const brandValidation = {
   updateBrandValidationSchema,
+  updateBrandThemeValidationSchema,
 };

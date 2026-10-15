@@ -7,10 +7,13 @@ import { DEFAULT_LANGUAGE, type Language } from "../../utils/language.js";
 import { getLocalizedContent } from "../../utils/localization.js";
 
 import type {
+  IBrandTheme,
   IBrandTranslations,
   IUpdateBrandPayload,
+  IUpdateBrandThemePayload,
 } from "./brand.interface.js";
 import { Prisma } from "../../../../generated/prisma/client.js";
+import { validateBrandThemeContrast } from "./brand-theme.utils.js";
 
 // =====================================================
 // HELPERS
@@ -235,7 +238,127 @@ const updateBrand = async (
   };
 };
 
+// =====================================================
+// GET BRAND THEME
+// =====================================================
+
+const getBrandTheme = async (): Promise<IBrandTheme> => {
+  const brand = await prisma.brand.findFirst({
+    select: {
+      primaryColor: true,
+      secondaryColor: true,
+      backgroundColor: true,
+      surfaceColor: true,
+      textColor: true,
+      mutedTextColor: true,
+      lineColor: true,
+      onPrimaryColor: true,
+    },
+  });
+
+  if (!brand) {
+    throw new AppError("Brand not found", 404);
+  }
+
+  return brand;
+};
+
+// =====================================================
+// UPDATE BRAND THEME
+// =====================================================
+
+const updateBrandTheme = async (
+  payload: IUpdateBrandThemePayload,
+): Promise<IBrandTheme> => {
+  const result = await prisma.$transaction(
+    async (tx) => {
+      // Serialize theme updates for this brand.
+      const rows = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id
+        FROM "Brand"
+        ORDER BY "createdAt" ASC, id ASC
+        LIMIT 1
+        FOR UPDATE
+      `;
+
+      const brandId = rows[0]?.id;
+
+      if (!brandId) {
+        throw new AppError("Brand not found", 404);
+      }
+
+      const brand = await tx.brand.findUniqueOrThrow({
+        where: { id: brandId },
+        select: {
+          primaryColor: true,
+          secondaryColor: true,
+          backgroundColor: true,
+          surfaceColor: true,
+          onPrimaryColor: true,
+          textColor: true,
+          mutedTextColor: true,
+          lineColor: true,
+        },
+      });
+
+      // Merge existing colors with partial PATCH payload.
+      const nextTheme: IBrandTheme = {
+        primaryColor: payload.primaryColor ?? brand.primaryColor,
+
+        secondaryColor: payload.secondaryColor ?? brand.secondaryColor,
+
+        backgroundColor: payload.backgroundColor ?? brand.backgroundColor,
+
+        surfaceColor: payload.surfaceColor ?? brand.surfaceColor,
+
+        textColor: payload.textColor ?? brand.textColor,
+
+        mutedTextColor: payload.mutedTextColor ?? brand.mutedTextColor,
+
+        lineColor: payload.lineColor ?? brand.lineColor,
+
+        onPrimaryColor: payload.onPrimaryColor ?? brand.onPrimaryColor,
+      };
+
+      // Validate final configuration.
+      validateBrandThemeContrast(nextTheme);
+
+      // Save only provided fields.
+      const updatedBrand = await tx.brand.update({
+        where: {
+          id: brandId,
+        },
+
+        data: {
+          ...payload,
+        },
+
+        select: {
+          primaryColor: true,
+          secondaryColor: true,
+          backgroundColor: true,
+          surfaceColor: true,
+          onPrimaryColor: true,
+          textColor: true,
+          mutedTextColor: true,
+          lineColor: true,
+        },
+      });
+
+      return updatedBrand;
+    },
+    {
+      maxWait: 5000,
+      timeout: 10000,
+    },
+  );
+
+  return result;
+};
+
 export const brandService = {
   getBrand,
   updateBrand,
+  getBrandTheme,
+  updateBrandTheme,
 };

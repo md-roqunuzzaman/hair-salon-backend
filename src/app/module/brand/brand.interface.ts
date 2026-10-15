@@ -15,3 +15,16 @@ export interface IUpdateBrandPayload {
   logoObjectKey?: string;
   translations?: IBrandTranslations;
 }
+
+export interface IBrandTheme {
+  primaryColor: string;
+  secondaryColor: string;
+  backgroundColor: string;
+  surfaceColor: string;
+  textColor: string;
+  mutedTextColor: string;
+  lineColor: string;
+  onPrimaryColor: string;
+}
+
+export type IUpdateBrandThemePayload = Partial<IBrandTheme>;

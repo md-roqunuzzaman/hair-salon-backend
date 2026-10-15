@@ -46,7 +46,39 @@ const updateBrand = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+// =====================================================
+// GET BRAND THEME
+// =====================================================
+
+const getBrandTheme = catchAsync(async (req: Request, res: Response) => {
+  const result = await brandService.getBrandTheme();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Brand theme retrieved successfully",
+    data: result,
+  });
+});
+
+// =====================================================
+// UPDATE BRAND THEME
+// =====================================================
+
+const updateBrandTheme = catchAsync(async (req: Request, res: Response) => {
+  const result = await brandService.updateBrandTheme(req.body);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Brand theme updated successfully",
+    data: result,
+  });
+});
+
 export const brandController = {
   getBrand,
   updateBrand,
+  getBrandTheme,
+  updateBrandTheme,
 };

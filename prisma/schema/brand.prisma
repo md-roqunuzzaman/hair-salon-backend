@@ -7,6 +7,15 @@ model Brand {
   logoObjectKey String?
   translations  Json?
 
+  primaryColor    String @default("#0F766E")
+  secondaryColor  String @default("#B45309")
+  backgroundColor String @default("#F3F1EA")
+  surfaceColor    String @default("#FBFAF6")
+  textColor       String @default("#1A1813")
+  mutedTextColor  String @default("#8B8676")
+  lineColor       String @default("#E2DED3")
+  onPrimaryColor  String @default("#FFFFFF")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

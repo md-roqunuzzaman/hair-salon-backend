@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "Brand" ADD COLUMN     "backgroundColor" TEXT NOT NULL DEFAULT '#F3F1EA',
+ADD COLUMN     "onPrimaryColor" TEXT NOT NULL DEFAULT '#FFFFFF',
+ADD COLUMN     "primaryColor" TEXT NOT NULL DEFAULT '#0F766E',
+ADD COLUMN     "secondaryColor" TEXT NOT NULL DEFAULT '#B45309',
+ADD COLUMN     "surfaceColor" TEXT NOT NULL DEFAULT '#FBFAF6';
