@@ -29,24 +29,53 @@ export const calculateRefundEligibility = ({
     throw new AppError("REFUND_NOT_ALLOWED", 409);
   }
 
-  // 2. Only Stripe payments are refundable
-  if (paymentProvider !== PaymentProvider.STRIPE) {
-    throw new AppError("REFUND_NOT_ALLOWED", 409);
-  }
-
-  // 3. Supported payment purposes
+  // 2. Allow Stripe and Wallet refunds
   if (
-    paymentPurpose !== PaymentPurpose.APPOINTMENT &&
-    paymentPurpose !== PaymentPurpose.APPOINTMENT_DEPOSIT &&
-    paymentPurpose !== PaymentPurpose.GROUP_PURCHASE
+    paymentProvider !== PaymentProvider.STRIPE &&
+    paymentProvider !== PaymentProvider.WALLET
   ) {
     throw new AppError("REFUND_NOT_ALLOWED", 409);
   }
 
-  // 4. Calculate remaining refundable balance
+  // 3. Validate supported payment purposes
+  const isAppointmentPayment = paymentPurpose === PaymentPurpose.APPOINTMENT;
+
+  const isDepositPayment =
+    paymentPurpose === PaymentPurpose.APPOINTMENT_DEPOSIT;
+
+  const isGroupPurchasePayment =
+    paymentPurpose === PaymentPurpose.GROUP_PURCHASE;
+
+  if (!isAppointmentPayment && !isDepositPayment && !isGroupPurchasePayment) {
+    throw new AppError("REFUND_NOT_ALLOWED", 409);
+  }
+
+  // 4. Deposits currently use Stripe only.
+  if (isDepositPayment && paymentProvider !== PaymentProvider.STRIPE) {
+    throw new AppError("REFUND_NOT_ALLOWED", 409);
+  }
+
+  // 5. Validate monetary amounts
+  if (
+    !Number.isFinite(paymentAmount) ||
+    !Number.isFinite(alreadyRefunded) ||
+    paymentAmount <= 0 ||
+    alreadyRefunded < 0
+  ) {
+    throw new AppError("INVALID_REFUND_AMOUNT", 400);
+  }
+
   const paymentCents = Math.round(paymentAmount * 100);
   const refundedCents = Math.round(alreadyRefunded * 100);
 
+  if (
+    Math.abs(paymentAmount * 100 - paymentCents) > 0.000001 ||
+    Math.abs(alreadyRefunded * 100 - refundedCents) > 0.000001
+  ) {
+    throw new AppError("INVALID_REFUND_AMOUNT", 400);
+  }
+
+  // 6. Calculate remaining refundable balance
   const remainingCents = paymentCents - refundedCents;
 
   if (remainingCents <= 0) {

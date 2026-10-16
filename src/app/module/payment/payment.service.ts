@@ -2143,18 +2143,415 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   };
 };
 
+const refundWalletPayment = async (
+  paymentId: string,
+  userId: string,
+  payload: IRefundPaymentPayload,
+): Promise<IRefundPaymentResponse> => {
+  // Retry serialization conflicts safely.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          // ==========================================
+          // 1. LOCK PAYMENT ROW
+          // ==========================================
+
+          const lockedRows = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM "Payment"
+            WHERE "id" = ${paymentId}
+            FOR UPDATE
+          `;
+
+          if (lockedRows.length !== 1) {
+            throw new AppError("PAYMENT_NOT_FOUND", 404);
+          }
+
+          // ==========================================
+          // 2. LOAD PAYMENT
+          // ==========================================
+
+          const payment = await tx.payment.findUniqueOrThrow({
+            where: { id: paymentId },
+          });
+
+          if (payment.provider !== PaymentProvider.WALLET) {
+            throw new AppError("REFUND_NOT_ALLOWED", 409);
+          }
+
+          if (
+            payment.status !== PaymentStatus.PAID &&
+            payment.status !== PaymentStatus.PARTIALLY_REFUNDED
+          ) {
+            throw new AppError("REFUND_NOT_ALLOWED", 409);
+          }
+
+          if (
+            payment.purpose !== PaymentPurpose.APPOINTMENT &&
+            payment.purpose !== PaymentPurpose.GROUP_PURCHASE
+          ) {
+            throw new AppError("REFUND_NOT_ALLOWED", 409);
+          }
+
+          // ==========================================
+          // 3. VALIDATE REQUEST
+          // ==========================================
+
+          const refundAmount = new Prisma.Decimal(payload.amount);
+
+          const refundReason = payload.reason?.trim();
+
+          if (
+            !refundAmount.isFinite() ||
+            refundAmount.lte(0) ||
+            !refundAmount.mul(100).isInteger()
+          ) {
+            throw new AppError("REFUND_AMOUNT_INVALID", 400);
+          }
+
+          if (!refundReason) {
+            throw new AppError("REFUND_REASON_REQUIRED", 400);
+          }
+
+          // ==========================================
+          // 4. FIND WALLET
+          // ==========================================
+
+          const wallet = await tx.wallet.findUnique({
+            where: {
+              customerId: payment.customerId,
+            },
+          });
+
+          if (!wallet) {
+            throw new AppError("WALLET_NOT_FOUND", 404);
+          }
+
+          if (wallet.currency !== payment.currency) {
+            throw new AppError("WALLET_CURRENCY_MISMATCH", 409);
+          }
+
+          // ==========================================
+          // 5. IDENTIFY ORIGINAL PAYMENT
+          // ==========================================
+
+          const referenceId =
+            payment.purpose === PaymentPurpose.APPOINTMENT
+              ? payment.appointmentId
+              : payment.groupPurchaseId;
+
+          const originalTransactionType =
+            payment.purpose === PaymentPurpose.APPOINTMENT
+              ? WalletTransactionType.APPOINTMENT_PAYMENT
+              : WalletTransactionType.GROUP_PURCHASE_PAYMENT;
+
+          if (!referenceId) {
+            throw new AppError("WALLET_PAYMENT_REFERENCE_MISSING", 409);
+          }
+
+          // ==========================================
+          // 6. READ ORIGINAL DEDUCTIONS
+          // ==========================================
+
+          const deductions = await tx.walletTransaction.findMany({
+            where: {
+              walletId: wallet.id,
+              referenceId,
+              type: originalTransactionType,
+              amount: { lt: 0 },
+            },
+          });
+
+          const paidSpent = deductions
+            .filter((item) => item.balanceType === BalanceType.PAID)
+            .reduce(
+              (sum, item) => sum.plus(item.amount.negated()),
+              new Prisma.Decimal(0),
+            );
+
+          const bonusSpent = deductions
+            .filter((item) => item.balanceType === BalanceType.BONUS)
+            .reduce(
+              (sum, item) => sum.plus(item.amount.negated()),
+              new Prisma.Decimal(0),
+            );
+
+          const paymentAmount = payment.amount;
+
+          // Do not refund when the original wallet
+          // deduction cannot be reconciled.
+          if (!paidSpent.plus(bonusSpent).equals(paymentAmount)) {
+            throw new AppError("WALLET_PAYMENT_LEDGER_MISMATCH", 409);
+          }
+
+          // ==========================================
+          // 7. CHECK PREVIOUS REFUNDS
+          // ==========================================
+
+          const previousRefunds = await tx.refund.findMany({
+            where: { paymentId },
+            select: {
+              amount: true,
+              status: true,
+            },
+          });
+
+          if (
+            previousRefunds.some((item) => item.status === RefundStatus.PENDING)
+          ) {
+            throw new AppError("REFUND_ALREADY_PENDING", 409);
+          }
+
+          const alreadyRefunded = previousRefunds
+            .filter((item) => item.status === RefundStatus.SUCCEEDED)
+            .reduce(
+              (sum, item) => sum.plus(item.amount),
+              new Prisma.Decimal(0),
+            );
+
+          const totalRefunded = alreadyRefunded.plus(refundAmount);
+
+          if (totalRefunded.gt(paymentAmount)) {
+            throw new AppError("REFUND_AMOUNT_INVALID", 400);
+          }
+
+          // ==========================================
+          // 8. PROPORTIONAL REFUND CALCULATION
+          // ==========================================
+
+          // Work in integer cents to avoid rounding
+          // drift across multiple partial refunds.
+
+          const totalCents = paymentAmount.mul(100).toNumber();
+
+          const paidCents = paidSpent.mul(100).toNumber();
+
+          const refundedBeforeCents = alreadyRefunded.mul(100).toNumber();
+
+          const refundedAfterCents = totalRefunded.mul(100).toNumber();
+
+          if (
+            ![
+              totalCents,
+              paidCents,
+              refundedBeforeCents,
+              refundedAfterCents,
+            ].every(Number.isSafeInteger) ||
+            totalCents <= 0
+          ) {
+            throw new AppError("WALLET_REFUND_ALLOCATION_INVALID", 409);
+          }
+
+          const cumulativePaidAllocation = (refundedCents: number): number => {
+            if (refundedCents === totalCents) {
+              return paidCents;
+            }
+
+            return new Prisma.Decimal(refundedCents)
+              .mul(paidCents)
+              .div(totalCents)
+              .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
+              .toNumber();
+          };
+
+          const paidRefundCents =
+            cumulativePaidAllocation(refundedAfterCents) -
+            cumulativePaidAllocation(refundedBeforeCents);
+
+          const refundCents = refundAmount.mul(100).toNumber();
+
+          const bonusRefundCents = refundCents - paidRefundCents;
+
+          if (
+            paidRefundCents < 0 ||
+            bonusRefundCents < 0 ||
+            !Number.isSafeInteger(paidRefundCents) ||
+            !Number.isSafeInteger(bonusRefundCents)
+          ) {
+            throw new AppError("WALLET_REFUND_ALLOCATION_INVALID", 409);
+          }
+
+          const paidRefund = new Prisma.Decimal(paidRefundCents).div(100);
+
+          const bonusRefund = new Prisma.Decimal(bonusRefundCents).div(100);
+
+          // ==========================================
+          // 9. CREATE REFUND RECORD
+          // ==========================================
+
+          const refundedAt = new Date();
+
+          const refund = await tx.refund.create({
+            data: {
+              paymentId,
+              amount: refundAmount,
+              reason: refundReason,
+              status: RefundStatus.SUCCEEDED,
+              refundedAt,
+            },
+          });
+
+          // ==========================================
+          // 10. RESTORE WALLET BALANCES
+          // ==========================================
+
+          await tx.wallet.update({
+            where: {
+              id: wallet.id,
+            },
+            data: {
+              paidBalance: {
+                increment: paidRefund,
+              },
+              bonusBalance: {
+                increment: bonusRefund,
+              },
+            },
+          });
+
+          // ==========================================
+          // 11. WALLET REFUND LEDGER
+          // ==========================================
+
+          if (paidRefund.gt(0)) {
+            await tx.walletTransaction.create({
+              data: {
+                walletId: wallet.id,
+                type: WalletTransactionType.REFUND,
+                balanceType: BalanceType.PAID,
+                amount: paidRefund,
+                referenceId: refund.id,
+              },
+            });
+          }
+
+          if (bonusRefund.gt(0)) {
+            await tx.walletTransaction.create({
+              data: {
+                walletId: wallet.id,
+                type: WalletTransactionType.REFUND,
+                balanceType: BalanceType.BONUS,
+                amount: bonusRefund,
+                referenceId: refund.id,
+              },
+            });
+          }
+
+          // ==========================================
+          // 12. UPDATE PAYMENT STATUS
+          // ==========================================
+
+          const fullyRefunded = totalRefunded.equals(paymentAmount);
+
+          const newPaymentStatus = fullyRefunded
+            ? PaymentStatus.REFUNDED
+            : PaymentStatus.PARTIALLY_REFUNDED;
+
+          await tx.payment.update({
+            where: { id: paymentId },
+            data: {
+              status: newPaymentStatus,
+              refundedAt: fullyRefunded ? refundedAt : payment.refundedAt,
+            },
+          });
+
+          // ==========================================
+          // 13. CUSTOMER NOTIFICATION
+          // ==========================================
+
+          const translations = notificationTemplates.REFUND_COMPLETED(
+            refundAmount.toNumber(),
+            payment.currency,
+          );
+
+          await notificationService.createNotification(
+            {
+              userId: payment.customerId,
+              type: "REFUND_COMPLETED",
+              title: translations.en!.title!,
+              message: translations.en!.message!,
+              translations,
+            },
+            tx,
+          );
+
+          // ==========================================
+          // 14. AUDIT LOG
+          // ==========================================
+
+          await auditLogService.createAuditLog(
+            {
+              userId,
+              action: "REFUND_PROCESSED",
+              entityType: "PAYMENT",
+              entityId: paymentId,
+              metadata: {
+                refundId: refund.id,
+                provider: PaymentProvider.WALLET,
+                amount: refundAmount.toNumber(),
+                paidBalanceRefunded: paidRefund.toNumber(),
+                bonusBalanceRefunded: bonusRefund.toNumber(),
+                currency: payment.currency,
+                reason: refundReason,
+                previousPaymentStatus: payment.status,
+                newPaymentStatus,
+                alreadyRefunded: alreadyRefunded.toNumber(),
+                totalRefunded: totalRefunded.toNumber(),
+                fullyRefunded,
+              },
+            },
+            tx,
+          );
+
+          // ==========================================
+          // 15. RESPONSE
+          // ==========================================
+
+          return {
+            paymentId,
+            refundId: refund.id,
+            refundStatus: "SUCCEEDED" as const,
+            amount: refundAmount.toNumber(),
+          };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 15000,
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034" &&
+        attempt < 3
+      ) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError("WALLET_REFUND_RETRY_FAILED", 409);
+};
+
 const refundPayment = async (
   paymentId: string,
   userId: string,
   payload: IRefundPaymentPayload,
 ): Promise<IRefundPaymentResponse> => {
   // =====================================================
-  // 1. FIND PAYMENT
+  // 1. VERIFY PAYMENT EXISTS
   // =====================================================
 
   const payment = await prisma.payment.findUnique({
     where: {
       id: paymentId,
+    },
+    select: {
+      id: true,
     },
   });
 
@@ -2163,282 +2560,20 @@ const refundPayment = async (
   }
 
   // =====================================================
-  // 2. REFUND ALLOWED STATE
+  // 2. ENFORCE REFUND REQUEST APPROVAL WORKFLOW
   // =====================================================
 
-  if (
-    payment.status !== PaymentStatus.PAID &&
-    payment.status !== PaymentStatus.PARTIALLY_REFUNDED
-  ) {
-    throw new AppError("REFUND_NOT_ALLOWED", 409);
-  }
-
-  if (payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT) {
-    throw new AppError("DEPOSIT_PAYMENT_REFUND_NOT_SUPPORTED", 409);
-  }
-
-  if (payment.provider === PaymentProvider.SALON) {
-    throw new AppError("SALON_PAYMENT_REFUND_NOT_SUPPORTED", 409);
-  }
-
-  if (
-    payment.provider !== PaymentProvider.STRIPE ||
-    !payment.providerPaymentId
-  ) {
-    throw new AppError("REFUND_NOT_ALLOWED", 409);
-  }
-
-  // =====================================================
-  // 3. CALCULATE ALREADY REFUNDED
-  // =====================================================
-
-  const refundSummary = await prisma.refund.aggregate({
-    where: {
-      paymentId,
-      status: RefundStatus.SUCCEEDED,
-    },
-    _sum: {
-      amount: true,
-    },
-  });
-
-  const alreadyRefunded = Number(refundSummary._sum.amount ?? 0);
-  const paymentAmount = Number(payment.amount);
-  const remainingRefundable = paymentAmount - alreadyRefunded;
-
-  // =====================================================
-  // 4. VALIDATE REQUESTED AMOUNT
-  // =====================================================
-
-  const refundAmount = payload.amount;
-  const refundReason = payload.reason.trim();
-
-  if (
-    !Number.isFinite(refundAmount) ||
-    refundAmount <= 0 ||
-    !Number.isInteger(refundAmount * 100) ||
-    refundAmount > remainingRefundable
-  ) {
-    throw new AppError("REFUND_AMOUNT_INVALID", 400);
-  }
-
-  if (!refundReason) {
-    throw new AppError("REFUND_REASON_REQUIRED", 400);
-  }
-
-  // =====================================================
-  // 5. CHECK UNRESOLVED REFUND REQUESTS
+  // Direct payment refunds are disabled.
   //
-  // Do not start another refund while a previous Stripe
-  // refund is still pending or needs reconciliation.
-  // =====================================================
+  // Required flow:
+  // 1. Customer creates RefundRequest
+  // 2. Authorized reviewer approves
+  // 3. processApprovedRefund() executes the refund
+  //
+  // This prevents bypassing approval for both
+  // STRIPE and WALLET payments.
 
-  const unresolvedRefund = await prisma.refund.findFirst({
-    where: {
-      paymentId,
-      status: RefundStatus.PENDING,
-    },
-    select: {
-      id: true,
-    },
-  });
-
-  if (unresolvedRefund) {
-    throw new AppError("REFUND_ALREADY_PENDING", 409);
-  }
-
-  // =====================================================
-  // 6. CREATE LOCAL PENDING REFUND
-  // =====================================================
-
-  const localRefund = await prisma.refund.create({
-    data: {
-      paymentId,
-      amount: refundAmount,
-      reason: refundReason,
-      status: RefundStatus.PENDING,
-    },
-  });
-
-  // =====================================================
-  // 7. CREATE STRIPE REFUND
-  // =====================================================
-
-  let stripeRefund: Stripe.Refund;
-
-  try {
-    stripeRefund = await stripe.refunds.create(
-      {
-        payment_intent: payment.providerPaymentId,
-        amount: Math.round(refundAmount * 100),
-        metadata: {
-          paymentId,
-          refundId: localRefund.id,
-          reason: refundReason,
-        },
-      },
-      {
-        idempotencyKey: `refund-${localRefund.id}`,
-      },
-    );
-  } catch (error) {
-    console.error("[Refund Payment] Stripe refund request failed:", error);
-
-    // The request may have reached Stripe even if the
-    // response failed. Keep PENDING for reconciliation.
-    // Do not mark FAILED without verifying Stripe state.
-
-    throw new AppError("STRIPE_OPERATION_FAILED", 502);
-  }
-
-  // =====================================================
-  // 8. STORE STRIPE REFUND ID
-  // =====================================================
-
-  await prisma.refund.update({
-    where: {
-      id: localRefund.id,
-    },
-    data: {
-      providerRefundId: stripeRefund.id,
-    },
-  });
-
-  // =====================================================
-  // 9. HANDLE NON-SUCCEEDED STRIPE REFUND
-  // =====================================================
-
-  if (stripeRefund.status === "failed" || stripeRefund.status === "canceled") {
-    await prisma.refund.update({
-      where: {
-        id: localRefund.id,
-      },
-      data: {
-        status: RefundStatus.FAILED,
-      },
-    });
-
-    throw new AppError("STRIPE_REFUND_FAILED", 502);
-  }
-
-  if (stripeRefund.status !== "succeeded") {
-    // Stripe has accepted the refund but has not
-    // confirmed its completion.
-    //
-    // Keep local refund PENDING.
-    // Do not change payment status.
-    // Do not send REFUND_COMPLETED notification.
-    // A separate reconciliation process must finalize it.
-
-    throw new AppError("STRIPE_REFUND_PENDING", 409);
-  }
-
-  // =====================================================
-  // 10. DETERMINE PARTIAL / FULL REFUND
-  // =====================================================
-
-  const totalRefunded = alreadyRefunded + refundAmount;
-
-  const fullyRefunded =
-    Math.round(totalRefunded * 100) >= Math.round(paymentAmount * 100);
-
-  const newPaymentStatus = fullyRefunded
-    ? PaymentStatus.REFUNDED
-    : PaymentStatus.PARTIALLY_REFUNDED;
-
-  // =====================================================
-  // 11. FINALIZE LOCALLY + NOTIFICATION + AUDIT LOG
-  // =====================================================
-
-  await prisma.$transaction(async (tx) => {
-    const refundedAt = new Date();
-
-    // ===============================================
-    // REFUND -> SUCCEEDED
-    // ===============================================
-
-    await tx.refund.update({
-      where: {
-        id: localRefund.id,
-      },
-      data: {
-        providerRefundId: stripeRefund.id,
-        status: RefundStatus.SUCCEEDED,
-        refundedAt,
-      },
-    });
-
-    // ===============================================
-    // PAYMENT -> REFUNDED / PARTIALLY_REFUNDED
-    // ===============================================
-
-    await tx.payment.update({
-      where: {
-        id: paymentId,
-      },
-      data: {
-        status: newPaymentStatus,
-        refundedAt: fullyRefunded ? refundedAt : payment.refundedAt,
-      },
-    });
-
-    // ===============================================
-    // MULTILINGUAL CUSTOMER NOTIFICATION
-    // ===============================================
-
-    const translations = notificationTemplates.REFUND_COMPLETED(
-      refundAmount,
-      payment.currency,
-    );
-
-    await notificationService.createNotification(
-      {
-        userId: payment.customerId,
-        type: "REFUND_COMPLETED",
-        title: translations.en!.title!,
-        message: translations.en!.message!,
-        translations,
-      },
-      tx,
-    );
-
-    // ===============================================
-    // AUDIT LOG
-    // ===============================================
-
-    await auditLogService.createAuditLog(
-      {
-        userId,
-        action: "REFUND_PROCESSED",
-        entityType: "PAYMENT",
-        entityId: paymentId,
-        metadata: {
-          refundId: localRefund.id,
-          providerRefundId: stripeRefund.id,
-          amount: refundAmount,
-          currency: payment.currency,
-          reason: refundReason,
-          previousPaymentStatus: payment.status,
-          newPaymentStatus,
-          alreadyRefunded,
-          totalRefunded,
-          fullyRefunded,
-        },
-      },
-      tx,
-    );
-  });
-
-  // =====================================================
-  // 12. RESPONSE
-  // =====================================================
-
-  return {
-    paymentId,
-    refundId: localRefund.id,
-    refundStatus: "SUCCEEDED",
-    amount: refundAmount,
-  };
+  throw new AppError("DIRECT_REFUND_DISABLED_USE_REFUND_REQUEST", 403);
 };
 
 export const paymentService = {

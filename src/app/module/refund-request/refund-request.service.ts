@@ -21,6 +21,8 @@ import type {
   IGetRefundRequestsQuery,
   IReviewRefundRequestPayload,
 } from "./refund-request.interface.js";
+import { auditLogService } from "../auditLog/auditLog.service.js";
+import { notificationService } from "../notification/notification.service.js";
 
 const createHongKongDateTime = (date: Date, time: string): Date => {
   const datePart = date.toISOString().slice(0, 10);
@@ -32,10 +34,13 @@ const createRefundRequest = async (
   customerId: string,
   payload: ICreateRefundRequestPayload,
 ): Promise<ICreateRefundRequestResponse> => {
-  // 1. Find payment and related records
+  // =====================================================
+  // 1. FIND PAYMENT AND RELATED RECORDS
+  // =====================================================
 
   const payment = await prisma.payment.findUnique({
     where: { id: payload.paymentId },
+
     include: {
       appointment: {
         include: {
@@ -46,11 +51,13 @@ const createRefundRequest = async (
           },
         },
       },
+
       groupPurchase: {
         include: {
           appointments: true,
         },
       },
+
       refunds: true,
     },
   });
@@ -59,20 +66,32 @@ const createRefundRequest = async (
     throw new AppError("PAYMENT_NOT_FOUND", 404);
   }
 
-  // 2. Verify ownership
+  // =====================================================
+  // 2. VERIFY CUSTOMER OWNERSHIP
+  // =====================================================
 
   if (payment.customerId !== customerId) {
     throw new AppError("REFUND_NOT_ALLOWED", 403);
   }
 
-  if (
-    payment.provider !== PaymentProvider.STRIPE ||
-    !payment.providerPaymentId
-  ) {
+  // =====================================================
+  // 3. VALIDATE PAYMENT PROVIDER
+  // =====================================================
+
+  const isStripe = payment.provider === PaymentProvider.STRIPE;
+  const isWallet = payment.provider === PaymentProvider.WALLET;
+
+  if (!isStripe && !isWallet) {
     throw new AppError("REFUND_NOT_ALLOWED", 409);
   }
 
-  // 3. Validate payment purpose and linked resource
+  if (isStripe && !payment.providerPaymentId) {
+    throw new AppError("REFUND_NOT_ALLOWED", 409);
+  }
+
+  // =====================================================
+  // 4. VALIDATE PAYMENT PURPOSE AND LINKED RESOURCE
+  // =====================================================
 
   if (
     (payment.purpose === PaymentPurpose.APPOINTMENT ||
@@ -89,7 +108,9 @@ const createRefundRequest = async (
     throw new AppError("GROUP_PURCHASE_NOT_FOUND", 404);
   }
 
-  // 4. Check already refunded amount
+  // =====================================================
+  // 5. CALCULATE REFUND ELIGIBILITY
+  // =====================================================
 
   const alreadyRefunded = payment.refunds
     .filter((refund) => refund.status === RefundStatus.SUCCEEDED)
@@ -103,10 +124,8 @@ const createRefundRequest = async (
     alreadyRefunded,
   });
 
-  // 5. Validate appointment refund policy
-
   // =====================================================
-  // 5. VALIDATE APPOINTMENT REFUND POLICY
+  // 6. VALIDATE APPOINTMENT REFUND POLICY
   // =====================================================
 
   if (payment.appointment) {
@@ -128,7 +147,10 @@ const createRefundRequest = async (
       appointmentStatus: appointment.appointmentStatus,
     });
   }
-  // 6. Validate group purchase eligibility
+
+  // =====================================================
+  // 7. VALIDATE GROUP PURCHASE ELIGIBILITY
+  // =====================================================
 
   if (payment.groupPurchase) {
     const purchase = payment.groupPurchase;
@@ -144,7 +166,9 @@ const createRefundRequest = async (
     }
   }
 
-  // 7. Prevent duplicate active requests
+  // =====================================================
+  // 8. PREVENT DUPLICATE ACTIVE REFUND REQUESTS
+  // =====================================================
 
   const existingRequest = await prisma.refundRequest.findFirst({
     where: {
@@ -163,7 +187,9 @@ const createRefundRequest = async (
     throw new AppError("REFUND_REQUEST_ALREADY_EXISTS", 409);
   }
 
-  // 8. Do not accept requests while Stripe refund is unresolved
+  // =====================================================
+  // 9. BLOCK UNRESOLVED REFUNDS
+  // =====================================================
 
   const unresolvedRefund = payment.refunds.some(
     (refund) => refund.status === RefundStatus.PENDING,
@@ -173,17 +199,61 @@ const createRefundRequest = async (
     throw new AppError("REFUND_ALREADY_PENDING", 409);
   }
 
-  // 9. Create refund request
+  // =====================================================
+  // 10. VALIDATE REFUND REASON
+  // =====================================================
 
-  const refundRequest = await prisma.refundRequest.create({
-    data: {
-      customerId,
-      paymentId: payment.id,
-      amount: eligibility.refundableAmount,
-      reason: payload.reason.trim(),
-      status: RefundRequestStatus.PENDING,
+  const reason = payload.reason?.trim();
+
+  if (!reason) {
+    throw new AppError("REFUND_REASON_REQUIRED", 400);
+  }
+
+  // =====================================================
+  // 11. CREATE REFUND REQUEST + AUDIT LOG
+  // =====================================================
+
+  const refundRequest = await prisma.$transaction(
+    async (tx) => {
+      const created = await tx.refundRequest.create({
+        data: {
+          customerId,
+          paymentId: payment.id,
+          amount: eligibility.refundableAmount,
+          reason,
+          status: RefundRequestStatus.PENDING,
+        },
+      });
+
+      await auditLogService.createAuditLog(
+        {
+          userId: customerId,
+          action: "REFUND_REQUEST_CREATED",
+          entityType: "REFUND_REQUEST",
+          entityId: created.id,
+          metadata: {
+            paymentId: payment.id,
+            provider: payment.provider,
+            purpose: payment.purpose,
+            amount: Number(created.amount),
+            currency: payment.currency,
+            status: RefundRequestStatus.PENDING,
+          },
+        },
+        tx,
+      );
+
+      return created;
     },
-  });
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      timeout: 10000,
+    },
+  );
+
+  // =====================================================
+  // 12. RESPONSE
+  // =====================================================
 
   return {
     id: refundRequest.id,
@@ -389,32 +459,91 @@ const reviewRefundRequest = async (
         throw new AppError("REFUND_REQUEST_ALREADY_REVIEWED", 409);
       }
 
+      const currency = request.payment.currency;
+      const amount = Number(request.amount);
+
       // =====================================================
-      // 2. REJECTION
+      // 2. REJECT REQUEST
       // =====================================================
 
       if (decision === "REJECT") {
-        const updated = await tx.refundRequest.update({
+        const reviewNote = payload.reviewNote!.trim();
+        const reviewedAt = new Date();
+
+        const updated = await tx.refundRequest.updateMany({
           where: {
             id: request.id,
+            status: RefundRequestStatus.PENDING,
           },
 
           data: {
             status: RefundRequestStatus.REJECTED,
             reviewedBy: reviewerId,
-            reviewedAt: new Date(),
-            reviewNote: payload.reviewNote!.trim(),
+            reviewedAt,
+            reviewNote,
+          },
+        });
+
+        if (updated.count !== 1) {
+          throw new AppError("REFUND_REQUEST_ALREADY_REVIEWED", 409);
+        }
+
+        // =================================================
+        // 2.1 AUDIT LOG: REFUND REJECTED
+        // =================================================
+
+        await auditLogService.createAuditLog(
+          {
+            userId: reviewerId,
+            action: "REFUND_REQUEST_REJECTED",
+            entityType: "REFUND_REQUEST",
+            entityId: request.id,
+
+            metadata: {
+              customerId: request.customerId,
+              paymentId: request.paymentId,
+              amount,
+              currency,
+              provider: request.payment.provider,
+              previousStatus: RefundRequestStatus.PENDING,
+              newStatus: RefundRequestStatus.REJECTED,
+              reviewNote,
+            },
+          },
+          tx,
+        );
+
+        // =================================================
+        // 2.2 CUSTOMER NOTIFICATION
+        // =================================================
+
+        await notificationService.createNotification(
+          {
+            userId: request.customerId,
+            type: "SYSTEM",
+            title: "Refund Request Rejected",
+            message:
+              `Your refund request for ${currency} ` +
+              `${amount.toFixed(2)} was rejected. ` +
+              `Reason: ${reviewNote}`,
+          },
+          tx,
+        );
+
+        const rejected = await tx.refundRequest.findUniqueOrThrow({
+          where: {
+            id: request.id,
           },
         });
 
         return {
-          id: updated.id,
-          paymentId: updated.paymentId,
-          amount: Number(updated.amount),
-          status: updated.status,
-          reviewedBy: updated.reviewedBy,
-          reviewedAt: updated.reviewedAt,
-          reviewNote: updated.reviewNote,
+          id: rejected.id,
+          paymentId: rejected.paymentId,
+          amount: Number(rejected.amount),
+          status: rejected.status,
+          reviewedBy: rejected.reviewedBy,
+          reviewedAt: rejected.reviewedAt,
+          reviewNote: rejected.reviewNote,
         };
       }
 
@@ -423,6 +552,18 @@ const reviewRefundRequest = async (
       // =====================================================
 
       const payment = request.payment;
+
+      const isStripe = payment.provider === PaymentProvider.STRIPE;
+
+      const isWallet = payment.provider === PaymentProvider.WALLET;
+
+      if (!isStripe && !isWallet) {
+        throw new AppError("REFUND_NOT_ALLOWED", 409);
+      }
+
+      if (isStripe && !payment.providerPaymentId) {
+        throw new AppError("STRIPE_PAYMENT_NOT_FOUND", 409);
+      }
 
       const alreadyRefunded = payment.refunds
         .filter((refund) => refund.status === RefundStatus.SUCCEEDED)
@@ -436,27 +577,26 @@ const reviewRefundRequest = async (
         alreadyRefunded,
       });
 
-      if (!payment.providerPaymentId) {
-        throw new AppError("STRIPE_PAYMENT_NOT_FOUND", 409);
-      }
-
       if (
         payment.refunds.some((refund) => refund.status === RefundStatus.PENDING)
       ) {
         throw new AppError("REFUND_ALREADY_PENDING", 409);
       }
 
-      // Avoid approving a request whose amount is no longer refundable.
+      // =====================================================
+      // 4. VALIDATE REQUESTED AMOUNT
+      // =====================================================
+
       const requestedCents = Math.round(Number(request.amount) * 100);
 
       const refundableCents = Math.round(eligibility.refundableAmount * 100);
 
-      if (requestedCents > refundableCents) {
+      if (requestedCents <= 0 || requestedCents > refundableCents) {
         throw new AppError("REFUND_AMOUNT_EXCEEDS_AVAILABLE_BALANCE", 409);
       }
 
       // =====================================================
-      // 4. APPOINTMENT POLICY
+      // 5. APPOINTMENT REFUND POLICY
       // =====================================================
 
       if (payment.appointment) {
@@ -481,7 +621,11 @@ const reviewRefundRequest = async (
 
         const cutoffHours = policy.cancellationCutoffHours;
 
-        if (!Number.isFinite(cutoffHours) || cutoffHours < 0) {
+        if (
+          !Number.isFinite(cutoffHours) ||
+          cutoffHours < 0 ||
+          Number.isNaN(appointmentDateTime.getTime())
+        ) {
           throw new AppError("INVALID_CANCELLATION_POLICY", 409);
         }
 
@@ -489,16 +633,16 @@ const reviewRefundRequest = async (
           appointmentDateTime.getTime() - cutoffHours * 60 * 60 * 1000,
         );
 
-        // IMPORTANT:
-        // Compare customer's ORIGINAL request time,
-        // not the merchant's review time.
+        // Check original customer request time,
+        // not the merchant review time.
+
         if (request.createdAt >= cancellationDeadline) {
           throw new AppError("CANCELLATION_REFUND_DEADLINE_PASSED", 422);
         }
       }
 
       // =====================================================
-      // 5. GROUP PURCHASE POLICY
+      // 6. GROUP PURCHASE REFUND POLICY
       // =====================================================
 
       if (payment.groupPurchase) {
@@ -514,30 +658,89 @@ const reviewRefundRequest = async (
       }
 
       // =====================================================
-      // 6. APPROVE REQUEST
+      // 7. APPROVE REFUND REQUEST
       // =====================================================
 
-      const updated = await tx.refundRequest.update({
+      const approvedAt = new Date();
+
+      const updated = await tx.refundRequest.updateMany({
         where: {
           id: request.id,
+          status: RefundRequestStatus.PENDING,
         },
 
         data: {
           status: RefundRequestStatus.APPROVED,
           reviewedBy: reviewerId,
-          reviewedAt: new Date(),
+          reviewedAt: approvedAt,
           reviewNote: payload.reviewNote?.trim() || null,
         },
       });
 
+      if (updated.count !== 1) {
+        throw new AppError("REFUND_REQUEST_ALREADY_REVIEWED", 409);
+      }
+
+      // =====================================================
+      // 7.1 AUDIT LOG: REFUND APPROVED
+      // =====================================================
+
+      await auditLogService.createAuditLog(
+        {
+          userId: reviewerId,
+          action: "REFUND_REQUEST_APPROVED",
+          entityType: "REFUND_REQUEST",
+          entityId: request.id,
+
+          metadata: {
+            customerId: request.customerId,
+            paymentId: request.paymentId,
+            amount,
+            currency,
+            provider: payment.provider,
+            previousStatus: RefundRequestStatus.PENDING,
+            newStatus: RefundRequestStatus.APPROVED,
+            reviewNote: payload.reviewNote?.trim() || null,
+          },
+        },
+        tx,
+      );
+
+      // =====================================================
+      // 7.2 CUSTOMER NOTIFICATION
+      // =====================================================
+
+      await notificationService.createNotification(
+        {
+          userId: request.customerId,
+          type: "SYSTEM",
+          title: "Refund Request Approved",
+          message:
+            `Your refund request for ${currency} ` +
+            `${amount.toFixed(2)} has been approved. ` +
+            `Your refund will be processed shortly.`,
+        },
+        tx,
+      );
+
+      // =====================================================
+      // 8. RESPONSE
+      // =====================================================
+
+      const approved = await tx.refundRequest.findUniqueOrThrow({
+        where: {
+          id: request.id,
+        },
+      });
+
       return {
-        id: updated.id,
-        paymentId: updated.paymentId,
-        amount: Number(updated.amount),
-        status: updated.status,
-        reviewedBy: updated.reviewedBy,
-        reviewedAt: updated.reviewedAt,
-        reviewNote: updated.reviewNote,
+        id: approved.id,
+        paymentId: approved.paymentId,
+        amount: Number(approved.amount),
+        status: approved.status,
+        reviewedBy: approved.reviewedBy,
+        reviewedAt: approved.reviewedAt,
+        reviewNote: approved.reviewNote,
       };
     },
     {

@@ -40,12 +40,12 @@ router.get(
   paymentController.getMyPayments,
 );
 
-router.post(
-  "/:paymentId/refund",
-  auth(Role.BRAND_OWNER),
-  validateRequest(paymentValidation.refundPaymentValidationSchema),
-  paymentController.refundPayment,
-);
+// router.post(
+//   "/:paymentId/refund",
+//   auth(Role.BRAND_OWNER),
+//   validateRequest(paymentValidation.refundPaymentValidationSchema),
+//   paymentController.refundPayment,
+// );
 router.get(
   "/:paymentId",
   auth(Role.CUSTOMER, Role.BRANCH_MANAGER, Role.BRAND_OWNER),
