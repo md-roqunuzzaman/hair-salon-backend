@@ -162,20 +162,13 @@ const getPromotions = async (
   const now = new Date();
 
   // =====================================================
-  // 1. CUSTOMER MUST SELECT BRANCH
-  // =====================================================
-
-  if (role === Role.CUSTOMER && !branchId) {
-    throw new AppError("branchId is required for customers", 400);
-  }
-
-  // =====================================================
-  // 2. BUILD PROMOTION FILTER
+  // 1. BUILD PROMOTION FILTER
   // =====================================================
 
   const where: Prisma.PromotionWhereInput = {};
 
   // CUSTOMER: ONLY ACTIVE + CURRENTLY VALID
+  // branchId is optional for customers.
   if (role === Role.CUSTOMER) {
     where.status = PromotionStatus.ACTIVE;
 
@@ -188,13 +181,33 @@ const getPromotions = async (
     };
   }
 
-  // BRANCH FILTER
+  // =====================================================
+  // 2. OPTIONAL BRANCH FILTER
+  // =====================================================
+
+  // When branchId is provided:
+  // - Promotions assigned to the selected branch
+  // - Global promotions (no branch assignments)
+  //
+  // Without branchId:
+  // - Keep existing unfiltered listing behavior
+  // - Customer active/date filters still apply
+
   if (branchId) {
-    where.branches = {
-      some: {
-        branchId,
+    where.OR = [
+      {
+        branches: {
+          some: {
+            branchId,
+          },
+        },
       },
-    };
+      {
+        branches: {
+          none: {},
+        },
+      },
+    ];
   }
 
   // =====================================================
@@ -211,12 +224,11 @@ const getPromotions = async (
     select: {
       id: true,
       name: true,
-
-      // Required for multilingual localization
       translations: true,
 
       minimumTopup: true,
       bonusAmount: true,
+
       startAt: true,
       endAt: true,
       status: true,
@@ -249,7 +261,6 @@ const getPromotions = async (
 
   const items = await Promise.all(
     promotions.map(async (promotion) => {
-      // Localize promotion name
       const localizedPromotion = getLocalizedContent(
         promotion.translations,
         language,
@@ -258,7 +269,6 @@ const getPromotions = async (
         },
       );
 
-      // Generate signed image URL
       const imageUrl = promotion.imageObjectKey
         ? await uploadService.getImageUrl(promotion.imageObjectKey)
         : null;
@@ -266,21 +276,17 @@ const getPromotions = async (
       return {
         id: promotion.id,
 
-        // Localized promotion name
         name: localizedPromotion.name,
 
         minimumTopup: Number(promotion.minimumTopup),
-
         bonusAmount: Number(promotion.bonusAmount),
 
         startAt: promotion.startAt.toISOString(),
-
         endAt: promotion.endAt.toISOString(),
 
         status: promotion.status,
 
         imageObjectKey: promotion.imageObjectKey,
-
         imageUrl,
 
         branchIds: promotion.branches.map((item) => item.branchId),
@@ -314,15 +320,7 @@ const getPromotionById = async (
   const now = new Date();
 
   // =====================================================
-  // 1. CUSTOMER MUST SELECT BRANCH
-  // =====================================================
-
-  if (role === Role.CUSTOMER && !branchId) {
-    throw new AppError("branchId is required for customers", 400);
-  }
-
-  // =====================================================
-  // 2. BUILD FILTER
+  // 1. BUILD FILTER
   // =====================================================
 
   const where: Prisma.PromotionWhereInput = {
@@ -330,6 +328,7 @@ const getPromotionById = async (
   };
 
   // CUSTOMER: ONLY ACTIVE + CURRENTLY VALID
+  // branchId is optional.
   if (role === Role.CUSTOMER) {
     where.status = PromotionStatus.ACTIVE;
 
@@ -342,13 +341,26 @@ const getPromotionById = async (
     };
   }
 
-  // BRANCH FILTER
+  // =====================================================
+  // 2. OPTIONAL BRANCH FILTER
+  // =====================================================
+
+  // Selected branch promotions OR global promotions.
   if (branchId) {
-    where.branches = {
-      some: {
-        branchId,
+    where.OR = [
+      {
+        branches: {
+          some: {
+            branchId,
+          },
+        },
       },
-    };
+      {
+        branches: {
+          none: {},
+        },
+      },
+    ];
   }
 
   // =====================================================
@@ -361,12 +373,11 @@ const getPromotionById = async (
     select: {
       id: true,
       name: true,
-
-      // Required for localization
       translations: true,
 
       minimumTopup: true,
       bonusAmount: true,
+
       startAt: true,
       endAt: true,
       status: true,
@@ -428,21 +439,17 @@ const getPromotionById = async (
   return {
     id: promotion.id,
 
-    // Localized promotion name
     name: localizedPromotion.name,
 
     minimumTopup: Number(promotion.minimumTopup),
-
     bonusAmount: Number(promotion.bonusAmount),
 
     startAt: promotion.startAt.toISOString(),
-
     endAt: promotion.endAt.toISOString(),
 
     status: promotion.status,
 
     imageObjectKey: promotion.imageObjectKey,
-
     imageUrl,
 
     branchIds: promotion.branches.map((item) => item.branchId),

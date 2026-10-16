@@ -102,6 +102,7 @@ const getAvailableSlots = async (
   } = query;
 
   console.log("🔥 AVAILABILITY FUNCTION CALLED", query);
+
   // =====================================================
   // AUTO STAFF MODE
   // =====================================================
@@ -116,7 +117,6 @@ const getAvailableSlots = async (
     where: {
       id: branchId,
     },
-
     include: {
       bookingPolicy: true,
     },
@@ -155,10 +155,9 @@ const getAvailableSlots = async (
   if (dayDifference < 0) {
     return {
       date,
-
       staffSelectionMode: isAutoStaff ? "AUTO" : "SELECTED",
-
       slots: [],
+      unavailableReason: "DATE_IN_PAST",
     };
   }
 
@@ -166,10 +165,9 @@ const getAvailableSlots = async (
   if (dayDifference > bookingPolicy.maximumAdvanceBookingDays) {
     return {
       date,
-
       staffSelectionMode: isAutoStaff ? "AUTO" : "SELECTED",
-
       slots: [],
+      unavailableReason: "BOOKING_WINDOW_EXCEEDED",
     };
   }
 
@@ -184,13 +182,11 @@ const getAvailableSlots = async (
       where: {
         id: serviceId,
       },
-
       include: {
         branches: {
           where: {
             branchId,
           },
-
           select: {
             branchId: true,
           },
@@ -216,13 +212,11 @@ const getAvailableSlots = async (
       where: {
         id: packageId!,
       },
-
       include: {
         branches: {
           where: {
             branchId,
           },
-
           select: {
             branchId: true,
           },
@@ -266,10 +260,9 @@ const getAvailableSlots = async (
   ) {
     return {
       date,
-
       staffSelectionMode: isAutoStaff ? "AUTO" : "SELECTED",
-
       slots: [],
+      unavailableReason: "BRANCH_CLOSED",
     };
   }
 
@@ -292,19 +285,20 @@ const getAvailableSlots = async (
 
   // Fail closed.
   // Branch is open, but no capacity config exists.
+
   console.log("CAPACITY DEBUG", {
     date,
     day,
     branchId,
     hourlyCapacity,
   });
+
   if (!hourlyCapacity) {
     return {
       date,
-
       staffSelectionMode: isAutoStaff ? "AUTO" : "SELECTED",
-
       slots: [],
+      unavailableReason: "CAPACITY_NOT_CONFIGURED",
     };
   }
 
@@ -325,13 +319,11 @@ const getAvailableSlots = async (
       where: {
         id: staffId,
       },
-
       include: {
         branches: {
           where: {
             branchId,
           },
-
           select: {
             branchId: true,
           },
@@ -342,7 +334,6 @@ const getAvailableSlots = async (
               where: {
                 serviceId,
               },
-
               select: {
                 serviceId: true,
               },
@@ -354,7 +345,6 @@ const getAvailableSlots = async (
               where: {
                 packageId,
               },
-
               select: {
                 packageId: true,
               },
@@ -437,10 +427,9 @@ const getAvailableSlots = async (
     if (staffIds.length === 0) {
       return {
         date,
-
         staffSelectionMode: "AUTO",
-
         slots: [],
+        unavailableReason: "NO_ELIGIBLE_STAFF",
       };
     }
   }
@@ -462,7 +451,6 @@ const getAvailableSlots = async (
       },
 
       branchId,
-
       day,
     },
 
@@ -470,12 +458,12 @@ const getAvailableSlots = async (
       {
         startTime: "asc",
       },
-
       {
         staffId: "asc",
       },
     ],
   });
+
   console.log("AVAILABILITY DEBUG", {
     date,
     day,
@@ -484,13 +472,13 @@ const getAvailableSlots = async (
     hourlyCapacity,
     schedules,
   });
+
   if (schedules.length === 0) {
     return {
       date,
-
       staffSelectionMode: isAutoStaff ? "AUTO" : "SELECTED",
-
       slots: [],
+      unavailableReason: "NO_STAFF_SCHEDULE",
     };
   }
 
@@ -518,13 +506,8 @@ const getAvailableSlots = async (
 
   const staffBlockingAppointments = await prisma.appointment.findMany({
     where: {
-      // ---------------------------------------------
-      // IMPORTANT FOR RESCHEDULE
-      //
-      // Current appointment must not block itself.
-      // For normal availability this field is absent,
-      // so behavior stays unchanged.
-      // ---------------------------------------------
+      // Current appointment must not block itself
+      // during rescheduling.
 
       ...(excludeAppointmentId
         ? {
@@ -546,7 +529,6 @@ const getAvailableSlots = async (
             in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
           },
         },
-
         {
           appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
 
@@ -559,9 +541,7 @@ const getAvailableSlots = async (
 
     select: {
       staffId: true,
-
       startTime: true,
-
       endTime: true,
     },
   });
@@ -569,19 +549,12 @@ const getAvailableSlots = async (
   // =====================================================
   // 10. BRANCH-WIDE BLOCKING APPOINTMENTS
   // =====================================================
-  //
+
   // Hourly capacity counts ALL active customers
-  // inside this branch.
-  //
-  // Not only selected/eligible staff appointments.
-  // =====================================================
+  // inside this branch, not only eligible staff.
 
   const branchBlockingAppointments = await prisma.appointment.findMany({
     where: {
-      // ---------------------------------------------
-      // IMPORTANT FOR RESCHEDULE
-      // ---------------------------------------------
-
       ...(excludeAppointmentId
         ? {
             id: {
@@ -600,7 +573,6 @@ const getAvailableSlots = async (
             in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
           },
         },
-
         {
           appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
 
@@ -613,9 +585,7 @@ const getAvailableSlots = async (
 
     select: {
       id: true,
-
       startTime: true,
-
       endTime: true,
     },
   });
@@ -627,25 +597,13 @@ const getAvailableSlots = async (
   const getCapacityUsageForSlot = (slotStart: number, slotEnd: number) => {
     let maxUsed = 0;
 
-    /*
-      Example:
-
-      Appointment:
-      10:30–12:00
-
-      Must have capacity in:
-
-      10:00–11:00
-      AND
-      11:00–12:00
-    */
-
     let hourStart = Math.floor(slotStart / 60) * 60;
 
     while (hourStart < slotEnd) {
       const hourEnd = hourStart + 60;
 
       // Only check hours overlapping branch operations.
+
       if (hourEnd > branchOpenMinutes && hourStart < branchCloseMinutes) {
         const used = branchBlockingAppointments.filter((appointment) => {
           const appointmentStart = parseTimeToMinutes(appointment.startTime);
@@ -655,7 +613,6 @@ const getAvailableSlots = async (
           return intervalsOverlap(
             appointmentStart,
             appointmentEnd,
-
             hourStart,
             hourEnd,
           );
@@ -666,9 +623,7 @@ const getAvailableSlots = async (
         if (used >= maxBookingsPerHour) {
           return {
             available: false,
-
             used,
-
             remaining: 0,
           };
         }
@@ -682,11 +637,7 @@ const getAvailableSlots = async (
 
       used: maxUsed,
 
-      remaining: Math.max(
-        maxBookingsPerHour - maxUsed,
-
-        0,
-      ),
+      remaining: Math.max(maxBookingsPerHour - maxUsed, 0),
     };
   };
 
@@ -721,7 +672,6 @@ const getAvailableSlots = async (
       const end = start + durationMinutes;
 
       const startTime = minutesToTime(start);
-
       const endTime = minutesToTime(end);
 
       // ---------------------------------------------
@@ -747,13 +697,7 @@ const getAvailableSlots = async (
 
         const unavailableEnd = parseTimeToMinutes(item.endTime);
 
-        return intervalsOverlap(
-          start,
-          end,
-
-          unavailableStart,
-          unavailableEnd,
-        );
+        return intervalsOverlap(start, end, unavailableStart, unavailableEnd);
       });
 
       if (hasUnavailabilityConflict) {
@@ -774,13 +718,7 @@ const getAvailableSlots = async (
 
           const appointmentEnd = parseTimeToMinutes(appointment.endTime);
 
-          return intervalsOverlap(
-            start,
-            end,
-
-            appointmentStart,
-            appointmentEnd,
-          );
+          return intervalsOverlap(start, end, appointmentStart, appointmentEnd);
         },
       );
 
@@ -804,7 +742,6 @@ const getAvailableSlots = async (
 
       candidateSlots.push({
         startTime,
-
         endTime,
 
         staffId: schedule.staffId,
@@ -813,9 +750,7 @@ const getAvailableSlots = async (
 
         capacity: {
           maxBookingsPerHour,
-
           used: capacity.used,
-
           remaining: capacity.remaining,
         },
 
@@ -827,22 +762,9 @@ const getAvailableSlots = async (
   // =====================================================
   // 13. AUTO / ANY STAFF MODE
   // =====================================================
-  //
-  // Example:
-  //
-  // Alex → 10:00
-  // Amy  → 10:00
-  // John → 10:00
-  //
-  // Customer should see:
-  //
-  // 10:00
-  //
-  // only once.
-  //
-  // The slot still contains one eligible candidate staffId,
-  // which is later rechecked inside appointment transaction.
-  // =====================================================
+
+  // Multiple staff can have the same slot.
+  // Customer should see that slot only once.
 
   let slots: IAvailabilitySlot[];
 
@@ -886,9 +808,15 @@ const getAvailableSlots = async (
     staffSelectionMode: isAutoStaff ? "AUTO" : "SELECTED",
 
     slots,
+
+    // Only include reason when no slots are available.
+    ...(slots.length === 0
+      ? {
+          unavailableReason: "NO_AVAILABLE_SLOTS" as const,
+        }
+      : {}),
   };
 };
-
 export const AvailabilityService = {
   getAvailableSlots,
 };
