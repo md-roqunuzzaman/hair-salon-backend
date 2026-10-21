@@ -42,6 +42,9 @@ export const auth = (...requiredRoles: Role[]) => {
     }
 
     const { userId, email } = verifiedToken.data as JwtPayload;
+    if (typeof userId !== "string" || !userId.trim()) {
+      throw new AppError("Authentication token is invalid. Please log in again", 401);
+    }
 
     const user = await prisma.user.findUnique({
       where: {

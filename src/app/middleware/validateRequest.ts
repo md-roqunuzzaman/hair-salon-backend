@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { catchAsync } from "../utils/catchAsync.js";
 import { AppError } from "../utils/app-error.js";
+import { validationDetails } from "../utils/normalize-error.js";
 
 export const validateRequest = (zodSchema: z.ZodObject) => {
   return catchAsync(async (req: Request, res: Response, next: NextFunction) => {
@@ -11,7 +12,8 @@ export const validateRequest = (zodSchema: z.ZodObject) => {
     });
 
     if (!result.success) {
-      throw new AppError(result.error.issues[0].message, 400);
+      const details = validationDetails(result.error.issues);
+      throw new AppError(details[0]?.message ?? "Invalid request", 400, details);
     }
 
     req.body = result.data.body;

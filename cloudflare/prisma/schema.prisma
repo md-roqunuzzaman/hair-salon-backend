@@ -1,0 +1,1013 @@
+model Appointment {
+  id String @id @default(uuid())
+
+  customerId String
+  branchId   String
+  staffId    String
+
+  serviceId       String?
+  packageId       String?
+  groupPurchaseId String?
+
+  bookingMethod     BookingMethod
+  appointmentStatus AppointmentStatus
+  paymentStatus     PaymentStatus
+
+  date      DateTime
+  startTime String
+  endTime   String
+
+  price           BigInt 
+  currency        String  @default("HKD")
+  durationMinutes Int
+
+  itemName             String
+  itemNameTranslations Json?
+
+  holdExpiresAt DateTime?
+
+  qrToken      String?   @unique
+  qrVerifiedAt DateTime?
+  qrVerifiedBy String?
+
+  completedAt        DateTime?
+  completionNotes    String?
+  cancelledAt        DateTime?
+  cancellationReason String?
+  noShowAt           DateTime?
+  noShowReason       String?
+
+  customer User @relation("CustomerAppointments", fields: [customerId], references: [id], onDelete: Restrict)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  package Package? @relation(fields: [packageId], references: [id], onDelete: Restrict)
+
+  // Group Purchase Appointment Booking
+  groupPurchase GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
+
+  verifiedByUser User? @relation("AppointmentQrVerifier", fields: [qrVerifiedBy], references: [id], onDelete: SetNull)
+
+  depositPercentage BigInt? 
+  depositAmount     BigInt? 
+  remainingAmount   BigInt? 
+
+  payments Payment[]
+  review   Review?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([branchId])
+  @@index([staffId])
+  @@index([serviceId])
+  @@index([packageId])
+  @@index([groupPurchaseId])
+  @@index([date])
+  @@index([staffId, date])
+  @@index([appointmentStatus])
+  @@index([paymentStatus])
+  @@index([holdExpiresAt])
+}
+
+model AuditLog {
+  id String @id @default(uuid())
+
+  userId String?
+
+  action String
+
+  entityType String
+
+  entityId String?
+
+  metadata Json?
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
+  @@index([entityId])
+  @@index([createdAt])
+}
+
+model Branch {
+  id               String                 @id @default(uuid())
+  name             String
+  address          String
+  phone            String?
+  description      String?
+  imageObjectKey   String?
+  translations     Json?
+  status           BranchStatus           @default(ACTIVE)
+  bookingPolicy    BranchBookingPolicy?
+  businessHours    BranchBusinessHour[]
+  hourlyCapacities BranchHourlyCapacity[]
+  services         ServiceBranch[]
+  packages         PackageBranch[]
+  staff            StaffBranch[]
+  managers         BranchManagerBranch[]
+  staffSchedules   StaffSchedule[]
+  appointments     Appointment[]
+  promotions       PromotionBranch[]
+  reviews          Review[]
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+}
+
+model BranchBusinessHour {
+  id       String    @id @default(uuid())
+  branchId String
+  day      DayOfWeek
+
+  isClosed  Boolean @default(false)
+  openTime  String?
+  closeTime String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, day])
+}
+
+model BranchBookingPolicy {
+  id       String @id @default(uuid())
+  branchId String @unique
+
+  slotIntervalMinutes         Int               @default(5)
+  minimumBookingNoticeMinutes Int               @default(120)
+  maximumAdvanceBookingDays   Int               @default(30)
+  cancellationCutoffHours     Int               @default(12)
+  rescheduleCutoffHours       Int               @default(12)
+  reserveExpiryRule           ReserveExpiryRule @default(APPOINTMENT_TIME)
+  depositEnabled              Boolean           @default(true)
+  depositPercentage           BigInt?          
+  // Merchant-configurable booking methods
+  allowedBookingMethods       Json   @default("[\"PAY_NOW\",\"DEPOSIT\",\"RESERVE_NOW\"]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+}
+
+model BranchManagerBranch {
+  userId   String
+  branchId String
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([userId, branchId])
+  @@index([branchId])
+}
+
+model BranchHourlyCapacity {
+  id String @id @default(uuid())
+
+  branchId String
+  day      DayOfWeek
+
+  maxBookingsPerHour Int
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([branchId, day])
+  @@index([branchId])
+}
+
+model Brand {
+  id            String  @id @default(uuid())
+  name          String
+  description   String?
+  phone         String?
+  email         String?
+  logoObjectKey String?
+  translations  Json?
+
+  primaryColor    String @default("#0F766E")
+  secondaryColor  String @default("#B45309")
+  backgroundColor String @default("#F3F1EA")
+  surfaceColor    String @default("#FBFAF6")
+  textColor       String @default("#1A1813")
+  mutedTextColor  String @default("#8B8676")
+  lineColor       String @default("#E2DED3")
+  onPrimaryColor  String @default("#FFFFFF")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum Role {
+  CUSTOMER
+  STAFF
+  BRANCH_MANAGER
+  BRAND_OWNER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum BranchStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum ReserveExpiryRule {
+  APPOINTMENT_TIME
+}
+
+enum ServiceStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum PackageType {
+  STANDARD_SERVICE_PACKAGE
+  GROUP_PURCHASE_PACKAGE
+}
+
+enum PackageStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ListingStatus {
+  LISTED
+  DELISTED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  PARTIALLY_PAID
+}
+
+enum StaffStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum StaffUnavailabilityType {
+  BREAK
+  TIME_OFF
+  LEAVE
+  BLOCKED
+}
+
+enum BookingMethod {
+  PAY_NOW
+  RESERVE_NOW
+  DEPOSIT
+  GROUP_PURCHASE
+}
+
+enum AppointmentStatus {
+  PENDING_PAYMENT
+  RESERVED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  EXPIRED
+}
+
+enum PaymentProvider {
+  STRIPE
+  SALON
+  WALLET
+}
+
+enum PaymentPurpose {
+  APPOINTMENT
+  GROUP_PURCHASE
+  WALLET_TOP_UP
+  APPOINTMENT_DEPOSIT
+  APPOINTMENT_REMAINING
+}
+
+enum SalonPaymentMethod {
+  CASH
+  CARD
+  FPS
+  OTHER
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+enum WalletTransactionType {
+  TOP_UP
+  BONUS
+  APPOINTMENT_PAYMENT
+  GROUP_PURCHASE_PAYMENT
+  REFUND
+  ADJUSTMENT
+}
+
+enum BalanceType {
+  PAID
+  BONUS
+}
+
+enum WalletTopupStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum PromotionStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ReviewModerationStatus {
+  PENDING
+  VISIBLE
+  HIDDEN
+}
+
+model GroupPurchase {
+  id         String @id @default(uuid())
+  customerId String
+  packageId  String
+
+  quantity  Int
+  unitPrice BigInt 
+  amount    BigInt 
+
+  paymentStatus PaymentStatus @default(PENDING)
+
+  reservationExpiresAt DateTime?
+  purchasedAt          DateTime?
+
+  customer User      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  package  Package   @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  payments Payment[]
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  appointments Appointment[]
+
+  @@index([customerId])
+  @@index([packageId])
+  @@index([paymentStatus])
+  @@index([reservationExpiresAt])
+}
+
+model Notification {
+  id           String  @id @default(uuid())
+  userId       String
+  type         String
+  title        String
+  message      String
+  isRead       Boolean @default(false)
+  translations Json?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+}
+
+model Package {
+  id           String      @id @default(uuid())
+  type         PackageType
+  name         String
+  description  String?
+  translations Json?
+
+  // =====================================================
+  // PACKAGE DISPLAY INFORMATION
+  // =====================================================
+
+  validDays      Int?
+  applicableFor  Json @default("[]")
+  purchaseNotice Json @default("[]")
+  howToUse       Json @default("[]")
+
+  // =====================================================
+  // PRICING
+  // =====================================================
+
+  regularPrice    BigInt 
+  packagePrice    BigInt 
+  durationMinutes Int
+
+  status        PackageStatus @default(ACTIVE)
+  listingStatus ListingStatus @default(LISTED)
+
+  // =====================================================
+  // GROUP PURCHASE SETTINGS
+  // =====================================================
+
+  capacity                 Int?
+  soldQuantity             Int       @default(0)
+  reservedQuantity         Int       @default(0)
+  purchaseLimitPerCustomer Int?
+  salesStartAt             DateTime?
+  salesEndAt               DateTime?
+
+  // =====================================================
+  // RELATIONS
+  // =====================================================
+
+  groupPurchases GroupPurchase[]
+  staff          StaffPackage[]
+  appointments   Appointment[]
+  promotions     PromotionPackage[]
+
+  services PackageService[]
+  branches PackageBranch[]
+  images   PackageImage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PackageService {
+  packageId String
+  serviceId String
+
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  @@id([packageId, serviceId])
+  @@index([serviceId])
+}
+
+model PackageBranch {
+  packageId String
+  branchId  String
+
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([packageId, branchId])
+  @@index([branchId])
+}
+
+model PackageImage {
+  id        String @id @default(uuid())
+  packageId String
+  objectKey String
+
+  isPrimary Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([packageId])
+}
+
+model Payment {
+  id String @id @default(uuid())
+
+  customerId      String
+  appointmentId   String?
+  groupPurchaseId String?
+
+  purpose  PaymentPurpose
+  provider PaymentProvider @default(STRIPE)
+
+  salonPaymentMethod SalonPaymentMethod?
+
+  amount   BigInt 
+  currency String  @default("HKD")
+
+  status PaymentStatus @default(PENDING)
+
+  providerPaymentId String? @unique
+
+  paidAt     DateTime?
+  failedAt   DateTime?
+  refundedAt DateTime?
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+
+  groupPurchase GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
+
+  refunds Refund[]
+
+  walletTopupId String?
+  walletTopup   WalletTopup? @relation(fields: [walletTopupId], references: [id], onDelete: Restrict)
+
+  refundRequests RefundRequest[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([walletTopupId])
+  @@index([customerId])
+  @@index([appointmentId])
+  @@index([groupPurchaseId])
+  @@index([status])
+}
+
+model StripeWebhookEvent {
+  id String @id
+
+  type String
+
+  processedAt DateTime @default(now())
+}
+
+model Refund {
+  id String @id @default(uuid())
+
+  paymentId String
+
+  providerRefundId String? @unique
+
+  amount BigInt 
+
+  reason String
+
+  status RefundStatus @default(PENDING)
+
+  refundedAt DateTime?
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  refundRequest RefundRequest?
+
+  @@index([paymentId])
+  @@index([status])
+}
+
+model Promotion {
+  id String @id @default(uuid())
+
+  name String
+
+  minimumTopup BigInt 
+  bonusAmount  BigInt 
+
+  startAt DateTime
+  endAt   DateTime
+
+  status PromotionStatus @default(ACTIVE)
+
+  imageObjectKey String?
+
+  branches     PromotionBranch[]
+  services     PromotionService[]
+  packages     PromotionPackage[]
+  walletTopups WalletTopup[]
+  translations Json?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@index([status])
+  @@index([startAt])
+  @@index([endAt])
+}
+
+model PromotionBranch {
+  promotionId String
+  branchId    String
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([promotionId, branchId])
+  @@index([branchId])
+}
+
+model PromotionService {
+  promotionId String
+  serviceId   String
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([promotionId, serviceId])
+  @@index([serviceId])
+}
+
+model PromotionPackage {
+  promotionId String
+  packageId   String
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@id([promotionId, packageId])
+  @@index([packageId])
+}
+
+enum RefundRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model RefundRequest {
+  id String @id @default(uuid())
+
+  customerId String
+  paymentId  String
+
+  amount BigInt 
+  reason String
+
+  status RefundRequestStatus @default(PENDING)
+
+  reviewedBy String?
+  reviewedAt DateTime?
+  reviewNote String?
+
+  refundId String? @unique
+
+  customer User  @relation("CustomerRefundRequests", fields: [customerId], references: [id], onDelete: Restrict)
+  reviewer User? @relation("ReviewedRefundRequests", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund  Refund? @relation(fields: [refundId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([paymentId])
+  @@index([status])
+}
+
+model Review {
+  id String @id @default(uuid())
+
+  customerId    String
+  appointmentId String @unique
+  branchId      String
+  staffId       String
+
+  rating  Int
+  comment String?
+
+  moderationStatus ReviewModerationStatus @default(PENDING)
+  moderationReason String?
+
+  replyText   String?
+  repliedAt   DateTime?
+  repliedById String?
+
+  customer  User  @relation("CustomerReviews", fields: [customerId], references: [id], onDelete: Cascade)
+  repliedBy User? @relation("ReviewRepliedBy", fields: [repliedById], references: [id], onDelete: SetNull)
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  images ReviewImage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([branchId])
+  @@index([staffId])
+  @@index([rating])
+  @@index([moderationStatus])
+  @@index([repliedById])
+}
+
+model ReviewImage {
+  id String @id @default(uuid())
+
+  reviewId  String
+  objectKey String
+
+  sortOrder Int @default(0)
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([reviewId])
+}
+
+generator client {
+  provider = "prisma-client"
+  output = "../../generated/sqlite"
+  runtime = "cloudflare"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Service {
+  id              String        @id @default(uuid())
+  name            String
+  description     String?
+  price           BigInt       
+  durationMinutes Int
+  status          ServiceStatus @default(ACTIVE)
+
+  // Service display information
+  isPopular    Boolean  @default(false)
+  processSteps Json @default("[]")
+  bookingNotes Json @default("[]")
+
+  images       ServiceImage[]
+  branches     ServiceBranch[]
+  packages     PackageService[]
+  staff        StaffService[]
+  appointments Appointment[]
+  promotions   PromotionService[]
+
+  // Multilingual support
+  translations Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ServiceImage {
+  id        String @id @default(uuid())
+  serviceId String
+  objectKey String
+
+  isPrimary Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([serviceId])
+}
+
+model ServiceBranch {
+  serviceId String
+  branchId  String
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([serviceId, branchId])
+  @@index([branchId])
+}
+
+model Staff {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  name            String
+  email           String  @unique
+  phone           String?
+  roleTitle       String
+  specialization  String?
+  description     String?
+  avatarObjectKey String?
+  translations    Json?
+
+  status StaffStatus @default(ACTIVE)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  branches       StaffBranch[]
+  services       StaffService[]
+  packages       StaffPackage[]
+  schedule       StaffSchedule[]
+  unavailability StaffUnavailability[]
+  appointments   Appointment[]
+  reviews        Review[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model StaffBranch {
+  staffId  String
+  branchId String
+
+  staff  Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([staffId, branchId])
+  @@index([branchId])
+}
+
+model StaffService {
+  staffId   String
+  serviceId String
+
+  staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([staffId, serviceId])
+  @@index([serviceId])
+}
+
+model StaffPackage {
+  staffId   String
+  packageId String
+
+  staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([staffId, packageId])
+  @@index([packageId])
+}
+
+model StaffSchedule {
+  id        String    @id @default(uuid())
+  staffId   String
+  branchId  String
+  day       DayOfWeek
+  startTime String
+  endTime   String
+
+  staff  Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([staffId, branchId, day])
+  @@index([staffId])
+  @@index([branchId])
+}
+
+model StaffUnavailability {
+  id        String                  @id @default(uuid())
+  staffId   String
+  type      StaffUnavailabilityType
+  date      DateTime
+  startTime String
+  endTime   String
+  reason    String?
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([date])
+  @@index([staffId, date])
+}
+
+model User {
+  id                     String                @id @default(uuid())
+  name                   String
+  email                  String                @unique
+  phone                  String?               @unique
+  passwordHash           String
+  preferredLanguage      String                @default("en")
+  role                   Role                  @default(CUSTOMER)
+  status                 UserStatus            @default(ACTIVE)
+  groupPurchases         GroupPurchase[]
+  mustChangePassword     Boolean               @default(false)
+  avatarObjectKey        String?
+  staffProfile           Staff?
+  managedBranches        BranchManagerBranch[]
+  appointments           Appointment[]         @relation("CustomerAppointments")
+  verifiedAppointments   Appointment[]         @relation("AppointmentQrVerifier")
+  payments               Payment[]
+  wallet                 Wallet?
+  reviews                Review[]              @relation("CustomerReviews")
+  reviewReplies          Review[]              @relation("ReviewRepliedBy")
+  notifications          Notification[]
+  auditLogs              AuditLog[]
+  refundRequests         RefundRequest[]       @relation("CustomerRefundRequests")
+  reviewedRefundRequests RefundRequest[]       @relation("ReviewedRefundRequests")
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+}
+
+model Wallet {
+  id String @id @default(uuid())
+
+  customerId String @unique
+
+  paidBalance  BigInt @default(0) 
+  bonusBalance BigInt @default(0) 
+
+  currency String @default("HKD")
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  transactions WalletTransaction[]
+  topups       WalletTopup[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+}
+
+model WalletTransaction {
+  id String @id @default(uuid())
+
+  walletId String
+
+  type WalletTransactionType
+
+  balanceType BalanceType
+
+  amount BigInt 
+
+  referenceId String?
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+
+  @@index([walletId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model WalletTopup {
+  id String @id @default(uuid())
+
+  walletId String
+
+  amount         BigInt 
+  potentialBonus BigInt @default(0) 
+
+  status WalletTopupStatus @default(PENDING)
+
+  providerPaymentId String? @unique
+
+  paidAt   DateTime?
+  failedAt DateTime?
+
+  wallet      Wallet     @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  payments    Payment[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  promotion   Promotion? @relation(fields: [promotionId], references: [id])
+  promotionId String?
+
+  @@index([walletId])
+  @@index([status])
+}

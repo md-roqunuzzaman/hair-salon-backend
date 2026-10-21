@@ -1,3 +1,4 @@
+import { logUnexpectedError } from "../../utils/normalize-error.js";
 import {
   AppointmentStatus,
   BalanceType,
@@ -317,12 +318,20 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
   let event: Stripe.Event;
 
   try {
-    event = stripe.webhooks.constructEvent(
+    event = await stripe.webhooks.constructEventAsync(
       payload,
       signature,
       config.stripe_webhook_secret,
     );
-  } catch {
+  } catch (error) {
+    console.error("STRIPE WEBHOOK VERIFICATION FAILED", {
+      message: error instanceof Error ? error.message : "Unknown error",
+      payloadIsBuffer: Buffer.isBuffer(payload),
+      payloadLength: payload.length,
+      signaturePresent: Boolean(signature),
+      webhookSecretConfigured: Boolean(config.stripe_webhook_secret),
+    });
+
     throw new AppError("Invalid Stripe webhook signature", 400);
   }
 
@@ -516,6 +525,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
             await notificationService.createNotification(
               {
+                appointmentId: appointment.id,
                 userId: appointment.customerId,
                 type: "BOOKING_CONFIRMED",
                 title: translations.en!.title!,
@@ -613,6 +623,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
             await notificationService.createNotification(
               {
+                appointmentId: appointment.id,
                 userId: appointment.customerId,
                 type: "DEPOSIT_RECEIVED",
                 title: translations.en!.title!,
@@ -952,6 +963,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
           await notificationService.createNotification(
             {
+              appointmentId: latePayment.appointmentId ?? undefined,
               userId: latePayment.customerId,
               type: "REFUND_COMPLETED",
               title: translations.en!.title!,
@@ -993,7 +1005,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           },
         });
 
-        console.error("[Late Payment Refund] Automatic refund failed", error);
+        logUnexpectedError(error, {
+          source: "src/app/module/payment/payment.service.ts:996",
+        });
 
         throw new AppError("Late payment automatic refund failed", 502);
       }
@@ -1063,6 +1077,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
             await notificationService.createNotification(
               {
+                appointmentId: currentPayment.appointmentId ?? undefined,
                 userId: currentPayment.customerId,
                 type: "PAYMENT_FAILED",
                 title: translations.en!.title!,
@@ -1342,7 +1357,9 @@ const createGroupPurchaseStripeIntent = async (
       throw error;
     }
 
-    console.error("[Group Purchase Stripe Intent] Error:", error);
+    logUnexpectedError(error, {
+      source: "src/app/module/payment/payment.service.ts:1345",
+    });
 
     throw new AppError(
       "Unable to create Group Purchase Stripe PaymentIntent",
@@ -1864,6 +1881,7 @@ const handleGroupPurchaseStripeEvent = async (
 
       await notificationService.createNotification(
         {
+          appointmentId: payment.appointmentId ?? undefined,
           userId: payment.customerId,
           type: "REFUND_COMPLETED",
           title: translations.en!.title!,
@@ -1889,7 +1907,9 @@ const handleGroupPurchaseStripeEvent = async (
       received: true as const,
     };
   } catch (error) {
-    console.error("[Group Purchase Late Refund] Processing failed:", error);
+    logUnexpectedError(error, {
+      source: "src/app/module/payment/payment.service.ts:1892",
+    });
 
     // Keep webhook unprocessed so Stripe can retry.
     // Do not mark payment REFUNDED before confirmation.
@@ -2467,6 +2487,7 @@ const refundWalletPayment = async (
 
           await notificationService.createNotification(
             {
+              appointmentId: payment.appointmentId ?? undefined,
               userId: payment.customerId,
               type: "REFUND_COMPLETED",
               title: translations.en!.title!,

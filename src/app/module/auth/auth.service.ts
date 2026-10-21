@@ -1,3 +1,4 @@
+import { logUnexpectedError } from "../../utils/normalize-error.js";
 import config from "../../config/index.js";
 import { prisma } from "../../lib/prisma.js";
 import { Role, UserStatus } from "../../../../generated/prisma/client.js";
@@ -571,7 +572,7 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
       html,
     });
   } catch (error) {
-    console.error("Password reset notification email could not be sent", error);
+    logUnexpectedError(error, { source: "src/app/module/auth/auth.service.ts:574" });
   }
 
   return null;

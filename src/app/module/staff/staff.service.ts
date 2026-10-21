@@ -1,3 +1,4 @@
+import { logUnexpectedError } from "../../utils/normalize-error.js";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 
@@ -544,7 +545,7 @@ const createStaff = async (
     // Notification failure must not undo successful
     // staff account creation.
 
-    console.error("Failed to create staff account notification:", error);
+    logUnexpectedError(error, { source: "src/app/module/staff/staff.service.ts:547" });
   }
 
   // =====================================================
@@ -1714,7 +1715,7 @@ const updateStaffStatus = async (
       // Notification failure must not undo
       // a successful staff status update.
 
-      console.error("Failed to create staff status notification:", error);
+      logUnexpectedError(error, { source: "src/app/module/staff/staff.service.ts:1717" });
     }
   }
 
@@ -2007,10 +2008,7 @@ const assignStaffBranches = async (
         translations,
       });
     } catch (error) {
-      console.error(
-        "Failed to create staff branch assignment notification:",
-        error,
-      );
+      logUnexpectedError(error, { source: "src/app/module/staff/staff.service.ts:2010" });
     }
   }
 
@@ -3270,7 +3268,7 @@ const updateStaffSchedule = async (
       // Notification failure must not undo
       // successful schedule update.
 
-      console.error("Failed to create staff schedule notification:", error);
+      logUnexpectedError(error, { source: "src/app/module/staff/staff.service.ts:3273" });
     }
   }
 

@@ -56,10 +56,12 @@ model WalletTopup {
   paidAt   DateTime?
   failedAt DateTime?
 
-  wallet    Wallet    @relation(fields: [walletId], references: [id], onDelete: Restrict)
-  payments  Payment[]
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  wallet      Wallet     @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  payments    Payment[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  promotion   Promotion? @relation(fields: [promotionId], references: [id])
+  promotionId String?
 
   @@index([walletId])
   @@index([status])

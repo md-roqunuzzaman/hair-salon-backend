@@ -29,12 +29,14 @@ export interface IWalletTransactionItem {
   createdAt: string;
 }
 
+// Customer selects a promotion instead of entering an amount
 export interface ICreateWalletTopupPayload {
-  amount: number;
+  promotionId: string;
 }
 
 export interface ICreateWalletTopupResponse {
   topupId: string;
+  promotionId: string;
   amount: number;
   potentialBonus: number;
   stripeClientSecret: string;

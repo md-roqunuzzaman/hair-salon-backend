@@ -1,3 +1,4 @@
+import { logUnexpectedError } from "../../utils/normalize-error.js";
 import {
   AppointmentStatus,
   BookingMethod,
@@ -78,57 +79,42 @@ const testPrismaTransaction = async () => {
     console.log("[DB TEST] SUCCESS:", result);
     console.log("[DB TEST] Duration:", Date.now() - startedAt, "ms");
   } catch (error) {
-    console.error("[DB TEST] FAILED:", error);
+    logUnexpectedError(error, { source: "src/app/module/appointment/appointment.service.ts:81" });
   }
 };
 const expirePendingAppointmentIfNeeded = async (appointmentId: string) => {
-  const now = new Date();
-
-  await prisma.appointment.updateMany({
-    where: {
-      id: appointmentId,
-
-      appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
-
-      paymentStatus: PaymentStatus.PENDING,
-
-      holdExpiresAt: {
-        lte: now,
-      },
-    },
-
-    data: {
-      appointmentStatus: AppointmentStatus.EXPIRED,
-
-      paymentStatus: PaymentStatus.FAILED,
-    },
-  });
+  await expirePendingAppointments(appointmentId);
 };
 
-const expirePendingAppointments = async () => {
-  const now = new Date();
-
-  const result = await prisma.appointment.updateMany({
-    where: {
+const expirePendingAppointments = async (appointmentId?: string) => {
+  return prisma.$transaction(async tx => {
+    const where = {
+      ...(appointmentId && { id: appointmentId }),
       appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
-
       paymentStatus: PaymentStatus.PENDING,
-
-      holdExpiresAt: {
-        lte: now,
-      },
-    },
-
-    data: {
-      appointmentStatus: AppointmentStatus.EXPIRED,
-
-      paymentStatus: PaymentStatus.FAILED,
-    },
-  });
-
-  return {
-    expiredCount: result.count,
-  };
+      holdExpiresAt: { lte: new Date() },
+    };
+    const appointments = await tx.appointment.findMany({ where, select: { id: true, customerId: true }, take: 100 });
+    let expiredCount = 0;
+    for (const appointment of appointments) {
+      const changed = await tx.appointment.updateMany({
+        where: { ...where, id: appointment.id },
+        data: { appointmentStatus: AppointmentStatus.EXPIRED, paymentStatus: PaymentStatus.FAILED },
+      });
+      if (changed.count !== 1) continue;
+      await notificationService.createNotification({
+        userId: appointment.customerId, appointmentId: appointment.id,
+        type: "BOOKING_EXPIRED", title: "Booking expired",
+        message: "Your booking expired because payment was not completed before the deadline. Please make a new booking.",
+        translations: {
+          "zh-CN": { title: "预约已过期", message: "您未在付款期限内完成付款，预约已过期。请重新预约。" },
+          "zh-HK": { title: "預約已過期", message: "您未在付款期限內完成付款，預約已過期。請重新預約。" },
+        },
+      }, tx);
+      expiredCount++;
+    }
+    return { expiredCount };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 };
 
 export const timeToMinutes = (time: string) => {
@@ -326,10 +312,10 @@ export const assertBranchHourlyCapacityAvailable = async (
   // the requested appointment.
   //
   // Example:
-  // 10:30–12:00
+  // 10:30â€“12:00
   // checks:
-  // 10:00–11:00
-  // 11:00–12:00
+  // 10:00â€“11:00
+  // 11:00â€“12:00
   // ---------------------------------------------
 
   let hourStart = Math.floor(requestedStart / 60) * 60;
@@ -365,7 +351,7 @@ const createPayNowAppointment = async (
   customerId: string,
   payload: ICreatePayNowAppointmentPayload,
 ): Promise<IPayNowAppointmentResponse> => {
-  console.log("🔥🔥🔥 CREATE PAY NOW FUNCTION CALLED 🔥🔥🔥");
+  console.log("ðŸ”¥ðŸ”¥ðŸ”¥ CREATE PAY NOW FUNCTION CALLED ðŸ”¥ðŸ”¥ðŸ”¥");
 
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
@@ -724,6 +710,7 @@ const createPayNowAppointment = async (
               itemNameTranslations: true,
             },
           });
+          await notificationService.notifyAppointmentTeam(appointment.id, { type: "BOOKING_CREATED", title: "New booking" }, tx);
 
           console.log("\n========== APPOINTMENT CREATED ==========");
           console.log("Appointment ID:", appointment.id);
@@ -777,7 +764,7 @@ const createPayNowAppointment = async (
         qrAvailable: false,
       };
     } catch (error) {
-      console.error(`[PAY_NOW ERROR] Transaction attempt ${attempt}:`, error);
+      logUnexpectedError(error, { source: "src/app/module/appointment/appointment.service.ts:780" });
 
       const isSerializableConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -811,7 +798,7 @@ const createDepositAppointment = async (
 ): Promise<IDepositAppointmentResponse> => {
   await testPrismaTransaction();
 
-  console.log("🔥🔥🔥 DEPOSIT SERVICE FUNCTION CALLED 🔥🔥🔥");
+  console.log("ðŸ”¥ðŸ”¥ðŸ”¥ DEPOSIT SERVICE FUNCTION CALLED ðŸ”¥ðŸ”¥ðŸ”¥");
 
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
@@ -1248,6 +1235,7 @@ const createDepositAppointment = async (
               itemNameTranslations: true,
             },
           });
+          await notificationService.notifyAppointmentTeam(appointment.id, { type: "BOOKING_CREATED", title: "New booking" }, tx);
 
           console.log("\n========== DEPOSIT APPOINTMENT CREATED ==========");
           console.log("Appointment ID:", appointment.id);
@@ -1311,7 +1299,7 @@ const createDepositAppointment = async (
         qrAvailable: false,
       };
     } catch (error) {
-      console.error(`[DEPOSIT ERROR] Transaction attempt ${attempt}:`, error);
+      logUnexpectedError(error, { source: "src/app/module/appointment/appointment.service.ts:1314" });
 
       const isSerializableConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -1343,7 +1331,7 @@ const createReserveAppointment = async (
   customerId: string,
   payload: ICreateReserveAppointmentPayload,
 ): Promise<IReserveAppointmentResponse> => {
-  console.log("🔥🔥🔥 RESERVE NOW SERVICE FUNCTION CALLED 🔥🔥🔥");
+  console.log("ðŸ”¥ðŸ”¥ðŸ”¥ RESERVE NOW SERVICE FUNCTION CALLED ðŸ”¥ðŸ”¥ðŸ”¥");
 
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
@@ -1751,6 +1739,7 @@ const createReserveAppointment = async (
 
           await notificationService.createNotification(
             {
+              appointmentId: appointment.id,
               userId: customerId,
 
               type: "BOOKING_RESERVED",
@@ -1812,10 +1801,7 @@ const createReserveAppointment = async (
         },
       };
     } catch (error) {
-      console.error(
-        `[RESERVE_NOW ERROR] Transaction attempt ${attempt}:`,
-        error,
-      );
+      logUnexpectedError(error, { source: "src/app/module/appointment/appointment.service.ts:1815" });
 
       const isSerializableConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -2025,7 +2011,7 @@ const getMyAppointments = async (
       !appointment.qrVerifiedAt;
 
     // =====================================================
-    // 6. G8 — PAYMENT SUMMARY
+    // 6. G8 â€” PAYMENT SUMMARY
     // =====================================================
 
     const price = Number(appointment.price);
@@ -2111,7 +2097,7 @@ const getMyAppointments = async (
     }
 
     // =====================================================
-    // 9. G8 — REMAINING BALANCE
+    // 9. G8 â€” REMAINING BALANCE
     // =====================================================
 
     let remainingAmount = amountDue;
@@ -2417,7 +2403,7 @@ const getAppointmentById = async (
     appointment.appointmentStatus === AppointmentStatus.COMPLETED;
 
   // =====================================================
-  // 7. G8 — DEPOSIT INFORMATION
+  // 7. G8 â€” DEPOSIT INFORMATION
   // =====================================================
 
   const price = Number(appointment.price);
@@ -2512,7 +2498,7 @@ const getAppointmentById = async (
   }
 
   // =====================================================
-  // 10. G8 — REMAINING BALANCE
+  // 10. G8 â€” REMAINING BALANCE
   // =====================================================
 
   // Current amount collectible at salon.
@@ -2986,6 +2972,7 @@ const cancelAppointment = async (
 
           await notificationService.createNotification(
             {
+              appointmentId: current.id,
               userId: current.customerId,
 
               type: "BOOKING_CANCELLED",
@@ -3211,6 +3198,7 @@ const rescheduleAppointment = async (
               appointmentStatus: true,
               qrVerifiedAt: true,
               bookingMethod: true,
+              staffId: true,
             },
           });
 
@@ -3296,6 +3284,8 @@ const rescheduleAppointment = async (
 
           await notificationService.createNotification(
             {
+              appointmentId: current.id,
+              previousStaffId: current.staffId,
               userId: current.customerId,
 
               type: "BOOKING_RESCHEDULED",
@@ -3847,6 +3837,7 @@ const verifyQr = async (
 
           await notificationService.createNotification(
             {
+              appointmentId: current.id,
               userId: current.customerId,
 
               type: "BOOKING_CONFIRMED",
@@ -4131,6 +4122,7 @@ const completeAppointment = async (
 
     await notificationService.createNotification(
       {
+        appointmentId: updatedAppointment.id,
         userId: updatedAppointment.customerId,
 
         type: "SERVICE_COMPLETED",
@@ -4351,6 +4343,7 @@ const markNoShow = async (
 
     await notificationService.createNotification(
       {
+        appointmentId: updatedAppointment.id,
         userId: updatedAppointment.customerId,
 
         type: "BOOKING_NO_SHOW",
@@ -5430,6 +5423,7 @@ const recordRemainingPayment = async (
 
     await notificationService.createNotification(
       {
+        appointmentId: updatedAppointment.id,
         userId: updatedAppointment.customerId,
 
         type: "REMAINING_PAYMENT_RECEIVED",

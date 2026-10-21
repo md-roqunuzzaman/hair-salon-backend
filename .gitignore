@@ -6,3 +6,9 @@ dist/
 generated/
 coverage/
 *.log
+cloudflare/.build/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.cloudflare-secrets*.json

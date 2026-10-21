@@ -173,31 +173,16 @@ const createTopup = async (
   customerId: string,
   payload: ICreateWalletTopupPayload,
 ): Promise<ICreateWalletTopupResponse> => {
-  let wallet = await prisma.wallet.findUnique({
-    where: {
-      customerId,
-    },
-  });
+  // =====================================================
+  // 1. VALIDATE SELECTED PROMOTION
+  // =====================================================
 
-  if (!wallet) {
-    wallet = await prisma.wallet.create({
-      data: {
-        customerId,
-        paidBalance: 0,
-        bonusBalance: 0,
-        currency: "HKD",
-      },
-    });
-  }
-
-  const amount = payload.amount;
-
-  // Promotion module not implemented yet.
-  // Keep contract-compatible; later calculate from active eligible promotion.
   const now = new Date();
 
-  const eligiblePromotion = await prisma.promotion.findFirst({
+  const promotion = await prisma.promotion.findFirst({
     where: {
+      id: payload.promotionId,
+
       status: PromotionStatus.ACTIVE,
 
       startAt: {
@@ -208,12 +193,9 @@ const createTopup = async (
         gte: now,
       },
 
-      minimumTopup: {
-        lte: amount,
-      },
-
-      // Wallet top-up has no branch/service/package context.
-      // Therefore only global promotions are eligible.
+      // Wallet top-up promotions must be global.
+      // Promotions linked to branches, services, or
+      // packages cannot be used for wallet top-ups.
       branches: {
         none: {},
       },
@@ -227,55 +209,126 @@ const createTopup = async (
       },
     },
 
-    orderBy: [
-      {
-        bonusAmount: "desc",
-      },
-      {
-        minimumTopup: "desc",
-      },
-      {
-        createdAt: "asc",
-      },
-    ],
-
     select: {
       id: true,
+      minimumTopup: true,
       bonusAmount: true,
     },
   });
 
-  const potentialBonus = eligiblePromotion
-    ? Number(eligiblePromotion.bonusAmount)
-    : 0;
-  const topup = await prisma.walletTopup.create({
-    data: {
-      walletId: wallet.id,
-      amount,
-      potentialBonus,
-      status: WalletTopupStatus.PENDING,
-    },
-  });
+  if (!promotion) {
+    throw new AppError("PROMOTION_NOT_FOUND_OR_NOT_ELIGIBLE", 400);
+  }
 
-  const payment = await prisma.payment.create({
-    data: {
+  // =====================================================
+  // 2. DETERMINE FIXED TOP-UP AMOUNT AND BONUS
+  // =====================================================
+
+  // Customer cannot provide a custom amount.
+  // The selected promotion determines both values.
+
+  const topupAmount = promotion.minimumTopup;
+  const bonusAmount = promotion.bonusAmount;
+
+  if (!topupAmount.isFinite() || topupAmount.lte(0)) {
+    throw new AppError("INVALID_PROMOTION_TOPUP_AMOUNT", 400);
+  }
+
+  if (!bonusAmount.isFinite() || bonusAmount.lt(0)) {
+    throw new AppError("INVALID_PROMOTION_BONUS_AMOUNT", 400);
+  }
+
+  // Convert HKD to Stripe's smallest currency unit.
+  // Use Decimal arithmetic to avoid floating-point issues.
+
+  const amountInCents = topupAmount.mul(100);
+
+  if (
+    !amountInCents.isInteger() ||
+    amountInCents.lt(1) ||
+    amountInCents.gt(99999999)
+  ) {
+    throw new AppError("INVALID_STRIPE_TOPUP_AMOUNT", 400);
+  }
+
+  const amount = Number(topupAmount);
+  const potentialBonus = Number(bonusAmount);
+
+  // =====================================================
+  // 3. FIND OR CREATE CUSTOMER WALLET
+  // =====================================================
+
+  const wallet = await prisma.wallet.upsert({
+    where: {
       customerId,
+    },
 
-      walletTopupId: topup.id,
+    update: {},
 
-      purpose: PaymentPurpose.WALLET_TOP_UP,
-
-      amount,
+    create: {
+      customerId,
+      paidBalance: 0,
+      bonusBalance: 0,
       currency: "HKD",
-
-      status: PaymentStatus.PENDING,
     },
   });
+
+  if (wallet.currency !== "HKD") {
+    throw new AppError("UNSUPPORTED_WALLET_CURRENCY", 400);
+  }
+
+  // =====================================================
+  // 4. CREATE TOP-UP AND PAYMENT RECORDS
+  // =====================================================
+
+  // Store promotion amount and bonus as snapshots.
+  // Future promotion edits must not change this top-up.
+
+  const { topup, payment } = await prisma.$transaction(async (tx) => {
+    const topup = await tx.walletTopup.create({
+      data: {
+        walletId: wallet.id,
+
+        promotionId: promotion.id,
+
+        amount: topupAmount,
+
+        potentialBonus: bonusAmount,
+
+        status: WalletTopupStatus.PENDING,
+      },
+    });
+
+    const payment = await tx.payment.create({
+      data: {
+        customerId,
+
+        walletTopupId: topup.id,
+
+        purpose: PaymentPurpose.WALLET_TOP_UP,
+
+        amount: topupAmount,
+
+        currency: "HKD",
+
+        status: PaymentStatus.PENDING,
+      },
+    });
+
+    return {
+      topup,
+      payment,
+    };
+  });
+
+  // =====================================================
+  // 5. CREATE STRIPE PAYMENT INTENT
+  // =====================================================
 
   try {
     const paymentIntent = await stripe.paymentIntents.create(
       {
-        amount: Math.round(amount * 100),
+        amount: amountInCents.toNumber(),
 
         currency: "hkd",
 
@@ -284,6 +337,7 @@ const createTopup = async (
           topupId: topup.id,
           walletId: wallet.id,
           customerId,
+          promotionId: promotion.id,
           purpose: PaymentPurpose.WALLET_TOP_UP,
         },
 
@@ -302,11 +356,16 @@ const createTopup = async (
       throw new Error("Stripe did not return client secret");
     }
 
+    // =====================================================
+    // 6. SAVE STRIPE PAYMENT INTENT ID
+    // =====================================================
+
     await prisma.$transaction([
       prisma.walletTopup.update({
         where: {
           id: topup.id,
         },
+
         data: {
           providerPaymentId: paymentIntent.id,
         },
@@ -316,24 +375,39 @@ const createTopup = async (
         where: {
           id: payment.id,
         },
+
         data: {
           providerPaymentId: paymentIntent.id,
         },
       }),
     ]);
 
+    // =====================================================
+    // 7. RETURN TOP-UP PAYMENT DETAILS
+    // =====================================================
+
     return {
       topupId: topup.id,
+
+      promotionId: promotion.id,
+
       amount,
+
       potentialBonus,
+
       stripeClientSecret: paymentIntent.client_secret,
     };
-  } catch {
+  } catch (error) {
+    // =====================================================
+    // 8. HANDLE STRIPE OPERATION FAILURE
+    // =====================================================
+
     await prisma.$transaction([
       prisma.walletTopup.update({
         where: {
           id: topup.id,
         },
+
         data: {
           status: WalletTopupStatus.FAILED,
           failedAt: new Date(),
@@ -344,6 +418,7 @@ const createTopup = async (
         where: {
           id: payment.id,
         },
+
         data: {
           status: PaymentStatus.FAILED,
           failedAt: new Date(),
@@ -614,6 +689,7 @@ const payAppointmentWithWallet = async (
 
           await notificationService.createNotification(
             {
+              appointmentId: appointment.id,
               userId: customerId,
               type: "BOOKING_CONFIRMED",
               title: "Booking confirmed",

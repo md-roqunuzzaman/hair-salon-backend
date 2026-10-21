@@ -1,3 +1,4 @@
+import { logUnexpectedError } from "../../utils/normalize-error.js";
 import Stripe from "stripe";
 
 import {
@@ -303,7 +304,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
       },
     );
   } catch (error) {
-    console.error("[Refund Request] Stripe error:", error);
+    logUnexpectedError(error, { source: "src/app/module/refund-request/refund-request.processing.ts:306" });
 
     // Keep PROCESSING + PENDING.
     // Stripe might have accepted the request.

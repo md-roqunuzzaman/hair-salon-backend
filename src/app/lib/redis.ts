@@ -1,3 +1,4 @@
+import { logUnexpectedError } from "../utils/normalize-error.js";
 import { createClient } from "redis";
 import config from "../config/index.js";
 
@@ -11,7 +12,7 @@ export const redisClient = createClient({
 });
 
 redisClient.on("error", (err) => {
-  console.error("Redis Client Error:", err);
+  logUnexpectedError(err, { source: "src/app/lib/redis.ts:14" });
 });
 
 redisClient.on("reconnecting", () => {

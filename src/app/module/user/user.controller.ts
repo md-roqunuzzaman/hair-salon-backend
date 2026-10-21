@@ -4,12 +4,13 @@ import httpStatus from "http-status";
 import { catchAsync } from "../../utils/catchAsync.js";
 import { sendResponse } from "../../utils/sendResponse.js";
 import { userService } from "./user.service.js";
+import { AppError } from "../../utils/app-error.js";
 
 const getMe = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.userId;
 
   if (!userId) {
-    throw new Error("User information is missing");
+    throw new AppError("User information is missing", 401);
   }
 
   const result = await userService.getMe(userId);
@@ -26,7 +27,7 @@ const updateMe = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.userId;
 
   if (!userId) {
-    throw new Error("User information is missing");
+    throw new AppError("User information is missing", 401);
   }
 
   const result = await userService.updateMe(userId, req.body);
@@ -43,7 +44,7 @@ const changePassword = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.userId;
 
   if (!userId) {
-    throw new Error("User information is missing");
+    throw new AppError("User information is missing", 401);
   }
 
   await userService.changePassword(userId, req.body);

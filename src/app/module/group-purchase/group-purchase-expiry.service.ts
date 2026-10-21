@@ -3,6 +3,8 @@ import { PaymentStatus, Prisma } from "../../../../generated/prisma/client.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 
+import { notificationService } from "../notification/notification.service.js";
+
 const BATCH_SIZE = 100;
 
 const expirePendingGroupPurchases = async () => {
@@ -44,6 +46,7 @@ const expirePendingGroupPurchases = async () => {
               select: {
                 id: true,
                 packageId: true,
+                customerId: true,
                 quantity: true,
                 paymentStatus: true,
                 reservationExpiresAt: true,
@@ -104,6 +107,10 @@ const expirePendingGroupPurchases = async () => {
               );
             }
 
+            await notificationService.createNotification({
+              userId: current.customerId, type: "GROUP_PURCHASE_EXPIRED", title: "Group purchase reservation expired",
+              message: "Your group purchase reservation expired because payment was not completed before the deadline.",
+            }, tx);
             return true;
           },
 

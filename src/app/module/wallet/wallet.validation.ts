@@ -46,9 +46,11 @@ const getWalletTransactionsValidationSchema = z.object({
 });
 
 const createWalletTopupValidationSchema = z.object({
-  body: z.object({
-    amount: z.number().positive("Top-up amount must be greater than 0"),
-  }),
+  body: z
+    .object({
+      promotionId: z.string().uuid("Invalid promotion ID"),
+    })
+    .strict(),
 });
 
 const payAppointmentWithWalletValidationSchema = z.object({

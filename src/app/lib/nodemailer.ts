@@ -1,10 +1,11 @@
+import { logUnexpectedError } from "../utils/normalize-error.js";
 import nodemailer from "nodemailer";
 import config from "../config/index.js";
 
 export const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,
+  host: process.env.SMTP_HOST || "smtp.gmail.com",
+  port: Number(process.env.SMTP_PORT || 465),
+  secure: Number(process.env.SMTP_PORT || 465) === 465,
 
   requireTLS: true,
 
@@ -22,11 +23,11 @@ export const verifyEmailConnection = async () => {
   try {
     await transporter.verify();
 
-    console.log("Gmail SMTP connected successfully");
+    console.log("SMTP connected successfully");
 
     return true;
   } catch (error) {
-    console.error("Gmail SMTP connection failed:", error);
+    logUnexpectedError(error, { source: "src/app/lib/nodemailer.ts:29" });
 
     return false;
   }

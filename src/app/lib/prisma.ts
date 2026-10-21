@@ -1,12 +1,10 @@
+import { logUnexpectedError } from "../utils/normalize-error.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../../../generated/prisma/client.js";
 import { env } from "../config/env.js";
 
 const logConnectionError = (error: Error) => {
-  console.error("PostgreSQL connection error", {
-    code: (error as NodeJS.ErrnoException).code,
-    message: error.message,
-  });
+  logUnexpectedError(error, { source: "src/app/lib/prisma.ts:6" });
 };
 
 const adapter = new PrismaPg(

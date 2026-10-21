@@ -1,0 +1,95 @@
+# Cloudflare deployment
+
+The existing Express routes and services have a separate Cloudflare build. The Node/PostgreSQL entry remains available. No Cloudflare account, production database, real payment or customer email was changed during implementation.
+
+## Runtime
+
+| Component | Cloudflare implementation |
+| --- | --- |
+| Express API | Worker with Node HTTP compatibility |
+| Relational data | One SQLite-backed `SalonDatabase` Durable Object |
+| Prisma transactions | Durable Object async storage transactions, including rollback |
+| Redis sessions / OTP / counters | Indexed SQLite session table with expiry and atomic token consumption |
+| Images | R2, using existing signed-upload API contracts |
+| Password emails | TLS SMTP via Workers sockets (port 465); SMTP credentials required |
+| Minute expiry jobs | Worker Cron Trigger through the same database queue |
+
+D1 remains an isolated financial proof under `proof/`; it is **not the production database**. D1's Prisma adapter does not provide the interactive transaction guarantees required by the existing services. This implementation reuses its SQL/result conversion against Durable Object SQL, with real enclosing storage transactions, preserving current service callbacks within Cloudflare.
+
+Money and percentages use integer hundredths with database precision checks and are converted back to the existing Decimal/API representation. Scalar lists use JSON. PostgreSQL row locks are replaced by the singleton request queue plus storage transactions. HTTP requests and expiry jobs share the queue.
+
+The singleton has a 10 GB database limit and serializes requests; load-test expected salon traffic before production. Do not shard or change `salon-v1` without redesigning cross-table transactions. Stripe and OpenAI remain external API integrations already used by the application.
+
+## Local setup and regression
+
+Use Node 20.19+ or Node 22. The pinned Wrangler version supports the repository's Node 20 environment.
+
+```powershell
+npm ci
+Copy-Item .dev.vars.example .dev.vars
+# Fill .dev.vars with development/test credentials.
+npm run cloudflare:build
+npm run cloudflare:dev
+```
+
+Development data persists under `.wrangler`. Client generation and schema validation do not connect to PostgreSQL. Cloudflare builds replace the Node database, Redis, native bcrypt, SMTP and runtime EJS modules; the deployed entry never imports `src/server.ts`.
+
+The pinned local runtime predates structured Email Service sending. Automated tests capture outgoing mail; verify actual delivery on staging. Negative constraint tests intentionally log the rejected SQL error while reporting a passing test.
+
+Run the automated regression baseline:
+
+```powershell
+npm run test:regression
+```
+
+This generates both clients, compiles TypeScript and runs auth (8), database retry (4), booking/API fixtures (24), isolated D1 financial proof (12), actual SQLite adapter checks and real Worker HTTP integration. Tests use disposable databases and synthetic credentials. The Worker suite uses real Express middleware/controllers/services and SQLite persistence; outbound email is captured in a test outbox. Stripe signatures are generated locally; no API charges are made. Test fixture endpoints are excluded from the production bundle.
+
+Verified Worker flows: registration/login, one-time setup, protected access, PAY_NOW/DEPOSIT/RESERVE_NOW, price/deposit snapshots, conflicting/concurrent bookings, wallet/ledger updates, duplicate payment rejection, money constraint rollback, cron expiry, refresh rotation/replay rejection, OTP cooldown, password reset/replay rejection, session invalidation, R2 URL signing and signed Stripe webhook replay. Adapter checks cover rollback, array transactions, exact money, row-lock translation, case-insensitive filters and session atomicity/expiry.
+
+This does not certify every workflow. Run the full application regression on staging, including group purchases/vouchers, refunds/approvals, rescheduling/cancellation boundaries, staff capacity/leave, QR verification, salon collection, completion/no-show, admin/reporting/localization, Stripe intent completion/topups, real R2 upload/confirm/delete and real email delivery.
+
+## Deploy staging first
+
+1. Enable Workers Paid in the company's account. Authenticate with `npx wrangler login`, or provide scoped `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in your deployment environment.
+2. Create a staging R2 bucket and bucket-scoped S3 credentials. Configure bucket CORS for the exact frontend origin, `GET`, `HEAD`, `PUT`, and required upload headers such as `Content-Type`. Signed URLs do not bypass bucket CORS.
+3. Configure TLS SMTP: `SMTP_HOST` (default `smtp.gmail.com`), `SMTP_PORT=465`, `SMTP_USER`, `SMTP_PASSWORD`, and `EMAIL_SENDER`. For Gmail, enable two-step verification and use a Google App Password; sender should match the authenticated account or an authorized alias. Workers use implicit TLS on port 465; port 25 and STARTTLS/587 are not supported by this application transport. Cloudflare Email Service domain onboarding and the EMAIL binding are no longer required. Upload these secrets to the staging environment and verify real password-reset delivery. Automated tests capture emails and do not certify live SMTP acceptance.
+4. Prepare staging secrets with Stripe test keys, staging R2 storage, independent JWT/setup secrets and the actual frontend origin:
+
+```powershell
+Copy-Item cloudflare/secrets.example.json .cloudflare-secrets.staging.json
+# Replace every example value; keep this ignored file private.
+npx wrangler secret bulk .cloudflare-secrets.staging.json --env staging
+npm run cloudflare:deploy:staging
+```
+
+If Wrangler asks to create the Worker during the first secret upload, create it. The `v1` migration provisions the SQLite Durable Object namespace. No D1 database, PostgreSQL URL or Redis server is needed. Schema initialization is transactional. Each pending versioned SQL migration runs once on object initialization. Version 2 adds the nullable WalletTopup.promotionId relation, preserving historical top-up snapshots and balances.
+
+5. Attach a staging API custom domain in Workers settings. Use the same parent domain as the frontend, such as `app.example.com` and `api-staging.example.com`, to preserve Secure/HttpOnly/SameSite=Lax cookies. Cross-site `pages.dev` to `workers.dev` cookie authentication needs a separate cookie policy review. Enable credentials in frontend requests; `CORS_ORIGIN` must match exactly.
+6. Initialize the owner and brand once:
+
+```powershell
+$salonApiUrl = "https://api-staging.example.com"
+$salonSetupToken = "YOUR_BOOTSTRAP_TOKEN"
+Invoke-WebRequest -Method Post -Uri "$salonApiUrl/__setup" -Headers @{ Authorization = "Bearer $salonSetupToken" }
+```
+
+Setup requires a secret of at least 32 characters, accepts POST only and permanently closes after success for that database. Remove the `BOOTSTRAP_TOKEN` and `BRAND_OWNER_PASSWORD` deployment secrets after setup. Keep setup tokens out of frontend code.
+
+7. Register a Stripe test webhook at `/api/v1/payments/stripe/webhook`, configure the payment-intent success/failure events used by the app and upload its signing secret. Exercise topups, appointment/deposit and group-purchase payment flows in Stripe test mode. Raw webhook parsing remains before JSON middleware; signature verification is asynchronous for Workers.
+8. Run full frontend/API regression on staging. Check minute cron runs, expired holds, password-reset delivery, R2 CORS and upload confirmation. Review storage/CPU usage under expected concurrent traffic.
+
+## Production cutover
+
+The default Worker is `hair-salon-backend`; staging has a separate Worker and Durable Object namespace. Prepare `.cloudflare-secrets.production.json` with production settings and separate R2 storage, then:
+
+```powershell
+npm run cloudflare:check
+npx wrangler secret bulk .cloudflare-secrets.production.json
+npm run cloudflare:deploy
+```
+
+Repeat domain, setup, webhook and delivery checks for production. If existing PostgreSQL data must be retained, **do not switch traffic yet**: these scripts do not import existing records or Redis sessions. Back up and rehearse a separately verified import preserving IDs, relations, timestamps, Decimal-to-hundredth conversion, arrays and financial totals. Sessions need migration or a deliberate fresh login. Keep the old backend available until cutover validation completes.
+
+The initial SQLite migration is immutable after deployment. Build-time schema drift checks and runtime checksums reject incompatible versions. Versioned SQL is bundled by build-cloudflare.mjs and checked against the generated schema by applying all versions to disposable SQLite. Runtime checks every applied checksum before running pending versions. `npm run test:cloudflare:migrations` verifies a populated v1-to-v2 upgrade, repeated initialization, foreign keys and checksum rejection. Future changes require registering new versioned SQL in the build/schema check and testing upgrades on populated data; do not overwrite `0001_initial.sql`, delete the Durable Object migration, rename its class or change its singleton name to bypass a mismatch. Configure database backups/recovery before accepting live financial traffic.
+
+References: [Express on Workers](https://developers.cloudflare.com/workers/tutorials/deploy-an-express-app/), [Durable Object SQLite transactions](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/), [Email sending API](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/).

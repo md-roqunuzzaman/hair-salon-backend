@@ -6,6 +6,11 @@ import { verifyEmailConnection } from "./app/lib/nodemailer.js";
 import { prisma } from "./app/lib/prisma.js";
 import { connectRedis } from "./app/lib/redis.js";
 import { seedInitialData } from "./app/utils/seed.js";
+import { logUnexpectedError } from "./app/utils/normalize-error.js";
+import { installFatalErrorHandlers } from "./app/utils/process-errors.js";
+
+// Preserve Node's fail-fast behavior without printing secrets from raw errors.
+installFatalErrorHandlers();
 
 const PORT = config.port;
 
@@ -25,7 +30,7 @@ const main = async () => {
       startGroupPurchaseExpiryJob();
     });
   } catch (error) {
-    console.error("Error starting the server:", error);
+    logUnexpectedError(error, { source: "src/server.ts:39" });
     await prisma.$disconnect();
     process.exit(1);
   }

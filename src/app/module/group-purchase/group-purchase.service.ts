@@ -1,3 +1,4 @@
+import { notificationService } from "../notification/notification.service.js";
 import {
   AppointmentStatus,
   BookingMethod,
@@ -1067,6 +1068,7 @@ const createGroupPurchaseAppointment = async (
               staffId: true,
             },
           });
+          await notificationService.notifyAppointmentTeam(appointment.id, { type: "BOOKING_CREATED", title: "New booking" }, tx);
 
           // =====================================================
           // 9. RESPONSE

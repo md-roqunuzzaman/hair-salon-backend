@@ -1,3 +1,4 @@
+import { logUnexpectedError } from "../utils/normalize-error.js";
 import cron from "node-cron";
 
 import { groupPurchaseExpiryService } from "../module/group-purchase/group-purchase-expiry.service.js";
@@ -20,7 +21,7 @@ export const startGroupPurchaseExpiryJob = () => {
           );
         }
       } catch (error) {
-        console.error("[Group Purchase Expiry Job] Failed:", error);
+        logUnexpectedError(error, { source: "src/app/jobs/group-purchase-expiry.job.ts:23" });
       }
     },
 

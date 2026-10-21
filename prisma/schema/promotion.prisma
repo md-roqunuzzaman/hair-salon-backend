@@ -16,6 +16,7 @@ model Promotion {
   branches     PromotionBranch[]
   services     PromotionService[]
   packages     PromotionPackage[]
+  walletTopups WalletTopup[]
   translations Json?
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt

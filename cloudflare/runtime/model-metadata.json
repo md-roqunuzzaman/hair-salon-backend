@@ -1,0 +1,841 @@
+{
+  "Appointment": {
+    "money": {
+      "price": {
+        "scale": 2,
+        "max": "9999999999"
+      },
+      "depositPercentage": {
+        "scale": 2,
+        "max": "99999"
+      },
+      "depositAmount": {
+        "scale": 2,
+        "max": "9999999999"
+      },
+      "remainingAmount": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "customer": "User",
+      "branch": "Branch",
+      "staff": "Staff",
+      "service": "Service",
+      "package": "Package",
+      "groupPurchase": "GroupPurchase",
+      "verifiedByUser": "User",
+      "payments": "Payment",
+      "review": "Review"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "customerId": "String",
+      "branchId": "String",
+      "staffId": "String",
+      "serviceId": "String",
+      "packageId": "String",
+      "groupPurchaseId": "String",
+      "bookingMethod": "BookingMethod",
+      "appointmentStatus": "AppointmentStatus",
+      "paymentStatus": "PaymentStatus",
+      "date": "DateTime",
+      "startTime": "String",
+      "endTime": "String",
+      "price": "Decimal",
+      "currency": "String",
+      "durationMinutes": "Int",
+      "itemName": "String",
+      "itemNameTranslations": "Json",
+      "holdExpiresAt": "DateTime",
+      "qrToken": "String",
+      "qrVerifiedAt": "DateTime",
+      "qrVerifiedBy": "String",
+      "completedAt": "DateTime",
+      "completionNotes": "String",
+      "cancelledAt": "DateTime",
+      "cancellationReason": "String",
+      "noShowAt": "DateTime",
+      "noShowReason": "String",
+      "depositPercentage": "Decimal",
+      "depositAmount": "Decimal",
+      "remainingAmount": "Decimal",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "AuditLog": {
+    "money": {},
+    "relations": {
+      "user": "User"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "userId": "String",
+      "action": "String",
+      "entityType": "String",
+      "entityId": "String",
+      "metadata": "Json",
+      "createdAt": "DateTime"
+    }
+  },
+  "Branch": {
+    "money": {},
+    "relations": {
+      "bookingPolicy": "BranchBookingPolicy",
+      "businessHours": "BranchBusinessHour",
+      "hourlyCapacities": "BranchHourlyCapacity",
+      "services": "ServiceBranch",
+      "packages": "PackageBranch",
+      "staff": "StaffBranch",
+      "managers": "BranchManagerBranch",
+      "staffSchedules": "StaffSchedule",
+      "appointments": "Appointment",
+      "promotions": "PromotionBranch",
+      "reviews": "Review"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "name": "String",
+      "address": "String",
+      "phone": "String",
+      "description": "String",
+      "imageObjectKey": "String",
+      "translations": "Json",
+      "status": "BranchStatus",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "BranchBusinessHour": {
+    "money": {},
+    "relations": {
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "branchId": "String",
+      "day": "DayOfWeek",
+      "isClosed": "Boolean",
+      "openTime": "String",
+      "closeTime": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "BranchBookingPolicy": {
+    "money": {
+      "depositPercentage": {
+        "scale": 2,
+        "max": "99999"
+      }
+    },
+    "relations": {
+      "branch": "Branch"
+    },
+    "arrays": [
+      "allowedBookingMethods"
+    ],
+    "scalars": {
+      "id": "String",
+      "branchId": "String",
+      "slotIntervalMinutes": "Int",
+      "minimumBookingNoticeMinutes": "Int",
+      "maximumAdvanceBookingDays": "Int",
+      "cancellationCutoffHours": "Int",
+      "rescheduleCutoffHours": "Int",
+      "reserveExpiryRule": "ReserveExpiryRule",
+      "depositEnabled": "Boolean",
+      "depositPercentage": "Decimal",
+      "allowedBookingMethods": "BookingMethod",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "BranchManagerBranch": {
+    "money": {},
+    "relations": {
+      "user": "User",
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "userId": "String",
+      "branchId": "String",
+      "createdAt": "DateTime"
+    }
+  },
+  "BranchHourlyCapacity": {
+    "money": {},
+    "relations": {
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "branchId": "String",
+      "day": "DayOfWeek",
+      "maxBookingsPerHour": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "Brand": {
+    "money": {},
+    "relations": {},
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "name": "String",
+      "description": "String",
+      "phone": "String",
+      "email": "String",
+      "logoObjectKey": "String",
+      "translations": "Json",
+      "primaryColor": "String",
+      "secondaryColor": "String",
+      "backgroundColor": "String",
+      "surfaceColor": "String",
+      "textColor": "String",
+      "mutedTextColor": "String",
+      "lineColor": "String",
+      "onPrimaryColor": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "GroupPurchase": {
+    "money": {
+      "unitPrice": {
+        "scale": 2,
+        "max": "9999999999"
+      },
+      "amount": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "customer": "User",
+      "package": "Package",
+      "payments": "Payment",
+      "appointments": "Appointment"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "customerId": "String",
+      "packageId": "String",
+      "quantity": "Int",
+      "unitPrice": "Decimal",
+      "amount": "Decimal",
+      "paymentStatus": "PaymentStatus",
+      "reservationExpiresAt": "DateTime",
+      "purchasedAt": "DateTime",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "Notification": {
+    "money": {},
+    "relations": {
+      "user": "User"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "userId": "String",
+      "type": "String",
+      "title": "String",
+      "message": "String",
+      "isRead": "Boolean",
+      "translations": "Json",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "Package": {
+    "money": {
+      "regularPrice": {
+        "scale": 2,
+        "max": "9999999999"
+      },
+      "packagePrice": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "groupPurchases": "GroupPurchase",
+      "staff": "StaffPackage",
+      "appointments": "Appointment",
+      "promotions": "PromotionPackage",
+      "services": "PackageService",
+      "branches": "PackageBranch",
+      "images": "PackageImage"
+    },
+    "arrays": [
+      "applicableFor",
+      "purchaseNotice",
+      "howToUse"
+    ],
+    "scalars": {
+      "id": "String",
+      "type": "PackageType",
+      "name": "String",
+      "description": "String",
+      "translations": "Json",
+      "validDays": "Int",
+      "applicableFor": "String",
+      "purchaseNotice": "String",
+      "howToUse": "String",
+      "regularPrice": "Decimal",
+      "packagePrice": "Decimal",
+      "durationMinutes": "Int",
+      "status": "PackageStatus",
+      "listingStatus": "ListingStatus",
+      "capacity": "Int",
+      "soldQuantity": "Int",
+      "reservedQuantity": "Int",
+      "purchaseLimitPerCustomer": "Int",
+      "salesStartAt": "DateTime",
+      "salesEndAt": "DateTime",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "PackageService": {
+    "money": {},
+    "relations": {
+      "package": "Package",
+      "service": "Service"
+    },
+    "arrays": [],
+    "scalars": {
+      "packageId": "String",
+      "serviceId": "String"
+    }
+  },
+  "PackageBranch": {
+    "money": {},
+    "relations": {
+      "package": "Package",
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "packageId": "String",
+      "branchId": "String",
+      "createdAt": "DateTime"
+    }
+  },
+  "PackageImage": {
+    "money": {},
+    "relations": {
+      "package": "Package"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "packageId": "String",
+      "objectKey": "String",
+      "isPrimary": "Boolean",
+      "sortOrder": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "Payment": {
+    "money": {
+      "amount": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "customer": "User",
+      "appointment": "Appointment",
+      "groupPurchase": "GroupPurchase",
+      "refunds": "Refund",
+      "walletTopup": "WalletTopup",
+      "refundRequests": "RefundRequest"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "customerId": "String",
+      "appointmentId": "String",
+      "groupPurchaseId": "String",
+      "purpose": "PaymentPurpose",
+      "provider": "PaymentProvider",
+      "salonPaymentMethod": "SalonPaymentMethod",
+      "amount": "Decimal",
+      "currency": "String",
+      "status": "PaymentStatus",
+      "providerPaymentId": "String",
+      "paidAt": "DateTime",
+      "failedAt": "DateTime",
+      "refundedAt": "DateTime",
+      "walletTopupId": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "StripeWebhookEvent": {
+    "money": {},
+    "relations": {},
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "type": "String",
+      "processedAt": "DateTime"
+    }
+  },
+  "Refund": {
+    "money": {
+      "amount": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "payment": "Payment",
+      "refundRequest": "RefundRequest"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "paymentId": "String",
+      "providerRefundId": "String",
+      "amount": "Decimal",
+      "reason": "String",
+      "status": "RefundStatus",
+      "refundedAt": "DateTime",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "Promotion": {
+    "money": {
+      "minimumTopup": {
+        "scale": 2,
+        "max": "9999999999"
+      },
+      "bonusAmount": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "branches": "PromotionBranch",
+      "services": "PromotionService",
+      "packages": "PromotionPackage",
+      "walletTopups": "WalletTopup"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "name": "String",
+      "minimumTopup": "Decimal",
+      "bonusAmount": "Decimal",
+      "startAt": "DateTime",
+      "endAt": "DateTime",
+      "status": "PromotionStatus",
+      "imageObjectKey": "String",
+      "translations": "Json",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "PromotionBranch": {
+    "money": {},
+    "relations": {
+      "promotion": "Promotion",
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "promotionId": "String",
+      "branchId": "String"
+    }
+  },
+  "PromotionService": {
+    "money": {},
+    "relations": {
+      "promotion": "Promotion",
+      "service": "Service"
+    },
+    "arrays": [],
+    "scalars": {
+      "promotionId": "String",
+      "serviceId": "String"
+    }
+  },
+  "PromotionPackage": {
+    "money": {},
+    "relations": {
+      "promotion": "Promotion",
+      "package": "Package"
+    },
+    "arrays": [],
+    "scalars": {
+      "promotionId": "String",
+      "packageId": "String"
+    }
+  },
+  "RefundRequest": {
+    "money": {
+      "amount": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "customer": "User",
+      "reviewer": "User",
+      "payment": "Payment",
+      "refund": "Refund"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "customerId": "String",
+      "paymentId": "String",
+      "amount": "Decimal",
+      "reason": "String",
+      "status": "RefundRequestStatus",
+      "reviewedBy": "String",
+      "reviewedAt": "DateTime",
+      "reviewNote": "String",
+      "refundId": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "Review": {
+    "money": {},
+    "relations": {
+      "customer": "User",
+      "repliedBy": "User",
+      "appointment": "Appointment",
+      "branch": "Branch",
+      "staff": "Staff",
+      "images": "ReviewImage"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "customerId": "String",
+      "appointmentId": "String",
+      "branchId": "String",
+      "staffId": "String",
+      "rating": "Int",
+      "comment": "String",
+      "moderationStatus": "ReviewModerationStatus",
+      "moderationReason": "String",
+      "replyText": "String",
+      "repliedAt": "DateTime",
+      "repliedById": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "ReviewImage": {
+    "money": {},
+    "relations": {
+      "review": "Review"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "reviewId": "String",
+      "objectKey": "String",
+      "sortOrder": "Int",
+      "createdAt": "DateTime"
+    }
+  },
+  "Service": {
+    "money": {
+      "price": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "images": "ServiceImage",
+      "branches": "ServiceBranch",
+      "packages": "PackageService",
+      "staff": "StaffService",
+      "appointments": "Appointment",
+      "promotions": "PromotionService"
+    },
+    "arrays": [
+      "processSteps",
+      "bookingNotes"
+    ],
+    "scalars": {
+      "id": "String",
+      "name": "String",
+      "description": "String",
+      "price": "Decimal",
+      "durationMinutes": "Int",
+      "status": "ServiceStatus",
+      "isPopular": "Boolean",
+      "processSteps": "String",
+      "bookingNotes": "String",
+      "translations": "Json",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "ServiceImage": {
+    "money": {},
+    "relations": {
+      "service": "Service"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "serviceId": "String",
+      "objectKey": "String",
+      "isPrimary": "Boolean",
+      "sortOrder": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "ServiceBranch": {
+    "money": {},
+    "relations": {
+      "service": "Service",
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "serviceId": "String",
+      "branchId": "String",
+      "createdAt": "DateTime"
+    }
+  },
+  "Staff": {
+    "money": {},
+    "relations": {
+      "user": "User",
+      "branches": "StaffBranch",
+      "services": "StaffService",
+      "packages": "StaffPackage",
+      "schedule": "StaffSchedule",
+      "unavailability": "StaffUnavailability",
+      "appointments": "Appointment",
+      "reviews": "Review"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "userId": "String",
+      "name": "String",
+      "email": "String",
+      "phone": "String",
+      "roleTitle": "String",
+      "specialization": "String",
+      "description": "String",
+      "avatarObjectKey": "String",
+      "translations": "Json",
+      "status": "StaffStatus",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "StaffBranch": {
+    "money": {},
+    "relations": {
+      "staff": "Staff",
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "staffId": "String",
+      "branchId": "String",
+      "createdAt": "DateTime"
+    }
+  },
+  "StaffService": {
+    "money": {},
+    "relations": {
+      "staff": "Staff",
+      "service": "Service"
+    },
+    "arrays": [],
+    "scalars": {
+      "staffId": "String",
+      "serviceId": "String",
+      "createdAt": "DateTime"
+    }
+  },
+  "StaffPackage": {
+    "money": {},
+    "relations": {
+      "staff": "Staff",
+      "package": "Package"
+    },
+    "arrays": [],
+    "scalars": {
+      "staffId": "String",
+      "packageId": "String",
+      "createdAt": "DateTime"
+    }
+  },
+  "StaffSchedule": {
+    "money": {},
+    "relations": {
+      "staff": "Staff",
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "staffId": "String",
+      "branchId": "String",
+      "day": "DayOfWeek",
+      "startTime": "String",
+      "endTime": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "StaffUnavailability": {
+    "money": {},
+    "relations": {
+      "staff": "Staff"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "staffId": "String",
+      "type": "StaffUnavailabilityType",
+      "date": "DateTime",
+      "startTime": "String",
+      "endTime": "String",
+      "reason": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "User": {
+    "money": {},
+    "relations": {
+      "groupPurchases": "GroupPurchase",
+      "staffProfile": "Staff",
+      "managedBranches": "BranchManagerBranch",
+      "appointments": "Appointment",
+      "verifiedAppointments": "Appointment",
+      "payments": "Payment",
+      "wallet": "Wallet",
+      "reviews": "Review",
+      "reviewReplies": "Review",
+      "notifications": "Notification",
+      "auditLogs": "AuditLog",
+      "refundRequests": "RefundRequest",
+      "reviewedRefundRequests": "RefundRequest"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "name": "String",
+      "email": "String",
+      "phone": "String",
+      "passwordHash": "String",
+      "preferredLanguage": "String",
+      "role": "Role",
+      "status": "UserStatus",
+      "mustChangePassword": "Boolean",
+      "avatarObjectKey": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "Wallet": {
+    "money": {
+      "paidBalance": {
+        "scale": 2,
+        "max": "9999999999"
+      },
+      "bonusBalance": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "customer": "User",
+      "transactions": "WalletTransaction",
+      "topups": "WalletTopup"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "customerId": "String",
+      "paidBalance": "Decimal",
+      "bonusBalance": "Decimal",
+      "currency": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "WalletTransaction": {
+    "money": {
+      "amount": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "wallet": "Wallet"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "walletId": "String",
+      "type": "WalletTransactionType",
+      "balanceType": "BalanceType",
+      "amount": "Decimal",
+      "referenceId": "String",
+      "createdAt": "DateTime"
+    }
+  },
+  "WalletTopup": {
+    "money": {
+      "amount": {
+        "scale": 2,
+        "max": "9999999999"
+      },
+      "potentialBonus": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "wallet": "Wallet",
+      "payments": "Payment",
+      "promotion": "Promotion"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "walletId": "String",
+      "amount": "Decimal",
+      "potentialBonus": "Decimal",
+      "status": "WalletTopupStatus",
+      "providerPaymentId": "String",
+      "paidAt": "DateTime",
+      "failedAt": "DateTime",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime",
+      "promotionId": "String"
+    }
+  }
+}

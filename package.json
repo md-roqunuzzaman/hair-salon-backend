@@ -9,10 +9,25 @@
     "start": "node dist/src/server.js",
     "typecheck": "tsc --noEmit",
     "test:database": "tsx --test src/app/utils/retry-database.test.ts",
+    "test:errors": "tsx --test src/app/utils/normalize-error.test.ts cloudflare/upload-errors.test.mjs",
+    "test:cloudflare": "node --test cloudflare/proof/financial-flow.test.mjs",
+    "test:booking": "tsx --test cloudflare/booking-regression.test.mjs",
+    "test:notifications": "tsx --test cloudflare/notification-regression.test.mjs",
     "test:auth": "tsx --test src/app/module/auth/auth.validation.test.ts src/app/utils/jwt.test.ts src/app/utils/auth-cookies.test.ts",
+    "cloudflare:generate": "node scripts/prepare-cloudflare.mjs && prisma generate --config cloudflare/prisma.config.ts && node scripts/check-cloudflare-schema.mjs",
+    "cloudflare:build": "npm run cloudflare:generate && node scripts/build-cloudflare.mjs",
+    "cloudflare:dev": "npm run cloudflare:build && wrangler dev",
+    "cloudflare:check": "npm run cloudflare:build && wrangler deploy --dry-run",
+    "cloudflare:deploy": "npm run cloudflare:build && wrangler deploy",
+    "cloudflare:deploy:staging": "npm run cloudflare:build && wrangler deploy --env staging",
+    "test:cloudflare:database": "node scripts/test-cloudflare-runtime.mjs",
+    "test:cloudflare:api": "node scripts/build-cloudflare.mjs --test && node --test cloudflare/runtime.integration.test.mjs",
+    "test:regression": "prisma generate --config cloudflare/node-client.config.ts && npm run build && npm run test:errors && npm run test:auth && npm run test:smtp && npm run test:database && npm run test:booking && npm run test:notifications && npm run test:cloudflare && npm run cloudflare:generate && npm run test:cloudflare:database && npm run test:cloudflare:migrations && npm run test:cloudflare:api",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "test:smtp": "node --test cloudflare/smtp.test.mjs",
+    "test:cloudflare:migrations": "node scripts/build-cloudflare.mjs && node scripts/test-cloudflare-migrations.mjs"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +36,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",
     "@aws-sdk/s3-request-presigner": "^3.1146.0",
+    "@prisma/adapter-d1": "7.10.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "@types/crypto-js": "^4.2.2",
@@ -49,6 +65,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "4.20251014.0",
     "@types/bcrypt": "^6.0.0",
     "@types/cookie-parser": "^1.4.9",
     "@types/cors": "^2.8.19",
@@ -56,8 +73,11 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.10.1",
     "@types/pg": "^8.15.6",
+    "esbuild": "0.28.2",
+    "miniflare": "3.20250718.3",
     "prisma": "^7.10.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "wrangler": "4.45.0"
   }
 }

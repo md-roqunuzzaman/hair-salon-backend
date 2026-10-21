@@ -167,8 +167,9 @@ const getPromotions = async (
 
   const where: Prisma.PromotionWhereInput = {};
 
-  // CUSTOMER: ONLY ACTIVE + CURRENTLY VALID
-  // branchId is optional for customers.
+  // CUSTOMER:
+  // All ACTIVE and currently valid promotions.
+  // No branch filtering.
   if (role === Role.CUSTOMER) {
     where.status = PromotionStatus.ACTIVE;
 
@@ -182,18 +183,13 @@ const getPromotions = async (
   }
 
   // =====================================================
-  // 2. OPTIONAL BRANCH FILTER
+  // 2. OPTIONAL BRANCH FILTER (NON-CUSTOMERS ONLY)
   // =====================================================
 
-  // When branchId is provided:
-  // - Promotions assigned to the selected branch
-  // - Global promotions (no branch assignments)
-  //
-  // Without branchId:
-  // - Keep existing unfiltered listing behavior
-  // - Customer active/date filters still apply
+  // Customers can see promotions from all branches.
+  // Preserve existing branch filtering for other roles.
 
-  if (branchId) {
+  if (role !== Role.CUSTOMER && branchId) {
     where.OR = [
       {
         branches: {
@@ -256,7 +252,7 @@ const getPromotions = async (
   });
 
   // =====================================================
-  // 4. LOCALIZE PROMOTIONS + GENERATE SIGNED IMAGE URLS
+  // 4. LOCALIZE PROMOTIONS + GENERATE IMAGE URLS
   // =====================================================
 
   const items = await Promise.all(

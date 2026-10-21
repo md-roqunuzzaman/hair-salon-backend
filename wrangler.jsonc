@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hair-salon-backend",
+  "main": "cloudflare/.build/worker.mjs",
+  "compatibility_date": "2025-10-11",
+  "compatibility_flags": ["nodejs_compat", "enable_nodejs_http_server_modules"],
+  "workers_dev": true,
+  "limits": { "cpu_ms": 300000 },
+  "observability": { "enabled": true },
+  "durable_objects": { "bindings": [{ "name": "SALON_DB", "class_name": "SalonDatabase" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalonDatabase"] }],
+  "triggers": { "crons": ["* * * * *"] },
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  "vars": { "NODE_ENV": "production", "BCRYPT_SALT_ROUNDS": "12" },
+  "env": {
+    "staging": {
+      "name": "hair-salon-backend-staging",
+      "vars": { "NODE_ENV": "production", "BCRYPT_SALT_ROUNDS": "12" },
+      "durable_objects": { "bindings": [{ "name": "SALON_DB", "class_name": "SalonDatabase" }] },
+      "triggers": { "crons": ["* * * * *"] }
+    }
+  }
+}

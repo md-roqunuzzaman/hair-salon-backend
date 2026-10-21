@@ -30,4 +30,7 @@ export interface ICreateNotificationPayload {
   message: string;
 
   translations?: INotificationTranslations;
+  // Internal event context; never persisted as customer notification content.
+  appointmentId?: string;
+  previousStaffId?: string;
 }

@@ -23,7 +23,9 @@ const verifyToken = (token: string, secret: string) => {
   } catch (error: unknown) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Invalid token",
+      error: error instanceof jwt.TokenExpiredError
+        ? "Your session has expired. Please log in again"
+        : "Authentication token is invalid. Please log in again",
     };
   }
 };

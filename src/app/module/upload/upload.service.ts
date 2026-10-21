@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { logUnexpectedError } from "../../utils/normalize-error.js";
 
 import {
   DeleteObjectCommand,
@@ -650,7 +651,12 @@ const verifyImageExists = async (objectKey: string): Promise<void> => {
       throw error;
     }
 
-    throw new AppError("UPLOADED_IMAGE_NOT_FOUND", 404);
+    const storageError = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+    if (storageError?.$metadata?.httpStatusCode === 404 || ["NotFound", "NoSuchKey"].includes(storageError?.name ?? "")) {
+      throw new AppError("UPLOADED_IMAGE_NOT_FOUND", 404);
+    }
+    logUnexpectedError(error, { source: "r2-image-verification" });
+    throw new AppError("Image storage is temporarily unavailable. Please try again later", 502);
   }
 };
 

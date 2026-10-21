@@ -11,6 +11,11 @@ if (
 
 export const r2Client = new S3Client({
   region: "auto",
+  forcePathStyle: true,
+  // A presigned upload has no body here. Avoid signing the checksum of an
+  // empty body, which would reject the actual image uploaded by the browser.
+  requestChecksumCalculation: "WHEN_REQUIRED",
+  responseChecksumValidation: "WHEN_REQUIRED",
 
   endpoint: `https://${config.r2.accountId}.r2.cloudflarestorage.com`,
 

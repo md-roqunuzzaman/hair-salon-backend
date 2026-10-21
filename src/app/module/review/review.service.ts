@@ -1,3 +1,4 @@
+import { logUnexpectedError } from "../../utils/normalize-error.js";
 import {
   AppointmentStatus,
   Prisma,
@@ -175,7 +176,7 @@ const createReview = async (
       moderationReason = moderationResult.reason ?? "Unsafe review content";
     }
   } catch (error) {
-    console.error("Review moderation failed:", error);
+    logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:178" });
 
     moderationStatus = ReviewModerationStatus.PENDING;
 
@@ -369,7 +370,7 @@ const createReview = async (
       translations,
     });
   } catch (error) {
-    console.error("Failed to create review notification:", error);
+    logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:372" });
   }
 
   // =====================================================
@@ -1454,7 +1455,7 @@ const updateReview = async (
         };
       }
     } catch (error) {
-      console.error("Review update moderation failed:", error);
+      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1457" });
 
       moderationUpdate = {
         moderationStatus: ReviewModerationStatus.PENDING,
@@ -1577,7 +1578,7 @@ const updateReview = async (
         translations,
       });
     } catch (error) {
-      console.error("Failed to create review update notification:", error);
+      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1580" });
     }
   }
 
@@ -1665,7 +1666,7 @@ const deleteReview = async (customerId: string, reviewId: string) => {
         ),
       );
     } catch (error) {
-      console.error("Failed to cleanup review images from R2:", error);
+      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1668" });
     }
   }
 
@@ -1815,7 +1816,7 @@ const moderateReview = async (
         translations,
       });
     } catch (error) {
-      console.error("Failed to create review moderation notification:", error);
+      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1818" });
     }
   }
 
@@ -1957,7 +1958,7 @@ const saveReviewReply = async (
         translations,
       });
     } catch (error) {
-      console.error("Failed to create review reply notification:", error);
+      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1960" });
     }
   }
 
