@@ -37,5 +37,5 @@ schema = schema.replace(/^(\s*\w+\s+)(\w+)\[\](.*)$/gm, (line, prefix, type, tai
 });
 await mkdir('cloudflare/prisma', { recursive: true });
 await mkdir('cloudflare/runtime', { recursive: true });
-await writeFile('cloudflare/prisma/schema.prisma', schema);
+await writeFile('cloudflare/prisma/schema.prisma', schema.replace(/[ \t]+$/gm, ''));
 await writeFile('cloudflare/runtime/model-metadata.json', `${JSON.stringify(metadata, null, 2)}\n`);

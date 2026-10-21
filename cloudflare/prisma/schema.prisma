@@ -17,7 +17,7 @@ model Appointment {
   startTime String
   endTime   String
 
-  price           BigInt 
+  price           BigInt
   currency        String  @default("HKD")
   durationMinutes Int
 
@@ -52,9 +52,9 @@ model Appointment {
 
   verifiedByUser User? @relation("AppointmentQrVerifier", fields: [qrVerifiedBy], references: [id], onDelete: SetNull)
 
-  depositPercentage BigInt? 
-  depositAmount     BigInt? 
-  remainingAmount   BigInt? 
+  depositPercentage BigInt?
+  depositAmount     BigInt?
+  remainingAmount   BigInt?
 
   payments Payment[]
   review   Review?
@@ -144,19 +144,19 @@ model BranchBookingPolicy {
   id       String @id @default(uuid())
   branchId String @unique
 
-  slotIntervalMinutes         Int               @default(5)
-  minimumBookingNoticeMinutes Int               @default(120)
-  maximumAdvanceBookingDays   Int               @default(30)
-  cancellationCutoffHours     Int               @default(12)
-  rescheduleCutoffHours       Int               @default(12)
-  reserveExpiryRule           ReserveExpiryRule @default(APPOINTMENT_TIME)
-  depositEnabled              Boolean           @default(true)
-  depositPercentage           BigInt?          
+  slotIntervalMinutes         Int                @default(5)
+  minimumBookingNoticeMinutes Int                @default(120)
+  maximumAdvanceBookingDays   Int                @default(30)
+  cancellationCutoffHours     Int                @default(12)
+  rescheduleCutoffHours       Int                @default(12)
+  reserveExpiryRule           ReserveExpiryRule  @default(APPOINTMENT_TIME)
+  depositEnabled              Boolean            @default(true)
+  depositPercentage           BigInt?
   // Merchant-configurable booking methods
-  allowedBookingMethods       Json   @default("[\"PAY_NOW\",\"DEPOSIT\",\"RESERVE_NOW\"]")
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  allowedBookingMethods       Json    @default("[\"PAY_NOW\",\"DEPOSIT\",\"RESERVE_NOW\"]")
+  qrVerificationRule          QrVerificationRule @default(BEFORE_START_TIME)
+  createdAt                   DateTime           @default(now())
+  updatedAt                   DateTime           @updatedAt
 
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 }
@@ -361,14 +361,19 @@ enum ReviewModerationStatus {
   HIDDEN
 }
 
+enum QrVerificationRule {
+  BEFORE_START_TIME
+  BEFORE_END_TIME
+}
+
 model GroupPurchase {
   id         String @id @default(uuid())
   customerId String
   packageId  String
 
   quantity  Int
-  unitPrice BigInt 
-  amount    BigInt 
+  unitPrice BigInt
+  amount    BigInt
 
   paymentStatus PaymentStatus @default(PENDING)
 
@@ -428,8 +433,8 @@ model Package {
   // PRICING
   // =====================================================
 
-  regularPrice    BigInt 
-  packagePrice    BigInt 
+  regularPrice    BigInt
+  packagePrice    BigInt
   durationMinutes Int
 
   status        PackageStatus @default(ACTIVE)
@@ -517,7 +522,7 @@ model Payment {
 
   salonPaymentMethod SalonPaymentMethod?
 
-  amount   BigInt 
+  amount   BigInt
   currency String  @default("HKD")
 
   status PaymentStatus @default(PENDING)
@@ -565,7 +570,7 @@ model Refund {
 
   providerRefundId String? @unique
 
-  amount BigInt 
+  amount BigInt
 
   reason String
 
@@ -588,8 +593,8 @@ model Promotion {
 
   name String
 
-  minimumTopup BigInt 
-  bonusAmount  BigInt 
+  minimumTopup BigInt
+  bonusAmount  BigInt
 
   startAt DateTime
   endAt   DateTime
@@ -662,7 +667,7 @@ model RefundRequest {
   customerId String
   paymentId  String
 
-  amount BigInt 
+  amount BigInt
   reason String
 
   status RefundRequestStatus @default(PENDING)
@@ -756,7 +761,7 @@ model Service {
   id              String        @id @default(uuid())
   name            String
   description     String?
-  price           BigInt       
+  price           BigInt
   durationMinutes Int
   status          ServiceStatus @default(ACTIVE)
 
@@ -948,8 +953,8 @@ model Wallet {
 
   customerId String @unique
 
-  paidBalance  BigInt @default(0) 
-  bonusBalance BigInt @default(0) 
+  paidBalance  BigInt @default(0)
+  bonusBalance BigInt @default(0)
 
   currency String @default("HKD")
 
@@ -973,7 +978,7 @@ model WalletTransaction {
 
   balanceType BalanceType
 
-  amount BigInt 
+  amount BigInt
 
   referenceId String?
 
@@ -991,8 +996,8 @@ model WalletTopup {
 
   walletId String
 
-  amount         BigInt 
-  potentialBonus BigInt @default(0) 
+  amount         BigInt
+  potentialBonus BigInt @default(0)
 
   status WalletTopupStatus @default(PENDING)
 

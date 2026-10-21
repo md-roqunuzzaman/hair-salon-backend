@@ -191,7 +191,9 @@ const updateBookingPolicyValidationSchema = z.object({
 
       reserveExpiryRule: z.enum(["APPOINTMENT_TIME"]),
 
-      // Merchant can enable one, multiple, or all three methods.
+      // NEW
+      qrVerificationRule: z.enum(["BEFORE_START_TIME", "BEFORE_END_TIME"]),
+
       allowedBookingMethods: z
         .array(z.enum(["PAY_NOW", "DEPOSIT", "RESERVE_NOW"]))
         .min(1, "At least one booking method must be enabled")
@@ -201,7 +203,6 @@ const updateBookingPolicyValidationSchema = z.object({
           "Duplicate booking methods are not allowed",
         ),
 
-      // Existing deposit percentage setting.
       depositPercentage: z
         .number()
         .min(1, "Deposit percentage must be at least 1")
@@ -209,7 +210,6 @@ const updateBookingPolicyValidationSchema = z.object({
     })
     .strict(),
 });
-
 const customerOperationalSearchValidationSchema = z.object({
   body: z.object({
     q: z.string().trim().min(1, "Search query is required").max(100),

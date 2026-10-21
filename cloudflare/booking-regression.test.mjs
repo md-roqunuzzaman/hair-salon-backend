@@ -79,6 +79,10 @@ function transactionFixture(t) {
     $queryRaw: async () => [{ value: 1 }],
     branch: { findUnique: async () => data.branch },
     branchBookingPolicy: { findUnique: async () => data.branch.bookingPolicy },
+    branchBusinessHour: { findFirst: async () => data.hours },
+    staff: { findMany: async () => data.eligible },
+    staffSchedule: { findMany: async () => data.schedules },
+    staffUnavailability: { findMany: async () => data.leave },
     service: { findUnique: async () => data.service },
     package: { findUnique: async () => data.package },
     appointment: {
@@ -163,8 +167,8 @@ test('deposit rejects invalid percentage without creating an appointment', async
 
 test('a conflict appearing after availability is rechecked inside the transaction', async t => {
   const { tx, create } = transactionFixture(t);
-  tx.appointment.findMany = async () => [{ startTime: '10:00', endTime: '11:00' }];
-  await assert.rejects(appointmentService.createPayNowAppointment('customer', { ...query, startTime: '10:00' }), /staff is no longer available/);
+  tx.appointment.findMany = async () => [{ staffId, startTime: '10:00', endTime: '11:00' }];
+  await assert.rejects(appointmentService.createPayNowAppointment('customer', { ...query, startTime: '10:00' }), /staff.*available/);
   assert.equal(create.mock.calls.length, 0);
 });
 
@@ -274,7 +278,7 @@ test('final transactional guards reject staff conflict and later-hour capacity',
     appointment: { findMany: async () => [{ startTime: '11:30', endTime: '12:00' }] },
     branchHourlyCapacity: { findUnique: async () => ({ maxBookingsPerHour: 1 }) },
   };
-  await assert.rejects(assertStaffSlotAvailable(tx, staffId, new Date(date), 630, 720, new Date()), /staff is no longer available/);
+  await assert.rejects(assertStaffSlotAvailable(tx, staffId, new Date(date), 630, 720, new Date()), /staff.*available/);
   await assert.rejects(assertBranchHourlyCapacityAvailable(tx, branchId, date, new Date(date), 630, 720, new Date()), /capacity has been reached/);
   await assertStaffSlotAvailable(tx, staffId, new Date(date), 600, 690, new Date());
 });

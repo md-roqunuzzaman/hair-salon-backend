@@ -40,7 +40,8 @@ for (const [model, info] of Object.entries(metadata)) {
 }
 await writeFile(`${directory}/migration.sql`, migration);
 const upgrade = await readFile('cloudflare/migrations/0002_wallet_topup_promotion.sql', 'utf8');
-const migrations = [migration, upgrade].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+const qrUpgrade = await readFile('cloudflare/migrations/0003_branch_qr_verification_rule.sql', 'utf8');
+const migrations = [migration, upgrade, qrUpgrade].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);

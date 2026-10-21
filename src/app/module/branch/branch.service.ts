@@ -974,19 +974,11 @@ const getBookingPolicy = async (branchId: string) => {
     throw new AppError("Branch not found", 404);
   }
 
-  // =====================================================
-  // 1. GET BRANCH BOOKING POLICY
-  // =====================================================
-
   let bookingPolicy = await prisma.branchBookingPolicy.findUnique({
     where: {
       branchId,
     },
   });
-
-  // =====================================================
-  // 2. FALLBACK FOR OLD BRANCHES
-  // =====================================================
 
   if (!bookingPolicy) {
     bookingPolicy = await prisma.branchBookingPolicy.upsert({
@@ -1000,37 +992,27 @@ const getBookingPolicy = async (branchId: string) => {
         branchId,
 
         slotIntervalMinutes: 30,
-
         minimumBookingNoticeMinutes: 120,
-
         maximumAdvanceBookingDays: 30,
-
         cancellationCutoffHours: 12,
-
         rescheduleCutoffHours: 12,
 
         reserveExpiryRule: "APPOINTMENT_TIME",
 
+        // NEW
+        qrVerificationRule: "BEFORE_START_TIME",
+
         allowedBookingMethods: ["PAY_NOW", "DEPOSIT", "RESERVE_NOW"],
 
         depositEnabled: true,
-
         depositPercentage: 10,
       },
     });
   }
 
-  // =====================================================
-  // 3. DERIVE DEPOSIT AVAILABILITY
-  // =====================================================
-
   const allowedBookingMethods = bookingPolicy.allowedBookingMethods;
 
   const depositEnabled = allowedBookingMethods.includes("DEPOSIT");
-
-  // =====================================================
-  // 4. RESPONSE
-  // =====================================================
 
   return {
     slotIntervalMinutes: bookingPolicy.slotIntervalMinutes,
@@ -1045,9 +1027,11 @@ const getBookingPolicy = async (branchId: string) => {
 
     reserveExpiryRule: bookingPolicy.reserveExpiryRule,
 
+    // NEW
+    qrVerificationRule: bookingPolicy.qrVerificationRule,
+
     allowedBookingMethods,
 
-    // Backward-compatible response field
     depositEnabled,
 
     depositPercentage:
@@ -1056,7 +1040,6 @@ const getBookingPolicy = async (branchId: string) => {
         : 10,
   };
 };
-
 // =====================================================
 // UPDATE BOOKING POLICY
 // =====================================================
@@ -1101,10 +1084,20 @@ const updateBookingPolicy = async (
     );
   }
 
+  // =====================================================
+  // 3. VALIDATE QR VERIFICATION RULE (NEW)
+  // =====================================================
+
+  const validQrRules = ["BEFORE_START_TIME", "BEFORE_END_TIME"];
+
+  if (!validQrRules.includes(payload.qrVerificationRule)) {
+    throw new AppError("Invalid QR verification rule", 400);
+  }
+
   const depositEnabled = payload.allowedBookingMethods.includes("DEPOSIT");
 
   // =====================================================
-  // 3. UPDATE POLICY + AUDIT LOG
+  // 4. UPDATE POLICY + AUDIT LOG
   // =====================================================
 
   const result = await prisma.$transaction(async (tx) => {
@@ -1132,6 +1125,9 @@ const updateBookingPolicy = async (
 
         reserveExpiryRule: payload.reserveExpiryRule,
 
+        // NEW: Owner-selectable QR verification rule
+        qrVerificationRule: payload.qrVerificationRule,
+
         allowedBookingMethods: payload.allowedBookingMethods,
 
         depositEnabled,
@@ -1154,6 +1150,9 @@ const updateBookingPolicy = async (
 
         reserveExpiryRule: payload.reserveExpiryRule,
 
+        // NEW: Owner-selectable QR verification rule
+        qrVerificationRule: payload.qrVerificationRule,
+
         allowedBookingMethods: payload.allowedBookingMethods,
 
         depositEnabled,
@@ -1163,7 +1162,7 @@ const updateBookingPolicy = async (
     });
 
     // =====================================================
-    // 4. AUDIT LOG
+    // 5. AUDIT LOG
     // =====================================================
 
     await auditLogService.createAuditLog(
@@ -1193,6 +1192,9 @@ const updateBookingPolicy = async (
 
                 reserveExpiryRule: existingPolicy.reserveExpiryRule,
 
+                // NEW
+                qrVerificationRule: existingPolicy.qrVerificationRule,
+
                 allowedBookingMethods: existingPolicy.allowedBookingMethods,
 
                 depositEnabled: existingPolicy.depositEnabled,
@@ -1218,6 +1220,9 @@ const updateBookingPolicy = async (
 
             reserveExpiryRule: updatedPolicy.reserveExpiryRule,
 
+            // NEW
+            qrVerificationRule: updatedPolicy.qrVerificationRule,
+
             allowedBookingMethods: updatedPolicy.allowedBookingMethods,
 
             depositEnabled: updatedPolicy.depositEnabled,
@@ -1232,8 +1237,16 @@ const updateBookingPolicy = async (
       tx,
     );
 
+    // =====================================================
+    // 6. RETURN UPDATED POLICY
+    // =====================================================
+
     return updatedPolicy;
   });
+
+  // =====================================================
+  // 7. FINAL RESPONSE
+  // =====================================================
 
   return {
     branchId: result.branchId,

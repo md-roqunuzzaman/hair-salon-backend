@@ -153,6 +153,7 @@
       "depositEnabled": "Boolean",
       "depositPercentage": "Decimal",
       "allowedBookingMethods": "BookingMethod",
+      "qrVerificationRule": "QrVerificationRule",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }

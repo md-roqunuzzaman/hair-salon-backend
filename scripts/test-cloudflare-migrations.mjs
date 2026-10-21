@@ -7,5 +7,5 @@ try {
   const response = await mf.dispatchFetch('https://test/');
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { preserved: true, repeatable: true, foreignKey: true, checksumProtected: true });
-  console.log('Existing v1 database upgrades to v2 without losing wallet/top-up data; repeat migration, FK and checksum checks pass.');
+  console.log('Existing v1/v2 database upgrades to v3 without losing wallet/top-up data or branch policies; repeat migration, FK and checksum checks pass.');
 } finally { await mf.dispose(); }

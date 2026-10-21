@@ -1,12 +1,13 @@
 import { createDatabase } from './database.mjs';
 import migration from '../migrations/0001_initial.sql';
 import upgrade from '../migrations/0002_wallet_topup_promotion.sql';
+import qrUpgrade from '../migrations/0003_branch_qr_verification_rule.sql';
 import { Sessions } from './sessions.mjs';
 
 export class DatabaseFixture {
   constructor(state) {
     this.state = state;
-    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade));
+    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade));
     this.db = createDatabase(state.storage);
   }
   async fetch() {

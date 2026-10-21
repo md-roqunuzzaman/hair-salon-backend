@@ -145,3 +145,13 @@ enum ReviewModerationStatus {
   VISIBLE
   HIDDEN
 }
+
+enum QrVerificationRule {
+  BEFORE_START_TIME
+  BEFORE_END_TIME
+}
+
+enum GroupPurchaseFlow {
+  BUY_NOW_BOOK_LATER
+  BUY_NOW_BOOK_NOW
+}

@@ -50,6 +50,7 @@ export interface IUpdateBookingPolicyPayload {
   rescheduleCutoffHours: number;
 
   reserveExpiryRule: ReserveExpiryRule;
+  qrVerificationRule: "BEFORE_START_TIME" | "BEFORE_END_TIME";
 
   // Merchant-configurable booking methods.
   // GROUP_PURCHASE is excluded by request validation.

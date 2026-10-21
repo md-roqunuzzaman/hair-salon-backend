@@ -43,19 +43,19 @@ model BranchBookingPolicy {
   id       String @id @default(uuid())
   branchId String @unique
 
-  slotIntervalMinutes         Int               @default(5)
-  minimumBookingNoticeMinutes Int               @default(120)
-  maximumAdvanceBookingDays   Int               @default(30)
-  cancellationCutoffHours     Int               @default(12)
-  rescheduleCutoffHours       Int               @default(12)
-  reserveExpiryRule           ReserveExpiryRule @default(APPOINTMENT_TIME)
-  depositEnabled              Boolean           @default(true)
-  depositPercentage           Decimal?          @db.Decimal(5, 2)
+  slotIntervalMinutes         Int                @default(5)
+  minimumBookingNoticeMinutes Int                @default(120)
+  maximumAdvanceBookingDays   Int                @default(30)
+  cancellationCutoffHours     Int                @default(12)
+  rescheduleCutoffHours       Int                @default(12)
+  reserveExpiryRule           ReserveExpiryRule  @default(APPOINTMENT_TIME)
+  depositEnabled              Boolean            @default(true)
+  depositPercentage           Decimal?           @db.Decimal(5, 2)
   // Merchant-configurable booking methods
-  allowedBookingMethods       BookingMethod[]   @default([PAY_NOW, DEPOSIT, RESERVE_NOW])
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  allowedBookingMethods       BookingMethod[]    @default([PAY_NOW, DEPOSIT, RESERVE_NOW])
+  qrVerificationRule          QrVerificationRule @default(BEFORE_START_TIME)
+  createdAt                   DateTime           @default(now())
+  updatedAt                   DateTime           @updatedAt
 
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 }

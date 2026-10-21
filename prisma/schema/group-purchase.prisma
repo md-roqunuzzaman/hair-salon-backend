@@ -11,14 +11,14 @@ model GroupPurchase {
 
   reservationExpiresAt DateTime?
   purchasedAt          DateTime?
+  purchaseFlow         GroupPurchaseFlow @default(BUY_NOW_BOOK_LATER)
+  customer             User              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  package              Package           @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  payments             Payment[]
+  appointments         Appointment[]
 
-  customer User      @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  package  Package   @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  payments Payment[]
-
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  appointments Appointment[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([customerId])
   @@index([packageId])
