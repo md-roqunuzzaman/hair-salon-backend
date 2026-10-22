@@ -23,6 +23,11 @@ export async function bookNowFixture(db, customerId) {
   const date = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
   const day = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'][new Date(date).getUTCDay()];
   const branch = await db.branch.create({ data: { name: 'Public Book Now', address: 'Hong Kong', bookingPolicy: { create: { minimumBookingNoticeMinutes: 0, depositPercentage: 30 } }, businessHours: { create: { day, openTime: '00:00', closeTime: '23:59' } }, hourlyCapacities: { create: { day, maxBookingsPerHour: 100 } } } });
+  const customer = await db.user.findUniqueOrThrow({ where: { id: customerId } });
+  for (const [email, assigned] of [['book-now-manager@example.com', true], ['book-now-other-manager@example.com', false]]) {
+    const manager = await db.user.create({ data: { name: 'Test manager', email, passwordHash: customer.passwordHash, role: 'BRANCH_MANAGER' } });
+    if (assigned) await db.branchManagerBranch.create({ data: { userId: manager.id, branchId: branch.id } });
+  }
   const staff = await db.staff.create({ data: { name: 'Book Now Stylist', email: 'book-now-staff@example.com', roleTitle: 'Stylist', user: { create: { name: 'Stylist', email: 'book-now-staff@example.com', passwordHash: 'unused', role: 'STAFF' } }, branches: { create: { branchId: branch.id } }, schedule: { create: { branchId: branch.id, day, startTime: '00:00', endTime: '23:59' } } } });
   const item = await db.package.create({ data: { name: 'Book Now Package', type: 'GROUP_PURCHASE_PACKAGE', regularPrice: '120.50', packagePrice: '100.25', durationMinutes: 30, capacity: 100, branches: { create: { branchId: branch.id } }, staff: { create: { staffId: staff.id } } } });
   await db.wallet.upsert({ where: { customerId }, create: { customerId, paidBalance: 10000, bonusBalance: 1000 }, update: {} });

@@ -1266,7 +1266,7 @@ const getBookingPolicy = async (branchId: string) => {
 
   const allowedBookingMethods = bookingPolicy.allowedBookingMethods;
 
-  const depositEnabled = allowedBookingMethods.includes("DEPOSIT");
+  const depositEnabled = bookingPolicy.depositEnabled && allowedBookingMethods.includes("DEPOSIT");
 
   return {
     slotIntervalMinutes: bookingPolicy.slotIntervalMinutes,
@@ -1285,13 +1285,17 @@ const getBookingPolicy = async (branchId: string) => {
     qrVerificationRule: bookingPolicy.qrVerificationRule,
 
     allowedBookingMethods,
+    groupPurchaseBookingMethods: allowedBookingMethods.filter(method =>
+      method !== "DEPOSIT" || (depositEnabled && bookingPolicy.depositPercentage !== null &&
+        Number(bookingPolicy.depositPercentage) > 0 && Number(bookingPolicy.depositPercentage) < 100)),
+    staffSelectionRequired: false,
 
     depositEnabled,
 
     depositPercentage:
       bookingPolicy.depositPercentage !== null
         ? Number(bookingPolicy.depositPercentage)
-        : 10,
+        : null,
   };
 };
 // =====================================================

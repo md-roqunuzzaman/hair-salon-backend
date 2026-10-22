@@ -34,6 +34,16 @@ import { uploadService } from "../upload/upload.service.js";
 import { ICreateGroupPurchasePayload } from "./group-purchase.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
+import { presentGroupPurchase } from "./group-purchase.presentation.js";
+
+const initialAppointmentSelect = {
+  id: true, bookingMethod: true, appointmentStatus: true, paymentStatus: true,
+  branchId: true, staffId: true, date: true, startTime: true, endTime: true, qrVerifiedAt: true,
+} as const;
+const presentInitialAppointment = <T extends { id: string; bookingMethod: BookingMethod }>(appointments: T[], method: BookingMethod | null) => {
+  const appointment = appointments.find(item => item.bookingMethod === method);
+  return appointment ? { ...appointment, appointmentId: appointment.id } : null;
+};
 
 const GROUP_PURCHASE_RESERVATION_MINUTES = 5;
 
@@ -152,6 +162,9 @@ const createGroupPurchase = async (
           if (!packageData) {
             throw new AppError("Package not found", 404);
           }
+          if (packageData.type !== PackageType.GROUP_PURCHASE_PACKAGE) {
+            throw new AppError("Package is not a group purchase package", 422);
+          }
 
           if (packageData.status !== PackageStatus.ACTIVE) {
             throw new AppError("Package is inactive", 422);
@@ -239,9 +252,10 @@ const createGroupPurchase = async (
                 );
               }
 
-              depositPercentage = new Prisma.Decimal(
-                policy.depositPercentage ?? 10,
-              );
+              if (policy.depositPercentage === null) {
+                throw new AppError("Deposit percentage is not configured", 422);
+              }
+              depositPercentage = new Prisma.Decimal(policy.depositPercentage);
 
               if (depositPercentage.lte(0) || depositPercentage.gte(100)) {
                 throw new AppError(
@@ -590,6 +604,7 @@ const createGroupPurchase = async (
           // =================================================
 
           return {
+            ...presentGroupPurchase(groupPurchase),
             purchaseId: groupPurchase.id,
             packageId: groupPurchase.packageId,
             purchaseFlow: groupPurchase.purchaseFlow,
@@ -612,6 +627,12 @@ const createGroupPurchase = async (
                 ? null
                 : Number(groupPurchase.remainingAmount),
             firstAppointment,
+            redemption: {
+              purchasedQuantity: groupPurchase.quantity,
+              redeemedQuantity: isBookNow ? 1 : 0,
+              remainingQuantity: groupPurchase.quantity - (isBookNow ? 1 : 0),
+              canBookAppointment: false,
+            },
           };
         },
         {
@@ -738,6 +759,7 @@ const getMyGroupPurchases = async (
       },
 
       include: {
+        appointments: { select: initialAppointmentSelect },
         package: {
           select: {
             id: true,
@@ -890,6 +912,8 @@ const getMyGroupPurchases = async (
     // ===================================================
 
     return {
+      ...presentGroupPurchase(purchase, purchase.appointments.some(item => item.bookingMethod === purchase.bookingMethod && item.qrVerifiedAt !== null)),
+      firstAppointment: presentInitialAppointment(purchase.appointments, purchase.bookingMethod),
       id: purchase.id,
 
       package: {
@@ -976,6 +1000,7 @@ const getGroupPurchaseById = async (
     },
 
     include: {
+      appointments: { select: initialAppointmentSelect },
       package: {
         select: {
           id: true,
@@ -1040,6 +1065,12 @@ const getGroupPurchaseById = async (
       403,
     );
   }
+  if (role === Role.BRANCH_MANAGER) {
+    const branches = await prisma.branchManagerBranch.findMany({ where: { userId }, select: { branchId: true } });
+    if (!purchase.appointments.some(item => branches.some(branch => branch.branchId === item.branchId))) {
+      throw new AppError("You are not allowed to access this group purchase", 403);
+    }
+  }
 
   // =====================================================
   // 3. LOCALIZE PACKAGE NAME
@@ -1084,6 +1115,8 @@ const getGroupPurchaseById = async (
   // =====================================================
 
   return {
+    ...presentGroupPurchase(purchase, purchase.appointments.some(item => item.bookingMethod === purchase.bookingMethod && item.qrVerifiedAt !== null)),
+    firstAppointment: presentInitialAppointment(purchase.appointments, purchase.bookingMethod),
     id: purchase.id,
 
     package: {

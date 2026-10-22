@@ -24,6 +24,8 @@ async function setup(t, flag) {
   token = (await api('/api/v1/auth/login', { body: credentials })).data.accessToken;
   const ownerToken = (await api('/api/v1/auth/login', { body: { email: 'owner@example.com', password: 'OwnerPassword123!' } })).data.accessToken;
   const fixture = await api('/__book-now-fixture', { body: { customerId: registered.data.id } });
+  const managerToken = (await api('/api/v1/auth/login', { body: { email: 'book-now-manager@example.com', password: credentials.password } })).data.accessToken;
+  const otherManagerToken = (await api('/api/v1/auth/login', { body: { email: 'book-now-other-manager@example.com', password: credentials.password } })).data.accessToken;
   const state = () => api('/__book-now-state');
   const webhook = async event => {
     const body = JSON.stringify(event); const time = Math.floor(Date.now() / 1000);
@@ -32,7 +34,7 @@ async function setup(t, flag) {
     assert.equal(response.status, 200, await response.text());
   };
   const cron = async () => { const namespace = await mf.getDurableObjectNamespace('SALON_DB'); const response = await namespace.get(namespace.idFromName('salon-v1')).fetch('https://internal/__internal/cron'); assert.equal(response.status, 200, await response.text()); };
-  return { api, ownerToken, fixture, state, webhook, cron };
+  return { api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron };
 }
 
 for (const flag of [undefined, 'false']) test(`Book Now public creation is disabled for flag=${flag ?? 'missing'}`, async t => {
@@ -41,12 +43,22 @@ for (const flag of [undefined, 'false']) test(`Book Now public creation is disab
   const result = await api('/api/v1/group-purchases', { body: { ...fixture, quantity: 2, purchaseFlow: 'BUY_NOW_BOOK_NOW', bookingMethod: 'PAY_NOW', startTime: '10:00' }, status: 422 });
   assert.match(result.message, /not enabled/);
   assert.deepEqual(await state(), before);
+  const options = (await api(`/api/v1/packages/${fixture.packageId}`)).data.groupPurchaseOptions;
+  assert.deepEqual(options.availablePurchaseFlows, ['BUY_NOW_BOOK_LATER']);
   await api('/api/v1/group-purchases', { body: { packageId: fixture.packageId, quantity: 1 }, status: 201 });
 });
 
 test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end to end', async t => {
-  const { api, ownerToken, fixture, state, webhook, cron } = await setup(t, 'true');
+  const { api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron } = await setup(t, 'true');
   const root = '/api/v1/group-purchases';
+  await t.test('frontend discovery exposes two modes and effective branch methods', async () => {
+    const options = (await api(`/api/v1/packages/${fixture.packageId}`)).data.groupPurchaseOptions;
+    assert.deepEqual(options.availablePurchaseFlows, ['BUY_NOW_BOOK_LATER', 'BUY_NOW_BOOK_NOW']);
+    assert.equal(options.staffSelectionRequired, false);
+    const policy = (await api(`/api/v1/branches/${fixture.branchId}/booking-policy`)).data;
+    assert.deepEqual(policy.groupPurchaseBookingMethods, ['PAY_NOW', 'DEPOSIT', 'RESERVE_NOW']);
+    assert.equal(policy.depositPercentage, 30);
+  });
   await t.test('validation and amount tampering cannot bypass rules', async () => {
     await api(root, { body: { packageId: fixture.packageId, quantity: 1, purchaseFlow: 'BUY_NOW_BOOK_NOW' }, status: 400 });
     await api(root, { body: { ...fixture, quantity: 0, purchaseFlow: 'BUY_NOW_BOOK_NOW', bookingMethod: 'PAY_NOW', startTime: '08:00' }, status: 400 });
@@ -62,6 +74,14 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
       assert.equal(created.depositAmount, method === 'DEPOSIT' ? 60.15 : null);
       assert.equal(created.paymentStatus, method === 'RESERVE_NOW' ? 'UNPAID' : 'PENDING');
       assert.equal(created.reservationExpiresAt === null, method === 'RESERVE_NOW');
+      const pendingDetail = (await api(`${root}/${id}`)).data;
+      assert.equal(pendingDetail.purchaseFlow, 'BUY_NOW_BOOK_NOW');
+      assert.equal(pendingDetail.bookingMethod, method);
+      assert.equal(pendingDetail.firstAppointment.appointmentId, appointmentId);
+      await api(`${root}/${id}`, { roleToken: managerToken });
+      await api(`${root}/${id}`, { roleToken: otherManagerToken, status: 403 });
+      assert.equal(pendingDetail.onlinePaymentRequired, method !== 'RESERVE_NOW');
+      assert.equal(pendingDetail.amountDueOnline, method === 'DEPOSIT' ? 60.15 : method === 'PAY_NOW' ? 200.5 : 0);
       await api(`/api/v1/appointments/${appointmentId}/pay-with-wallet`, { body: { useBonus: true }, status: 409 });
       await api('/api/v1/payments/stripe/create-intent', { body: { appointmentId }, status: 409 });
       await api(`/api/v1/appointments/${appointmentId}/remaining-payment`, { body: { paymentMethod: 'CASH' }, roleToken: ownerToken, status: 409 });
@@ -101,6 +121,7 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
         await api(`${root}/${id}/remaining-payment`, { body: { paymentMethod: 'CASH' }, roleToken: ownerToken, status: 409 });
         await api(`/api/v1/appointments/${appointmentId}/qr`);
         await api('/api/v1/appointments/verify-qr', { body: { qrToken: appointment.qrToken, branchId: fixture.branchId }, roleToken: ownerToken });
+        assert.equal((await api(`${root}/${id}`)).data.qrVerificationRequired, false);
         await api(`${root}/${id}/remaining-payment`, { body: { paymentMethod: 'CASH' }, status: 403 });
         const remaining = await api(`${root}/${id}/remaining-payment`, { body: { paymentMethod: 'CASH' }, roleToken: ownerToken });
         assert.equal(remaining.success, true);
@@ -110,6 +131,13 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
         await api(`${root}/${id}/remaining-payment`, { body: { paymentMethod: 'CASH' }, roleToken: ownerToken, status: 409 });
       }
       assert.equal(purchase.paymentStatus, 'PAID');
+      const settled = (await api(`${root}/${id}`)).data;
+      assert.equal(settled.amountDueOnline, 0);
+      assert.equal(settled.amountDueAtSalon, 0);
+      assert.equal(settled.redemption.remainingQuantity, 1);
+      const listed = (await api(`${root}/my`)).data.items.find(item => item.id === id);
+      assert.equal(listed.bookingMethod, method);
+      assert.equal(listed.firstAppointment.appointmentId, appointmentId);
       const inventory = (await state()).packages.find(row => row.id === fixture.packageId);
       assert.equal(inventory.soldQuantity, index * 2); assert.equal(inventory.reservedQuantity, 0);
     });
@@ -134,5 +162,79 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
     assert.equal(current.payments.find(row => row.id === intent.paymentId).status, 'REFUNDED');
     assert.equal(current.refunds.filter(row => row.paymentId === intent.paymentId).length, 1);
     assert.deepEqual(current.packages[0], inventory);
+  });
+});
+
+test('Buy Later and policy-driven Direct Booking public regressions', async t => {
+  const { api, fixture, state, webhook } = await setup(t, 'true');
+  const root = '/api/v1/group-purchases';
+  const policy = data => api('/__book-now-policy', { body: { branchId: fixture.branchId, data } });
+  const direct = (bookingMethod, startTime = '10:00') => ({ ...fixture, quantity: 2, purchaseFlow: 'BUY_NOW_BOOK_NOW', bookingMethod, startTime });
+  await t.test('disabled methods, absent deposit, invalid deposit and notice/advance rules have no side effects', async () => {
+    const before = await state();
+    await policy({ allowedBookingMethods: ['PAY_NOW'] });
+    await api(root, { body: direct('DEPOSIT'), status: 422 });
+    assert.deepEqual((await api(`/api/v1/branches/${fixture.branchId}/booking-policy`)).data.groupPurchaseBookingMethods, ['PAY_NOW']);
+    await policy({ allowedBookingMethods: ['PAY_NOW', 'DEPOSIT', 'RESERVE_NOW'], depositEnabled: false });
+    await api(root, { body: direct('DEPOSIT'), status: 422 });
+    await policy({ depositEnabled: true, depositPercentage: null });
+    await api(root, { body: direct('DEPOSIT'), status: 422 });
+    assert.equal((await api(`/api/v1/branches/${fixture.branchId}/booking-policy`)).data.depositPercentage, null);
+    await policy({ depositPercentage: 100 });
+    await api(root, { body: direct('DEPOSIT'), status: 422 });
+    await policy({ depositPercentage: 25, maximumAdvanceBookingDays: 1 });
+    await api(root, { body: direct('PAY_NOW'), status: 409 });
+    await policy({ maximumAdvanceBookingDays: 30, minimumBookingNoticeMinutes: 10000 });
+    await api(root, { body: direct('PAY_NOW'), status: 409 });
+    await policy({ minimumBookingNoticeMinutes: 0 });
+    await api(root, { body: direct('PAY_NOW', '23:50'), status: 409 });
+    assert.deepEqual(await state(), before);
+  });
+  await t.test('configured deposit and automatic staff selection are used, conflicting concurrent bookings cannot both succeed', async () => {
+    const body = direct('DEPOSIT'); delete body.staffId;
+    const created = (await api(root, { body, status: 201 })).data;
+    assert.equal(created.depositPercentage, 25); assert.equal(created.depositAmount, 50.13);
+    assert.equal(created.remainingAmount, 150.37); assert.equal(created.firstAppointment.staffId, fixture.staffId);
+    await api(root, { body, status: 409 });
+    // Contending for a different single-staff slot: one purchase/appointment wins.
+    const attempts = await Promise.allSettled([1, 2].map(() => api(root, { body: direct('PAY_NOW', '11:00'), status: 201 })));
+    assert.equal(attempts.filter(item => item.status === 'fulfilled').length, 1);
+    assert.equal((await state()).appointments.filter(item => item.startTime === '11:00').length, 1);
+  });
+  await t.test('Buy Later full wallet payment unlocks exactly the purchased quantity', async () => {
+    const created = (await api(root, { body: { packageId: fixture.packageId, quantity: 1, purchaseFlow: 'BUY_NOW_BOOK_LATER' }, status: 201 })).data;
+    const id = created.purchaseId;
+    assert.equal(created.firstAppointment, null); assert.equal(created.amountDueOnline, 100.25);
+    const redeem = time => ({ branchId: fixture.branchId, date: fixture.date, startTime: time });
+    await api(`${root}/${id}/book-appointment`, { body: redeem('12:00'), status: 409 });
+    const paid = (await api(`${root}/${id}/pay-with-wallet`, { body: { useBonus: true } })).data;
+    assert.equal(paid.amountPaid, 100.25);
+    await api(`${root}/${id}/pay-with-wallet`, { body: { useBonus: true }, status: 409 });
+    await api(`${root}/${id}/book-appointment`, { body: redeem('12:00'), status: 201 });
+    await api(`${root}/${id}/book-appointment`, { body: redeem('13:00'), status: 409 });
+    const detail = (await api(`${root}/${id}`)).data;
+    assert.equal(detail.firstAppointment, null); assert.equal(detail.redemption.remainingQuantity, 0);
+    assert.equal(detail.redemption.canBookAppointment, false);
+  });
+  await t.test('Buy Later Stripe settles the full purchase once through signed webhooks', async () => {
+    const created = (await api(root, { body: { packageId: fixture.packageId, quantity: 2 }, status: 201 })).data;
+    const intent = (await api('/api/v1/payments/group-purchase/create-intent', { body: { purchaseId: created.purchaseId }, status: 201 })).data;
+    assert.equal(intent.amount, 200.5);
+    const event = await api('/__book-now-provider', { body: { paymentId: intent.paymentId } });
+    await webhook(event); const before = await state(); await webhook({ ...event, id: `${event.id}_duplicate` });
+    assert.deepEqual(await state(), before);
+    const detail = (await api(`${root}/${created.purchaseId}`)).data;
+    assert.equal(detail.paymentStatus, 'PAID'); assert.equal(detail.firstAppointment, null);
+    assert.equal(detail.redemption.remainingQuantity, 2); assert.equal(detail.redemption.canBookAppointment, true);
+  });
+  await t.test('concurrent wallet requests debit a Direct Booking only once', async () => {
+    const created = (await api(root, { body: { ...direct('PAY_NOW', '14:00'), quantity: 1 }, status: 201 })).data;
+    const before = await state();
+    const attempts = await Promise.allSettled([1, 2].map(() => api(`${root}/${created.purchaseId}/pay-with-wallet`, { body: { useBonus: true } })));
+    assert.equal(attempts.filter(item => item.status === 'fulfilled').length, 1);
+    const after = await state();
+    const balance = row => Math.round(Number(row.paidBalance) * 100) + Math.round(Number(row.bonusBalance) * 100);
+    assert.equal(balance(before.wallets[0]) - balance(after.wallets[0]), 10025);
+    assert.equal(after.payments.filter(item => item.groupPurchaseId === created.purchaseId && item.status === 'PAID').length, 1);
   });
 });

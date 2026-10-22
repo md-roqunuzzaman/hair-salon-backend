@@ -14,6 +14,7 @@ import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 import { getLocalizedContent } from "../../utils/localization.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { uploadService } from "../upload/upload.service.js";
+import { groupPurchaseOptions } from "../group-purchase/group-purchase.presentation.js";
 
 import {
   IAssignPackageBranchesPayload,
@@ -956,6 +957,7 @@ const getPackageById = async (
     id: packageData.id,
 
     type: packageData.type,
+    ...(packageData.type === PackageType.GROUP_PURCHASE_PACKAGE && { groupPurchaseOptions: groupPurchaseOptions() }),
 
     // ===============================================
     // MULTILINGUAL PACKAGE INFORMATION
