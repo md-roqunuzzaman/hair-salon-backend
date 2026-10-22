@@ -1,18 +1,27 @@
 import { createDatabase } from './database.mjs';
+import branchCoordinates from '../migrations/0007_branch_coordinates.sql';
 import migration from '../migrations/0001_initial.sql';
 import upgrade from '../migrations/0002_wallet_topup_promotion.sql';
+import settlementIdentity from '../migrations/0006_group_settlement_identity.sql';
+import unified from '../migrations/0004_unified_group_purchase.sql';
+import attemptFence from '../migrations/0005_refund_attempt_fence.sql';
 import qrUpgrade from '../migrations/0003_branch_qr_verification_rule.sql';
 import { Sessions } from './sessions.mjs';
 
 export class DatabaseFixture {
   constructor(state) {
     this.state = state;
-    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade));
+    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates));
     this.db = createDatabase(state.storage);
   }
   async fetch() {
     try {
       const db = this.db;
+      const locatedBranch = await db.branch.create({ data: { name: 'Coordinates', address: 'Hong Kong', latitude: 22.3193, longitude: 114.1694 } });
+      const coordinates = await db.branch.findUnique({ where: { id: locatedBranch.id }, select: { latitude: true, longitude: true } });
+      if (coordinates.latitude !== 22.3193 || coordinates.longitude !== 114.1694) throw new Error('Prisma coordinate roundtrip failed');
+      const cleared = await db.branch.update({ where: { id: locatedBranch.id }, data: { latitude: null, longitude: null } });
+      if (cleared.latitude !== null || cleared.longitude !== null) throw new Error('Nullable coordinates failed');
       const user = await db.user.create({ data: { name: 'Test', email: 'test@example.com', passwordHash: 'hash', role: 'CUSTOMER' } });
       let rolledBack = false;
       try {

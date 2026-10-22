@@ -1,4 +1,6 @@
+import { bookNowFixture, providerEvent } from './book-now-fixture.mjs';
 // Bundled only by build-cloudflare --test. Never included in the deployed entry.
+import { runGroupSafety } from './group-safety-fixture.mjs';
 import worker, { SalonDatabase } from '../worker.mjs';
 import { failureResponse } from './errors.mjs';
 import bcrypt from 'bcryptjs';
@@ -14,6 +16,13 @@ export class SalonTestDatabase extends SalonDatabase {
   async sendMail(message) { this.outbox.push(message); return { messageId: 'test' }; }
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === '/__book-now-fixture') return this.enqueue(async () => Response.json(await bookNowFixture(this.db, (await request.json()).customerId)));
+    if (url.pathname === '/__book-now-provider') return this.enqueue(async () => Response.json(await providerEvent(this.db, await request.json())));
+    if (url.pathname === '/__book-now-state') return this.enqueue(async () => Response.json({ purchases: await this.db.groupPurchase.findMany(), packages: await this.db.package.findMany(), appointments: await this.db.appointment.findMany(), payments: await this.db.payment.findMany(), refunds: await this.db.refund.findMany(), notifications: await this.db.notification.findMany(), wallets: await this.db.wallet.findMany(), ledger: await this.db.walletTransaction.findMany() }));
+    if (url.pathname === '/__book-now-expire') return this.enqueue(async () => { const { purchaseId } = await request.json(); await this.db.groupPurchase.update({ where: { id: purchaseId }, data: { reservationExpiresAt: new Date(0) } }); return Response.json({ ok: true }); });
+    if (url.pathname === '/__group-safety') return this.enqueue(async () => {
+      try { return Response.json(await runGroupSafety(this.db)); } catch (error) { return Response.json({ error: error.message, stack: error.stack }, { status: 500 }); }
+    });
     if (url.pathname === '/__notification-failure') return this.enqueue(async () => {
       this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS _TestNotificationFailure (userId TEXT PRIMARY KEY)');
       this.ctx.storage.sql.exec('DELETE FROM _TestNotificationFailure');

@@ -220,4 +220,8 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
   await api('/api/v1/auth/refresh-token', { method: 'POST', body: {}, status: 401 });
   await api('/api/v1/auth/login', { method: 'POST', body: credentials, status: 401 });
   await api('/api/v1/auth/login', { method: 'POST', body: { ...credentials, password: newPassword } });
+  const groupSafety = await api('/__group-safety');
+  assert.ok(groupSafety.data.passed.length >= 50);
+  t.diagnostic(`Unified Group Purchase: ${groupSafety.data.passed.length} real SQLite service checks passed`);
+
 });

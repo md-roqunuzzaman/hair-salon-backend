@@ -23,3 +23,6 @@ SMTP_HOST="smtp.gmail.com"
 SMTP_PORT="465"
 SMTP_USER="your-email@gmail.com"
 SMTP_PASSWORD="replace-with-google-app-password"
+
+# Explicit opt-in only after staging verification; disabled by default.
+ENABLE_BOOK_NOW_PURCHASE="false"

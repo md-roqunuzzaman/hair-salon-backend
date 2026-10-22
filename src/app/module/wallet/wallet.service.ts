@@ -1,6 +1,8 @@
 import {
   AppointmentStatus,
   BalanceType,
+  BookingMethod,
+  GroupPurchaseFlow,
   PaymentProvider,
   PaymentPurpose,
   PaymentStatus,
@@ -9,6 +11,7 @@ import {
   WalletTopupStatus,
   WalletTransactionType,
 } from "../../../../generated/prisma/client.js";
+import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
 import { stripe } from "../../lib/stripe.js";
 import { AppError } from "../../utils/app-error.js";
@@ -539,6 +542,7 @@ const payAppointmentWithWallet = async (
             select: {
               id: true,
               customerId: true,
+              groupPurchaseId: true,
               appointmentStatus: true,
               paymentStatus: true,
               price: true,
@@ -559,6 +563,10 @@ const payAppointmentWithWallet = async (
               "You are not allowed to pay for this appointment",
               403,
             );
+          }
+
+          if (appointment.groupPurchaseId) {
+            throw new AppError("Group Purchase-linked appointments must use the Group Purchase payment flow", 409);
           }
 
           // ==========================================
@@ -741,17 +749,34 @@ const payGroupPurchaseWithWallet = async (
         async (tx) => {
           const now = new Date();
 
-          // 1. Find purchase
+          // =====================================================
+          // 1. FIND PURCHASE
+          // =====================================================
+
+          await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id" = ${purchaseId} FOR UPDATE`;
           const purchase = await tx.groupPurchase.findUnique({
-            where: { id: purchaseId },
+            where: {
+              id: purchaseId,
+            },
             select: {
               id: true,
               customerId: true,
               packageId: true,
               quantity: true,
               amount: true,
+              purchaseFlow: true,
+              bookingMethod: true,
+              depositAmount: true,
               paymentStatus: true,
               reservationExpiresAt: true,
+              appointments: {
+                select: {
+                  id: true,
+                  bookingMethod: true,
+                  appointmentStatus: true,
+                  paymentStatus: true,
+                },
+              },
             },
           });
 
@@ -759,13 +784,55 @@ const payGroupPurchaseWithWallet = async (
             throw new AppError("GROUP_PURCHASE_NOT_FOUND", 404);
           }
 
-          // 2. Ownership
+          // =====================================================
+          // 2. CHECK OWNERSHIP
+          // =====================================================
+
           if (purchase.customerId !== customerId) {
             throw new AppError("FORBIDDEN_GROUP_PURCHASE", 403);
           }
 
-          // 3. Status validation
-          if (purchase.paymentStatus === PaymentStatus.PAID) {
+          // =====================================================
+          // 3. VALIDATE PURCHASE FLOW
+          // =====================================================
+
+          const isBookNow =
+            purchase.purchaseFlow === GroupPurchaseFlow.BUY_NOW_BOOK_NOW;
+
+          if (
+            purchase.purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_LATER &&
+            !isBookNow
+          ) {
+            throw new AppError("UNSUPPORTED_PURCHASE_FLOW", 422);
+          }
+
+          const isDeposit =
+            isBookNow && purchase.bookingMethod === BookingMethod.DEPOSIT;
+
+          if (isBookNow) {
+            if (purchase.bookingMethod === BookingMethod.RESERVE_NOW) {
+              throw new AppError(
+                "RESERVE_NOW_DOES_NOT_REQUIRE_INITIAL_WALLET_PAYMENT",
+                422,
+              );
+            }
+
+            if (
+              purchase.bookingMethod !== BookingMethod.PAY_NOW &&
+              purchase.bookingMethod !== BookingMethod.DEPOSIT
+            ) {
+              throw new AppError("UNSUPPORTED_BOOK_NOW_PAYMENT_METHOD", 422);
+            }
+          }
+
+          // =====================================================
+          // 4. VALIDATE PAYMENT STATUS
+          // =====================================================
+
+          if (
+            purchase.paymentStatus === PaymentStatus.PAID ||
+            purchase.paymentStatus === PaymentStatus.PARTIALLY_PAID
+          ) {
             throw new AppError("PAYMENT_ALREADY_COMPLETED", 409);
           }
 
@@ -773,7 +840,10 @@ const payGroupPurchaseWithWallet = async (
             throw new AppError("GROUP_PURCHASE_NOT_PAYABLE", 409);
           }
 
-          // 4. Reservation expiry
+          // =====================================================
+          // 5. CHECK RESERVATION EXPIRY
+          // =====================================================
+
           if (
             !purchase.reservationExpiresAt ||
             purchase.reservationExpiresAt <= now
@@ -781,7 +851,51 @@ const payGroupPurchaseWithWallet = async (
             throw new AppError("GROUP_PURCHASE_RESERVATION_EXPIRED", 409);
           }
 
-          // 5. Check existing payments
+          // =====================================================
+          // 6. DETERMINE WALLET PAYMENT AMOUNT
+          // =====================================================
+
+          const paymentAmount = isDeposit
+            ? purchase.depositAmount
+            : purchase.amount;
+
+          if (
+            !paymentAmount ||
+            !paymentAmount.isFinite() ||
+            paymentAmount.lte(0)
+          ) {
+            throw new AppError("INVALID_PAYMENT_AMOUNT", 422);
+          }
+
+          if (isDeposit && paymentAmount.gte(purchase.amount)) {
+            throw new AppError("INVALID_DEPOSIT_AMOUNT", 422);
+          }
+
+          // =====================================================
+          // 7. VALIDATE LINKED APPOINTMENT
+          // =====================================================
+
+          const initialAppointments = purchase.appointments.filter(item => item.bookingMethod === purchase.bookingMethod);
+          const appointment = isBookNow ? initialAppointments[0] : null;
+
+          if (isBookNow) {
+            if (initialAppointments.length !== 1 || !appointment) {
+              throw new AppError("INVALID_BOOK_NOW_APPOINTMENT", 409);
+            }
+
+            if (
+              appointment.appointmentStatus !==
+                AppointmentStatus.PENDING_PAYMENT ||
+              appointment.paymentStatus !== PaymentStatus.PENDING
+            ) {
+              throw new AppError("BOOK_NOW_APPOINTMENT_NOT_PAYABLE", 409);
+            }
+          }
+
+          // =====================================================
+          // 8. CHECK EXISTING PAYMENTS
+          // =====================================================
+
           const existingPayments = await tx.payment.findMany({
             where: {
               groupPurchaseId: purchase.id,
@@ -804,6 +918,9 @@ const payGroupPurchaseWithWallet = async (
             throw new AppError("PAYMENT_ALREADY_COMPLETED", 409);
           }
 
+          // Prevent wallet payment when a Stripe payment
+          // may still complete asynchronously.
+
           if (
             existingPayments.some(
               (payment) =>
@@ -814,27 +931,55 @@ const payGroupPurchaseWithWallet = async (
             throw new AppError("STRIPE_PAYMENT_ALREADY_PENDING", 409);
           }
 
-          // 6. Deduct wallet
+          // =====================================================
+          // 9. ATOMIC WALLET DEDUCTION
+          // =====================================================
+
           const walletResult = await deductWalletBalance(
             tx,
             customerId,
-            purchase.amount,
+            paymentAmount,
             payload.useBonus,
             "GROUP_PURCHASE_PAYMENT",
             purchase.id,
           );
 
-          // 7. Finalize purchase (guarded)
+          // =====================================================
+          // 10. UPDATE PURCHASE
+          // =====================================================
+
+          const payment = await tx.payment.create({
+            data: {
+              customerId,
+              groupPurchaseId: purchase.id,
+              purpose: PaymentPurpose.GROUP_PURCHASE,
+              provider: PaymentProvider.WALLET,
+              amount: paymentAmount,
+              currency: "HKD",
+              status: PaymentStatus.PAID,
+              paidAt: now,
+            },
+          });
+
+
+          const nextPurchaseStatus = isDeposit
+            ? PaymentStatus.PARTIALLY_PAID
+            : PaymentStatus.PAID;
+
           const updatedPurchase = await tx.groupPurchase.updateMany({
             where: {
               id: purchase.id,
               customerId,
               paymentStatus: PaymentStatus.PENDING,
-              reservationExpiresAt: { gt: now },
+              reservationExpiresAt: {
+                gt: now,
+              },
             },
             data: {
-              paymentStatus: PaymentStatus.PAID,
+              paymentStatus: nextPurchaseStatus,
+              settledPaymentId: payment.id,
               purchasedAt: now,
+              reservationExpiresAt: null,
             },
           });
 
@@ -842,15 +987,24 @@ const payGroupPurchaseWithWallet = async (
             throw new AppError("GROUP_PURCHASE_PAYMENT_CONFLICT", 409);
           }
 
-          // 8. Transfer reserved capacity to sold
+          // =====================================================
+          // 11. TRANSFER INVENTORY RESERVED -> SOLD
+          // =====================================================
+
           const updatedPackage = await tx.package.updateMany({
             where: {
               id: purchase.packageId,
-              reservedQuantity: { gte: purchase.quantity },
+              reservedQuantity: {
+                gte: purchase.quantity,
+              },
             },
             data: {
-              reservedQuantity: { decrement: purchase.quantity },
-              soldQuantity: { increment: purchase.quantity },
+              reservedQuantity: {
+                decrement: purchase.quantity,
+              },
+              soldQuantity: {
+                increment: purchase.quantity,
+              },
             },
           });
 
@@ -858,24 +1012,59 @@ const payGroupPurchaseWithWallet = async (
             throw new AppError("GROUP_PURCHASE_CAPACITY_CONFLICT", 409);
           }
 
-          // 9. Create Payment record
-          const payment = await tx.payment.create({
-            data: {
-              customerId,
-              groupPurchaseId: purchase.id,
-              purpose: PaymentPurpose.GROUP_PURCHASE,
-              provider: PaymentProvider.WALLET,
-              amount: purchase.amount,
-              currency: "HKD",
-              status: PaymentStatus.PAID,
-              paidAt: now,
-            },
-          });
+          // =====================================================
+          // 12. UPDATE FIRST BOOK NOW APPOINTMENT
+          // =====================================================
+
+          if (isBookNow && appointment) {
+            const nextAppointmentStatus = isDeposit
+              ? AppointmentStatus.RESERVED
+              : AppointmentStatus.CONFIRMED;
+
+            const nextAppointmentPaymentStatus = isDeposit
+              ? PaymentStatus.PARTIALLY_PAID
+              : PaymentStatus.PAID;
+
+            const qrToken = isDeposit
+              ? crypto.randomBytes(32).toString("hex")
+              : null;
+
+            const updatedAppointment = await tx.appointment.updateMany({
+              where: {
+                id: appointment.id,
+                groupPurchaseId: purchase.id,
+                appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+                paymentStatus: PaymentStatus.PENDING,
+              },
+              data: {
+                appointmentStatus: nextAppointmentStatus,
+                paymentStatus: nextAppointmentPaymentStatus,
+                holdExpiresAt: null,
+                qrToken,
+              },
+            });
+
+            if (updatedAppointment.count !== 1) {
+              throw new AppError("BOOK_NOW_APPOINTMENT_UPDATE_CONFLICT", 409);
+            }
+          }
+
+          // =====================================================
+          // 13. CREATE WALLET PAYMENT RECORD
+          // =====================================================
+
+          // =====================================================
+          // 14. RETURN RESULT
+          // =====================================================
 
           return {
             purchaseId: purchase.id,
             paymentId: payment.id,
-            paymentStatus: "PAID" as const,
+            paymentStatus: nextPurchaseStatus,
+            amountPaid: Number(paymentAmount),
+            remainingAmount: isDeposit
+              ? Number(purchase.amount.minus(paymentAmount))
+              : 0,
             ...walletResult,
           };
         },
@@ -886,11 +1075,11 @@ const payGroupPurchaseWithWallet = async (
         },
       );
     } catch (error) {
-      if (
+      const retryable =
         error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2034" &&
-        attempt < 3
-      ) {
+        error.code === "P2034";
+
+      if (retryable && attempt < 3) {
         continue;
       }
 
@@ -900,6 +1089,7 @@ const payGroupPurchaseWithWallet = async (
 
   throw new AppError("GROUP_PURCHASE_PAYMENT_RETRY_FAILED", 409);
 };
+
 export const walletService = {
   getMyWallet,
   getMyTransactions,

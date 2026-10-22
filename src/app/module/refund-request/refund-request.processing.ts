@@ -1,3 +1,5 @@
+import { notificationService } from "../notification/notification.service.js";
+import { auditLogService } from "../auditLog/auditLog.service.js";
 import { logUnexpectedError } from "../../utils/normalize-error.js";
 import Stripe from "stripe";
 
@@ -49,6 +51,10 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
 
   if (!request) {
     throw new AppError("REFUND_REQUEST_NOT_FOUND", 404);
+  }
+
+  if (request.status === RefundRequestStatus.PROCESSING && request.payment.provider === PaymentProvider.STRIPE) {
+    return reconcileApprovedStripeRefund(requestId);
   }
 
   if (request.status !== RefundRequestStatus.APPROVED) {
@@ -256,6 +262,8 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
           amount: request.amount,
           reason: request.reason,
           status: RefundStatus.PENDING,
+          idempotencyKey: `refund-request-${requestId}`,
+          refundAttemptedAt: new Date(),
         },
       });
 
@@ -272,6 +280,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
         paymentId: payment.id,
         providerPaymentId: payment.providerPaymentId,
         amountCents: requestedCents,
+        currency: payment.currency,
         reason: request.reason,
       };
     },
@@ -309,6 +318,11 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
     // Keep PROCESSING + PENDING.
     // Stripe might have accepted the request.
     // Reconciliation is required before retrying.
+    throw new AppError("STRIPE_REFUND_RECONCILIATION_REQUIRED", 502);
+  }
+
+  const refundedIntentId = typeof stripeRefund.payment_intent === "string" ? stripeRefund.payment_intent : stripeRefund.payment_intent?.id;
+  if (refundedIntentId !== claimed.providerPaymentId || stripeRefund.amount !== claimed.amountCents || stripeRefund.currency.toLowerCase() !== claimed.currency.toLowerCase()) {
     throw new AppError("STRIPE_REFUND_RECONCILIATION_REQUIRED", 502);
   }
 
@@ -352,8 +366,13 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
   // 7. FINALIZE SUCCESS
   // =====================================================
 
+  return finalizeApprovedStripeRefund(requestId, stripeRefund);
+};
+
+const finalizeApprovedStripeRefund = async (requestId: string, stripeRefund: Stripe.Refund) => {
   const finalized = await prisma.$transaction(
     async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "RefundRequest" WHERE "id" = ${requestId} FOR UPDATE`;
       const request = await tx.refundRequest.findUnique({
         where: { id: requestId },
 
@@ -376,6 +395,11 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
         throw new AppError("REFUND_REQUEST_NOT_FOUND", 404);
       }
 
+      if (request.status === RefundRequestStatus.COMPLETED) {
+        const completed = request.payment.refunds.find(item => item.id === request.refundId);
+        if (completed?.providerRefundId !== stripeRefund.id || completed.status !== RefundStatus.SUCCEEDED) throw new AppError("REFUND_RECONCILIATION_MISMATCH", 409);
+        return { refundRequestId: requestId, paymentId: request.payment.id, refundId: request.refundId, providerRefundId: stripeRefund.id, amount: Number(request.amount), currency: request.payment.currency, status: "COMPLETED", refundStatus: "SUCCEEDED", paymentStatus: request.payment.status };
+      }
       if (request.status !== RefundRequestStatus.PROCESSING) {
         throw new AppError("INVALID_REFUND_PROCESSING_STATE", 409);
       }
@@ -502,6 +526,11 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
           status: RefundRequestStatus.COMPLETED,
         },
       });
+      if (payment.purpose === PaymentPurpose.GROUP_PURCHASE) {
+        await notificationService.createNotification({ userId: request.customerId, type: "REFUND_COMPLETED", title: "Refund completed", message: `Your group purchase refund of ${payment.currency} ${request.amount.toFixed(2)} has been completed.` }, tx);
+        await auditLogService.createAuditLog({ userId: null, action: "GROUP_PURCHASE_REFUND_COMPLETED", entityType: "REFUND_REQUEST", entityId: request.id, metadata: { paymentId: payment.id, refundId: request.refundId, providerRefundId: stripeRefund.id } }, tx);
+      }
+
 
       return {
         refundRequestId: requestId,
@@ -523,6 +552,38 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
   );
 
   return finalized;
+};
+
+export const reconcileApprovedStripeRefund = async (requestId: string) => {
+  const request = await prisma.refundRequest.findUnique({ where: { id: requestId }, include: { refund: true, payment: true } });
+  if (!request?.refund || request.payment.provider !== PaymentProvider.STRIPE || !request.payment.providerPaymentId || ![RefundRequestStatus.PROCESSING, RefundRequestStatus.COMPLETED].some(status => status === request.status)) throw new AppError("REFUND_NOT_RECONCILABLE", 409);
+  let provider: Stripe.Refund | undefined;
+  if (request.refund.providerRefundId) provider = await stripe.refunds.retrieve(request.refund.providerRefundId);
+  else {
+    const matches: Stripe.Refund[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 3; page++) {
+      const list = await stripe.refunds.list({ payment_intent: request.payment.providerPaymentId, limit: 100, ...(cursor && { starting_after: cursor }) });
+      matches.push(...list.data.filter(item => item.metadata?.refundId === request.refundId && item.metadata?.refundRequestId === requestId));
+      if (!list.has_more) break;
+      if (page === 2 || !list.data.length) throw new AppError("REFUND_MANUAL_RECONCILIATION_REQUIRED", 503);
+      cursor = list.data[list.data.length - 1].id;
+    }
+    if (matches.length !== 1) throw new AppError("REFUND_MANUAL_RECONCILIATION_REQUIRED", 503);
+    provider = matches[0];
+  }
+  const intentId = typeof provider.payment_intent === "string" ? provider.payment_intent : provider.payment_intent?.id;
+  if ((request.refund.providerRefundId && provider.id !== request.refund.providerRefundId) || intentId !== request.payment.providerPaymentId || provider.amount !== toCents(request.amount) || provider.currency.toLowerCase() !== request.payment.currency.toLowerCase()) throw new AppError("REFUND_RECONCILIATION_MISMATCH", 409);
+  await prisma.refund.updateMany({ where: { id: request.refund.id, status: RefundStatus.PENDING }, data: { providerRefundId: provider.id } });
+  if (provider.status === "succeeded") return finalizeApprovedStripeRefund(requestId, provider);
+  if (provider.status === "failed" || provider.status === "canceled") {
+    await prisma.$transaction(async tx => {
+      const changed = await tx.refundRequest.updateMany({ where: { id: requestId, status: RefundRequestStatus.PROCESSING }, data: { status: RefundRequestStatus.FAILED } });
+      if (changed.count) await tx.refund.updateMany({ where: { id: request.refundId!, status: RefundStatus.PENDING }, data: { status: RefundStatus.FAILED } });
+    });
+    throw new AppError("STRIPE_REFUND_FAILED", 502);
+  }
+  return { refundRequestId: requestId, refundId: request.refundId, refundStatus: "PENDING", status: "PROCESSING" };
 };
 
 const processApprovedWalletRefund = async (

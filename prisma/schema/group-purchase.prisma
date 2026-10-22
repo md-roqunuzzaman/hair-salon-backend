@@ -11,11 +11,18 @@ model GroupPurchase {
 
   reservationExpiresAt DateTime?
   purchasedAt          DateTime?
-  purchaseFlow         GroupPurchaseFlow @default(BUY_NOW_BOOK_LATER)
-  customer             User              @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  package              Package           @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  payments             Payment[]
-  appointments         Appointment[]
+  settledPaymentId String? @unique
+  settledPayment Payment? @relation("GroupPurchaseSettlement", fields: [settledPaymentId], references: [id], onDelete: Restrict)
+
+  bookingMethod     BookingMethod?
+  depositPercentage Decimal?          @db.Decimal(5, 2)
+  depositAmount     Decimal?          @db.Decimal(10, 2)
+  remainingAmount   Decimal?          @db.Decimal(10, 2)
+  purchaseFlow      GroupPurchaseFlow @default(BUY_NOW_BOOK_LATER)
+  customer          User              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  package           Package           @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  payments          Payment[]
+  appointments      Appointment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

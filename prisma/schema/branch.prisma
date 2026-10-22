@@ -6,6 +6,8 @@ model Branch {
   description      String?
   imageObjectKey   String?
   translations     Json?
+  latitude         Float?
+  longitude        Float?
   status           BranchStatus           @default(ACTIVE)
   bookingPolicy    BranchBookingPolicy?
   businessHours    BranchBusinessHour[]

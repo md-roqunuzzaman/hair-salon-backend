@@ -26,6 +26,7 @@ model Payment {
   appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
 
   groupPurchase GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
+  settledGroupPurchase GroupPurchase? @relation("GroupPurchaseSettlement")
 
   refunds Refund[]
 
@@ -64,7 +65,11 @@ model Refund {
 
   status RefundStatus @default(PENDING)
 
-  refundedAt DateTime?
+  refundedAt     DateTime?
+  idempotencyKey String?   @unique
+  refundClaimToken String? @unique
+  refundClaimExpiresAt DateTime?
+  refundAttemptedAt DateTime?
 
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 

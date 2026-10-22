@@ -2,6 +2,7 @@ import { env } from "./env.js";
 
 export default {
   node_env: env.NODE_ENV,
+  enable_book_now_purchase: env.ENABLE_BOOK_NOW_PURCHASE,
   port: env.PORT,
   database_url: env.DATABASE_URL,
   frontend_url: env.CORS_ORIGIN,

@@ -12,6 +12,10 @@ export interface ICreateBranchPayload {
   description?: string;
   imageObjectKey?: string;
   translations?: IBranchTranslations;
+
+  // Map location
+  latitude?: number;
+  longitude?: number;
 }
 
 export interface IUpdateBranchPayload {
@@ -21,6 +25,10 @@ export interface IUpdateBranchPayload {
   description?: string;
   imageObjectKey?: string;
   translations?: IBranchTranslations;
+
+  // Map location
+  latitude?: number;
+  longitude?: number;
 }
 
 export interface IUpdateBranchStatusPayload {
@@ -141,4 +149,12 @@ export interface IBranchStaffOutputItem {
 
 export interface IBranchStaffOutputResult {
   items: IBranchStaffOutputItem[];
+}
+
+export interface INearbyBranchesQuery {
+  latitude: number;
+  longitude: number;
+  radiusKm?: number;
+  page?: number;
+  limit?: number;
 }

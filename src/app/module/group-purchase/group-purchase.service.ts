@@ -1,16 +1,23 @@
+import config from "../../config/index.js";
 import { notificationService } from "../notification/notification.service.js";
 import {
   AppointmentStatus,
   BookingMethod,
+  GroupPurchaseFlow,
   ListingStatus,
   PackageStatus,
   PackageType,
+  PaymentProvider,
+  PaymentPurpose,
   PaymentStatus,
   Prisma,
+  RefundStatus,
+  Role,
+  SalonPaymentMethod,
 } from "../../../../generated/prisma/client.js";
 
 import { prisma } from "../../lib/prisma.js";
-
+import crypto from "node:crypto";
 import { AppError } from "../../utils/app-error.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 import { getLocalizedContent } from "../../utils/localization.js";
@@ -18,12 +25,15 @@ import {
   assertBranchHourlyCapacityAvailable,
   assertStaffSlotAvailable,
   minutesToTime,
+  resolveAvailableStaff,
   timeToMinutes,
 } from "../appointment/appointment.service.js";
 import { AvailabilityService } from "../availability/availability.service.js";
 import { uploadService } from "../upload/upload.service.js";
 
 import { ICreateGroupPurchasePayload } from "./group-purchase.interface.js";
+import { auditLogService } from "../auditLog/auditLog.service.js";
+import { notificationTemplates } from "../notification/notification.templates.js";
 
 const GROUP_PURCHASE_RESERVATION_MINUTES = 5;
 
@@ -33,80 +43,106 @@ const createGroupPurchase = async (
 ) => {
   const maxRetries = 3;
 
+
+  const purchaseFlow =
+    payload.purchaseFlow ?? GroupPurchaseFlow.BUY_NOW_BOOK_LATER;
+
+  const isBookNow = purchaseFlow === GroupPurchaseFlow.BUY_NOW_BOOK_NOW;
+
+  // =====================================================
+  // 1. VALIDATE REQUEST
+  // =====================================================
+
+  if (
+    purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_LATER &&
+    purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_NOW
+  ) {
+    throw new AppError("Invalid purchase flow", 400);
+  }
+
+  if (!Number.isSafeInteger(payload.quantity) || payload.quantity < 1) {
+    throw new AppError("Quantity must be a positive integer", 400);
+  }
+
+  if (isBookNow && !config.enable_book_now_purchase) {
+    throw new AppError("Book Now payment integration is not enabled yet", 422);
+  }
+
+  if (isBookNow) {
+    if (
+      !payload.bookingMethod ||
+      !payload.branchId ||
+      !payload.date ||
+      !payload.startTime
+    ) {
+      throw new AppError(
+        "bookingMethod, branchId, date and startTime are required",
+        400,
+      );
+    }
+
+    if (
+      payload.bookingMethod !== BookingMethod.PAY_NOW &&
+      payload.bookingMethod !== BookingMethod.DEPOSIT &&
+      payload.bookingMethod !== BookingMethod.RESERVE_NOW
+    ) {
+      throw new AppError("Invalid booking method", 400);
+    }
+
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(payload.date) ||
+      !/^\d{2}:\d{2}$/.test(payload.startTime)
+    ) {
+      throw new AppError("Invalid appointment date or time", 400);
+    }
+  } else if (
+    payload.bookingMethod ||
+    payload.branchId ||
+    payload.staffId ||
+    payload.date ||
+    payload.startTime
+  ) {
+    throw new AppError("Booking details are not allowed for Buy Later", 400);
+  }
+
+  // =====================================================
+  // 2. PRECHECK AVAILABLE SLOT FOR BOOK NOW
+  // =====================================================
+
+  if (isBookNow) {
+    const availability = await AvailabilityService.getAvailableSlots({
+      branchId: payload.branchId!,
+      packageId: payload.packageId,
+      staffId: payload.staffId ?? undefined,
+      date: payload.date!,
+    });
+
+    const requestedSlot = availability.slots.find(
+      (slot) =>
+        slot.startTime === payload.startTime &&
+        slot.available === true &&
+        (!payload.staffId || slot.staffId === payload.staffId),
+    );
+
+    if (!requestedSlot) {
+      throw new AppError("Selected appointment slot is unavailable", 409);
+    }
+  }
+
+  // =====================================================
+  // 3. SERIALIZABLE TRANSACTION
+  // =====================================================
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await prisma.$transaction(
+      return await prisma.$transaction(
         async (tx) => {
           const now = new Date();
 
-          // Release expired pending reservations for this package
-          const expiredPurchases = await tx.groupPurchase.findMany({
-            where: {
-              packageId: payload.packageId,
-              paymentStatus: PaymentStatus.PENDING,
-              reservationExpiresAt: {
-                lte: now,
-              },
-            },
+          // =================================================
+          // 4. LOAD PACKAGE
+          // =================================================
 
-            select: {
-              id: true,
-              quantity: true,
-            },
-          });
-
-          if (expiredPurchases.length > 0) {
-            const expiredQuantity = expiredPurchases.reduce(
-              (total, purchase) => total + purchase.quantity,
-              0,
-            );
-
-            await tx.groupPurchase.updateMany({
-              where: {
-                id: {
-                  in: expiredPurchases.map((purchase) => purchase.id),
-                },
-                paymentStatus: PaymentStatus.PENDING,
-              },
-
-              data: {
-                paymentStatus: PaymentStatus.FAILED,
-              },
-            });
-
-            const packageForRelease = await tx.package.findUnique({
-              where: {
-                id: payload.packageId,
-              },
-
-              select: {
-                reservedQuantity: true,
-              },
-            });
-
-            if (packageForRelease) {
-              const releaseQuantity = Math.min(
-                expiredQuantity,
-                packageForRelease.reservedQuantity,
-              );
-
-              if (releaseQuantity > 0) {
-                await tx.package.update({
-                  where: {
-                    id: payload.packageId,
-                  },
-
-                  data: {
-                    reservedQuantity: {
-                      decrement: releaseQuantity,
-                    },
-                  },
-                });
-              }
-            }
-          }
-
-          // Get package
           const packageData = await tx.package.findUnique({
             where: {
               id: payload.packageId,
@@ -117,161 +153,484 @@ const createGroupPurchase = async (
             throw new AppError("Package not found", 404);
           }
 
-          // Must be group purchase package
-          if (packageData.type !== PackageType.GROUP_PURCHASE_PACKAGE) {
-            throw new AppError(
-              "Selected package is not a group purchase package",
-              400,
-            );
-          }
-
-          // Must be ACTIVE
           if (packageData.status !== PackageStatus.ACTIVE) {
             throw new AppError("Package is inactive", 422);
           }
 
-          // Must be LISTED
           if (packageData.listingStatus !== ListingStatus.LISTED) {
             throw new AppError("Package is delisted", 422);
           }
 
-          // Group Purchase configuration must exist
-          if (
-            packageData.capacity === null ||
-            packageData.purchaseLimitPerCustomer === null ||
-            packageData.salesStartAt === null ||
-            packageData.salesEndAt === null
-          ) {
-            throw new AppError(
-              "Group purchase package configuration is incomplete",
-              422,
+          if (packageData.salesStartAt && now < packageData.salesStartAt) {
+            throw new AppError("Package sale has not started", 422);
+          }
+
+          if (packageData.salesEndAt && now > packageData.salesEndAt) {
+            throw new AppError("Package sale has ended", 422);
+          }
+
+          // =================================================
+          // 5. VALIDATE BOOKING AND BRANCH POLICY
+          // =================================================
+
+          let selectedStaffId: string | null = null;
+          let appointmentEndTime: string | null = null;
+          let appointmentDate: Date | null = null;
+
+          let depositPercentage: Prisma.Decimal | null = null;
+          let depositAmount: Prisma.Decimal | null = null;
+          let remainingAmount: Prisma.Decimal | null = null;
+
+          const unitPrice = packageData.packagePrice;
+          const amount = unitPrice.mul(payload.quantity);
+
+          if (isBookNow) {
+            const branch = await tx.branch.findUnique({
+              where: {
+                id: payload.branchId!,
+              },
+              include: {
+                bookingPolicy: true,
+              },
+            });
+
+            if (!branch) {
+              throw new AppError("Branch not found", 404);
+            }
+
+            if (branch.status !== "ACTIVE") {
+              throw new AppError("Branch is inactive", 422);
+            }
+
+            const packageBranch = await tx.packageBranch.findFirst({
+              where: {
+                packageId: packageData.id,
+                branchId: branch.id,
+              },
+            });
+
+            if (!packageBranch) {
+              throw new AppError(
+                "Package is not available at this branch",
+                422,
+              );
+            }
+
+            const policy = branch.bookingPolicy;
+
+            if (!policy) {
+              throw new AppError("Branch booking policy not configured", 422);
+            }
+
+            const bookingMethod = payload.bookingMethod as BookingMethod;
+
+            if (!policy.allowedBookingMethods.includes(bookingMethod)) {
+              throw new AppError(
+                `${bookingMethod} booking is not enabled for this branch`,
+                422,
+              );
+            }
+
+            if (bookingMethod === BookingMethod.DEPOSIT) {
+              if (!policy.depositEnabled) {
+                throw new AppError(
+                  "Deposit booking is disabled for this branch",
+                  422,
+                );
+              }
+
+              depositPercentage = new Prisma.Decimal(
+                policy.depositPercentage ?? 10,
+              );
+
+              if (depositPercentage.lte(0) || depositPercentage.gte(100)) {
+                throw new AppError(
+                  "Deposit percentage must be greater than 0 and less than 100",
+                  422,
+                );
+              }
+
+              depositAmount = amount
+                .mul(depositPercentage)
+                .div(100)
+                .toDecimalPlaces(2);
+
+              remainingAmount = amount.sub(depositAmount);
+
+              if (depositAmount.lte(0) || remainingAmount.lte(0)) {
+                throw new AppError(
+                  "Invalid deposit amount for package purchase",
+                  422,
+                );
+              }
+            }
+
+            const requestedStart = timeToMinutes(payload.startTime!);
+
+            const requestedEnd = requestedStart + packageData.durationMinutes;
+
+            if (requestedStart < 0 || requestedEnd > 24 * 60) {
+              throw new AppError("Invalid appointment time", 400);
+            }
+
+            appointmentEndTime = minutesToTime(requestedEnd);
+
+            appointmentDate = new Date(`${payload.date}T00:00:00.000Z`);
+
+            if (Number.isNaN(appointmentDate.getTime())) {
+              throw new AppError("Invalid appointment date", 400);
+            }
+
+            // Recheck staff eligibility and slot availability
+            // inside the Serializable transaction.
+            const resolvedStaff = await resolveAvailableStaff({
+              tx,
+              branchId: branch.id,
+              packageId: packageData.id,
+              staffId: payload.staffId ?? undefined,
+              date: payload.date!,
+              dateOnly: appointmentDate,
+              requestedStart,
+              requestedEnd,
+              now,
+            });
+
+            selectedStaffId = resolvedStaff;
+
+            await assertBranchHourlyCapacityAvailable(
+              tx,
+              branch.id,
+              payload.date!,
+              appointmentDate,
+              requestedStart,
+              requestedEnd,
+              now,
             );
           }
 
-          // Sales window
-          if (now < packageData.salesStartAt || now > packageData.salesEndAt) {
-            throw new AppError(
-              "Group purchase is not currently available",
-              422,
-            );
-          }
+          // =================================================
+          // 6. RELEASE EXPIRED BUY-LATER RESERVATIONS
+          // =================================================
 
-          // Remaining capacity
-          const remainingQuantity =
-            packageData.capacity -
-            packageData.soldQuantity -
-            packageData.reservedQuantity;
-
-          if (remainingQuantity <= 0) {
-            throw new AppError("Package is sold out", 409);
-          }
-
-          if (payload.quantity > remainingQuantity) {
-            throw new AppError(
-              "Requested quantity exceeds remaining package capacity",
-              409,
-            );
-          }
-
-          // Customer previous PAID + active PENDING quantity
-          const purchaseSummary = await tx.groupPurchase.aggregate({
+          const expiredPurchases = await tx.groupPurchase.findMany({
             where: {
-              customerId,
-              packageId: payload.packageId,
-
-              OR: [
-                {
-                  paymentStatus: PaymentStatus.PAID,
-                },
-
-                {
-                  paymentStatus: PaymentStatus.PENDING,
-
-                  reservationExpiresAt: {
-                    gt: now,
-                  },
-                },
-              ],
+              packageId: packageData.id,
+              purchaseFlow: GroupPurchaseFlow.BUY_NOW_BOOK_LATER,
+              paymentStatus: PaymentStatus.PENDING,
+              reservationExpiresAt: {
+                lte: now,
+              },
             },
-
-            _sum: {
+            select: {
+              id: true,
               quantity: true,
             },
           });
 
-          const currentCustomerQuantity = purchaseSummary._sum.quantity ?? 0;
+          let releasedQuantity = 0;
 
-          if (
-            currentCustomerQuantity + payload.quantity >
-            packageData.purchaseLimitPerCustomer
-          ) {
-            throw new AppError(
-              "Group purchase limit per customer exceeded",
-              422,
+          if (expiredPurchases.length > 0) {
+            releasedQuantity = expiredPurchases.reduce(
+              (total, purchase) => total + purchase.quantity,
+              0,
             );
+
+            const changed = await tx.groupPurchase.updateMany({
+              where: {
+                id: {
+                  in: expiredPurchases.map((p) => p.id),
+                },
+                purchaseFlow: GroupPurchaseFlow.BUY_NOW_BOOK_LATER,
+                paymentStatus: PaymentStatus.PENDING,
+                reservationExpiresAt: {
+                  lte: now,
+                },
+              },
+              data: {
+                paymentStatus: PaymentStatus.FAILED,
+              },
+            });
+
+            if (changed.count !== expiredPurchases.length) {
+              throw new AppError(
+                "Purchase reservation changed during expiry processing",
+                409,
+              );
+            }
+
+            const released = await tx.package.updateMany({
+              where: {
+                id: packageData.id,
+                reservedQuantity: {
+                  gte: releasedQuantity,
+                },
+              },
+              data: {
+                reservedQuantity: {
+                  decrement: releasedQuantity,
+                },
+              },
+            });
+
+            if (released.count !== 1) {
+              throw new AppError(
+                "Unable to release expired package inventory",
+                409,
+              );
+            }
           }
 
-          // Reserve capacity
-          await tx.package.update({
+          // =================================================
+          // 7. CHECK PACKAGE CAPACITY
+          // =================================================
+
+          if (packageData.capacity !== null) {
+            const remainingQuantity =
+              packageData.capacity -
+              packageData.soldQuantity -
+              packageData.reservedQuantity +
+              releasedQuantity;
+
+            if (payload.quantity > remainingQuantity) {
+              throw new AppError(
+                "Requested quantity exceeds remaining package capacity",
+                409,
+              );
+            }
+          }
+
+          // =================================================
+          // 8. CUSTOMER PURCHASE LIMIT
+          // =================================================
+
+          if (packageData.purchaseLimitPerCustomer !== null) {
+            const summary = await tx.groupPurchase.aggregate({
+              where: {
+                customerId,
+                packageId: packageData.id,
+                OR: [
+                  {
+                    paymentStatus: {
+                      in: [
+                        PaymentStatus.PAID,
+                        PaymentStatus.PARTIALLY_PAID,
+                        PaymentStatus.UNPAID,
+                      ],
+                    },
+                  },
+                  {
+                    paymentStatus: PaymentStatus.PENDING,
+                    reservationExpiresAt: {
+                      gt: now,
+                    },
+                  },
+                ],
+              },
+              _sum: {
+                quantity: true,
+              },
+            });
+
+            const currentQuantity = summary._sum.quantity ?? 0;
+
+            if (
+              currentQuantity + payload.quantity >
+              packageData.purchaseLimitPerCustomer
+            ) {
+              throw new AppError(
+                "Package purchase limit per customer exceeded",
+                422,
+              );
+            }
+          }
+
+          // =================================================
+          // 9. RESERVE OR SELL INVENTORY
+          // =================================================
+
+          const isReserveNow =
+            isBookNow && payload.bookingMethod === BookingMethod.RESERVE_NOW;
+
+          const inventoryUpdated = await tx.package.updateMany({
             where: {
               id: packageData.id,
+              ...(packageData.capacity !== null
+                ? {
+                    soldQuantity: {
+                      lte:
+                        packageData.capacity -
+                        packageData.reservedQuantity +
+                        releasedQuantity -
+                        payload.quantity,
+                    },
+                  }
+                : {}),
             },
-
-            data: {
-              reservedQuantity: {
-                increment: payload.quantity,
-              },
-            },
+            data: isReserveNow
+              ? {
+                  soldQuantity: {
+                    increment: payload.quantity,
+                  },
+                }
+              : {
+                  reservedQuantity: {
+                    increment: payload.quantity,
+                  },
+                },
           });
 
-          // Price snapshot
-          const unitPrice = Number(packageData.packagePrice);
+          if (inventoryUpdated.count !== 1) {
+            throw new AppError("Unable to reserve package inventory", 409);
+          }
 
-          const amount = unitPrice * payload.quantity;
+          // =================================================
+          // 10. PURCHASE PAYMENT STATE
+          // =================================================
 
-          const reservationExpiresAt = new Date(
-            now.getTime() + GROUP_PURCHASE_RESERVATION_MINUTES * 60 * 1000,
-          );
+          const purchasePaymentStatus = isReserveNow
+            ? PaymentStatus.UNPAID
+            : PaymentStatus.PENDING;
+
+          const reservationExpiresAt = isReserveNow
+            ? null
+            : new Date(
+                now.getTime() + GROUP_PURCHASE_RESERVATION_MINUTES * 60 * 1000,
+              );
+
+          // =================================================
+          // 11. CREATE GROUP PURCHASE
+          // =================================================
 
           const groupPurchase = await tx.groupPurchase.create({
             data: {
               customerId,
               packageId: packageData.id,
-
+              purchaseFlow,
+              bookingMethod: isBookNow
+                ? (payload.bookingMethod as BookingMethod)
+                : null,
               quantity: payload.quantity,
-
               unitPrice,
               amount,
-
-              paymentStatus: PaymentStatus.PENDING,
-
+              paymentStatus: purchasePaymentStatus,
               reservationExpiresAt,
+              depositPercentage,
+              depositAmount,
+              remainingAmount,
             },
           });
+
+          // =================================================
+          // 12. CREATE FIRST BOOK NOW APPOINTMENT
+          // =================================================
+
+          let firstAppointment = null;
+
+          if (isBookNow) {
+            if (!selectedStaffId || !appointmentDate || !appointmentEndTime) {
+              throw new AppError("Unable to resolve appointment details", 409);
+            }
+
+            const bookingMethod = payload.bookingMethod as BookingMethod;
+
+            const appointmentStatus = isReserveNow
+              ? AppointmentStatus.RESERVED
+              : AppointmentStatus.PENDING_PAYMENT;
+
+            const appointmentPaymentStatus = isReserveNow
+              ? PaymentStatus.UNPAID
+              : PaymentStatus.PENDING;
+
+            const qrToken = isReserveNow
+              ? crypto.randomBytes(32).toString("hex")
+              : null;
+
+            const appointment = await tx.appointment.create({
+              data: {
+                customerId,
+                branchId: payload.branchId!,
+                staffId: selectedStaffId,
+                packageId: packageData.id,
+                groupPurchaseId: groupPurchase.id,
+                bookingMethod,
+                appointmentStatus,
+                paymentStatus: appointmentPaymentStatus,
+                date: appointmentDate,
+                startTime: payload.startTime!,
+                endTime: appointmentEndTime,
+                durationMinutes: packageData.durationMinutes,
+                itemName: packageData.name,
+                itemNameTranslations:
+                  packageData.translations ?? Prisma.JsonNull,
+                price: new Prisma.Decimal(0),
+                currency: "HKD",
+                holdExpiresAt: reservationExpiresAt,
+                qrToken,
+                depositPercentage,
+                depositAmount,
+                remainingAmount,
+              },
+            });
+
+            firstAppointment = {
+              appointmentId: appointment.id,
+              appointmentStatus: appointment.appointmentStatus,
+              paymentStatus: appointment.paymentStatus,
+              branchId: appointment.branchId,
+              staffId: appointment.staffId,
+              date: appointment.date,
+              startTime: appointment.startTime,
+              endTime: appointment.endTime,
+              qrToken: appointment.qrToken,
+            };
+          }
+
+          // =================================================
+          // 13. RESPONSE
+          // =================================================
 
           return {
             purchaseId: groupPurchase.id,
             packageId: groupPurchase.packageId,
+            purchaseFlow: groupPurchase.purchaseFlow,
+            bookingMethod: groupPurchase.bookingMethod,
             quantity: groupPurchase.quantity,
             unitPrice: Number(groupPurchase.unitPrice),
             amount: Number(groupPurchase.amount),
             paymentStatus: groupPurchase.paymentStatus,
+            reservationExpiresAt: groupPurchase.reservationExpiresAt,
+            depositPercentage:
+              groupPurchase.depositPercentage === null
+                ? null
+                : Number(groupPurchase.depositPercentage),
+            depositAmount:
+              groupPurchase.depositAmount === null
+                ? null
+                : Number(groupPurchase.depositAmount),
+            remainingAmount:
+              groupPurchase.remainingAmount === null
+                ? null
+                : Number(groupPurchase.remainingAmount),
+            firstAppointment,
           };
         },
-
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 15000,
         },
       );
-
-      return result;
     } catch (error) {
-      if (
+      const isConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2034" &&
-        attempt < maxRetries
-      ) {
+        error.code === "P2034";
+
+      if (isConflict && attempt < maxRetries) {
         continue;
+      }
+
+      if (isConflict) {
+        throw new AppError("Purchase conflict. Please try again", 409);
       }
 
       throw error;
@@ -837,8 +1196,9 @@ const createGroupPurchaseAppointment = async (
   // =====================================================
 
   const purchase = await prisma.groupPurchase.findUnique({
-    where: { id: purchaseId },
-
+    where: {
+      id: purchaseId,
+    },
     include: {
       package: {
         select: {
@@ -859,12 +1219,19 @@ const createGroupPurchaseAppointment = async (
     throw new AppError("Access denied", 403);
   }
 
+  // =====================================================
+  // 2. FULL PURCHASE PAYMENT REQUIRED
+  // =====================================================
+
   if (purchase.paymentStatus !== PaymentStatus.PAID) {
-    throw new AppError("Group purchase is not paid", 400);
+    throw new AppError(
+      "Full package payment is required before booking another appointment",
+      409,
+    );
   }
 
   // =====================================================
-  // 2. CHECK AVAILABILITY
+  // 3. CHECK AVAILABILITY
   // =====================================================
 
   const availability = await AvailabilityService.getAvailableSlots({
@@ -890,35 +1257,34 @@ const createGroupPurchaseAppointment = async (
   const dateOnly = new Date(`${date}T00:00:00.000Z`);
 
   // =====================================================
-  // 3. SERIALIZABLE TRANSACTION
+  // 4. SERIALIZABLE TRANSACTION + RETRY
   // =====================================================
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await prisma.$transaction(
         async (tx) => {
+          // =============================================
+          // 4.1 RECHECK PURCHASE
+          // =============================================
+
+          await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id" = ${purchaseId} FOR UPDATE`;
           const currentPurchase = await tx.groupPurchase.findUnique({
             where: {
               id: purchaseId,
             },
-
             include: {
               package: {
                 select: {
                   id: true,
                   name: true,
-
-                  // NEW: Multilingual package translations
                   translations: true,
-
                   durationMinutes: true,
                   status: true,
-
                   branches: {
                     where: {
                       branchId,
                     },
-
                     select: {
                       branchId: true,
                     },
@@ -928,16 +1294,28 @@ const createGroupPurchaseAppointment = async (
             },
           });
 
-          if (
-            !currentPurchase ||
-            currentPurchase.customerId !== customerId ||
-            currentPurchase.paymentStatus !== PaymentStatus.PAID
-          ) {
+          if (!currentPurchase) {
+            throw new AppError("Group purchase not found", 404);
+          }
+
+          if (currentPurchase.customerId !== customerId) {
+            throw new AppError("Access denied", 403);
+          }
+
+          // =============================================
+          // 4.2 VERIFY FULL PAYMENT
+          // =============================================
+
+          if (currentPurchase.paymentStatus !== PaymentStatus.PAID) {
             throw new AppError(
-              "Group purchase is not eligible for booking",
-              400,
+              "Full package payment is required before booking another appointment",
+              409,
             );
           }
+
+          // =============================================
+          // 4.3 VALIDATE PACKAGE
+          // =============================================
 
           if (currentPurchase.package.status !== PackageStatus.ACTIVE) {
             throw new AppError("Package is inactive", 400);
@@ -947,14 +1325,19 @@ const createGroupPurchaseAppointment = async (
             throw new AppError("Package is not available at this branch", 400);
           }
 
-          // =====================================================
-          // 4. CHECK REMAINING PURCHASED QUANTITY
-          // =====================================================
+          // =============================================
+          // 5. CHECK REMAINING PURCHASED QUANTITY
+          // =============================================
+
+          // Includes the initial BUY_NOW_BOOK_NOW
+          // appointment, if one was created.
+          //
+          // Cancelled appointments follow the existing
+          // policy and do not consume package quantity.
 
           const allocatedCount = await tx.appointment.count({
             where: {
               groupPurchaseId: purchaseId,
-
               appointmentStatus: {
                 not: AppointmentStatus.CANCELLED,
               },
@@ -965,9 +1348,9 @@ const createGroupPurchaseAppointment = async (
             throw new AppError("No remaining package quantity available", 409);
           }
 
-          // =====================================================
-          // 5. CALCULATE REQUESTED TIME
-          // =====================================================
+          // =============================================
+          // 6. CALCULATE REQUESTED TIME
+          // =============================================
 
           const durationMinutes = currentPurchase.package.durationMinutes;
 
@@ -979,9 +1362,9 @@ const createGroupPurchaseAppointment = async (
 
           const now = new Date();
 
-          // =====================================================
-          // 6. FINAL AVAILABILITY CHECKS
-          // =====================================================
+          // =============================================
+          // 7. FINAL AVAILABILITY CHECKS
+          // =============================================
 
           await assertStaffSlotAvailable(
             tx,
@@ -1002,22 +1385,18 @@ const createGroupPurchaseAppointment = async (
             now,
           );
 
-          // =====================================================
-          // 7. PREPARE MULTILINGUAL PACKAGE SNAPSHOT
-          // =====================================================
-
-          // Store the package translations at booking time.
-          // Future package edits will not change this
-          // appointment's saved multilingual item name.
+          // =============================================
+          // 8. MULTILINGUAL PACKAGE SNAPSHOT
+          // =============================================
 
           const itemNameTranslations =
             currentPurchase.package.translations === null
               ? undefined
               : (currentPurchase.package.translations as Prisma.InputJsonValue);
 
-          // =====================================================
-          // 8. CREATE CONFIRMED APPOINTMENT
-          // =====================================================
+          // =============================================
+          // 9. CREATE REDEMPTION APPOINTMENT
+          // =============================================
 
           const appointment = await tx.appointment.create({
             data: {
@@ -1039,17 +1418,17 @@ const createGroupPurchaseAppointment = async (
               startTime,
               endTime,
 
-              // Original package name snapshot
               itemName: currentPurchase.package.name,
 
-              // NEW: Multilingual name snapshot
               ...(itemNameTranslations !== undefined && {
                 itemNameTranslations,
               }),
 
               durationMinutes,
 
-              // No additional payment required
+              // Package was already fully paid.
+              // No additional charge for redemption.
+
               price: new Prisma.Decimal(0),
               currency: "HKD",
 
@@ -1068,34 +1447,37 @@ const createGroupPurchaseAppointment = async (
               staffId: true,
             },
           });
-          await notificationService.notifyAppointmentTeam(appointment.id, { type: "BOOKING_CREATED", title: "New booking" }, tx);
 
-          // =====================================================
-          // 9. RESPONSE
-          // =====================================================
+          // =============================================
+          // 10. TEAM NOTIFICATION
+          // =============================================
+
+          await notificationService.notifyAppointmentTeam(
+            appointment.id,
+            {
+              type: "BOOKING_CREATED",
+              title: "New booking",
+            },
+            tx,
+          );
+
+          // =============================================
+          // 11. RESPONSE
+          // =============================================
 
           return {
             appointmentId: appointment.id,
-
             bookingMethod: appointment.bookingMethod,
-
             appointmentStatus: appointment.appointmentStatus,
-
             paymentStatus: appointment.paymentStatus,
-
             staffId: appointment.staffId,
-
             qrAvailable: false,
-
             additionalPaymentRequired: false,
           };
         },
-
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-
           maxWait: 10000,
-
           timeout: 15000,
         },
       );
@@ -1118,9 +1500,397 @@ const createGroupPurchaseAppointment = async (
 
   throw new AppError("Unable to create appointment", 409);
 };
+
+export const recordGroupPurchaseRemainingPayment = async (
+  purchaseId: string,
+  payload: {
+    paymentMethod: SalonPaymentMethod;
+  },
+  userId: string,
+  role: Role,
+) => {
+  // =====================================================
+  // 1. ROLE AUTHORIZATION
+  // =====================================================
+
+  if (role !== Role.BRAND_OWNER && role !== Role.BRANCH_MANAGER) {
+    throw new AppError(
+      "You are not authorized to record group purchase payments",
+      403,
+    );
+  }
+
+  // =====================================================
+  // 2. VALIDATE PAYMENT METHOD
+  // =====================================================
+
+  if (!Object.values(SalonPaymentMethod).includes(payload.paymentMethod)) {
+    throw new AppError("Invalid salon payment method", 400);
+  }
+
+  // =====================================================
+  // 3. SERIALIZABLE TRANSACTION + RETRY
+  // =====================================================
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const now = new Date();
+
+          // =============================================
+          // 4. FIND GROUP PURCHASE
+          // =============================================
+
+          await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id" = ${purchaseId} FOR UPDATE`;
+          const purchase = await tx.groupPurchase.findUnique({
+            where: {
+              id: purchaseId,
+            },
+            select: {
+              id: true,
+              customerId: true,
+              amount: true,
+              depositAmount: true,
+              purchaseFlow: true,
+              bookingMethod: true,
+              paymentStatus: true,
+
+              appointments: {
+                select: {
+                  id: true,
+                  branchId: true,
+                  bookingMethod: true,
+                  appointmentStatus: true,
+                  paymentStatus: true,
+                  qrVerifiedAt: true,
+                  createdAt: true,
+                },
+                orderBy: {
+                  createdAt: "asc",
+                },
+              },
+            },
+          });
+
+          if (!purchase) {
+            throw new AppError("Group purchase not found", 404);
+          }
+
+          // =============================================
+          // 5. VALIDATE PURCHASE FLOW
+          // =============================================
+
+          if (purchase.purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_NOW) {
+            throw new AppError(
+              "Remaining payment is only available for Book Now purchases",
+              400,
+            );
+          }
+
+          const isDeposit = purchase.bookingMethod === BookingMethod.DEPOSIT;
+
+          const isReserveNow =
+            purchase.bookingMethod === BookingMethod.RESERVE_NOW;
+
+          if (!isDeposit && !isReserveNow) {
+            throw new AppError(
+              "This booking method does not support remaining payment",
+              400,
+            );
+          }
+
+          // =============================================
+          // 6. VALIDATE FIRST APPOINTMENT
+          // =============================================
+
+          const initialAppointments = purchase.appointments.filter(item => item.bookingMethod === purchase.bookingMethod);
+          const appointment = initialAppointments.length === 1 ? initialAppointments[0] : null;
+
+          if (!appointment) {
+            throw new AppError("Group purchase appointment not found", 409);
+          }
+
+          if (appointment.bookingMethod !== purchase.bookingMethod) {
+            throw new AppError(
+              "Initial appointment booking method mismatch",
+              409,
+            );
+          }
+
+          // =============================================
+          // 7. BRANCH MANAGER AUTHORIZATION
+          // =============================================
+
+          if (role === Role.BRANCH_MANAGER) {
+            const managerBranch = await tx.branchManagerBranch.findUnique({
+              where: {
+                userId_branchId: {
+                  userId,
+                  branchId: appointment.branchId,
+                },
+              },
+            });
+
+            if (!managerBranch) {
+              throw new AppError(
+                "You are not authorized to record payments for this branch",
+                403,
+              );
+            }
+          }
+
+          // =============================================
+          // 8. VALIDATE PURCHASE PAYMENT STATUS
+          // =============================================
+
+          const expectedPaymentStatus = isDeposit
+            ? PaymentStatus.PARTIALLY_PAID
+            : PaymentStatus.UNPAID;
+
+          if (purchase.paymentStatus !== expectedPaymentStatus) {
+            throw new AppError(
+              "Group purchase does not have an outstanding remaining payment",
+              409,
+            );
+          }
+
+          // =============================================
+          // 9. VALIDATE QR VERIFICATION
+          // =============================================
+
+          if (appointment.appointmentStatus !== AppointmentStatus.CONFIRMED) {
+            throw new AppError(
+              "First appointment must be confirmed before recording remaining payment",
+              409,
+            );
+          }
+
+          if (!appointment.qrVerifiedAt) {
+            throw new AppError(
+              "Reservation QR must be verified before recording remaining payment",
+              409,
+            );
+          }
+
+          if (appointment.paymentStatus !== expectedPaymentStatus) {
+            throw new AppError(
+              "Initial appointment payment status mismatch",
+              409,
+            );
+          }
+
+          // =============================================
+          // 10. CALCULATE REMAINING AMOUNT
+          // =============================================
+
+          const totalAmount = purchase.amount;
+
+          const depositAmount = isDeposit
+            ? purchase.depositAmount
+            : new Prisma.Decimal(0);
+
+          if (
+            !totalAmount.isFinite() ||
+            totalAmount.lte(0) ||
+            !depositAmount ||
+            !depositAmount.isFinite() ||
+            depositAmount.lt(0)
+          ) {
+            throw new AppError("Invalid group purchase payment amounts", 409);
+          }
+
+          const remainingAmount = totalAmount.minus(depositAmount);
+
+          if (remainingAmount.lte(0)) {
+            throw new AppError("No remaining payment is due", 409);
+          }
+
+          // =============================================
+          // 11. CHECK EXISTING SALON PAYMENT
+          // =============================================
+
+          const existingRemainingPayment = await tx.payment.findFirst({
+            where: {
+              groupPurchaseId: purchase.id,
+              purpose: PaymentPurpose.GROUP_PURCHASE,
+              status: PaymentStatus.PAID,
+              provider: PaymentProvider.SALON,
+            },
+            select: {
+              id: true,
+            },
+          });
+
+          if (existingRemainingPayment) {
+            throw new AppError(
+              "Remaining payment has already been recorded",
+              409,
+            );
+          }
+
+          // =============================================
+          // 12. ATOMIC PURCHASE STATUS CLAIM
+          // =============================================
+
+          const updatedPurchase = await tx.groupPurchase.updateMany({
+            where: {
+              id: purchase.id,
+              purchaseFlow: GroupPurchaseFlow.BUY_NOW_BOOK_NOW,
+              bookingMethod: purchase.bookingMethod,
+              paymentStatus: expectedPaymentStatus,
+            },
+            data: {
+              paymentStatus: PaymentStatus.PAID,
+            },
+          });
+
+          if (updatedPurchase.count !== 1) {
+            throw new AppError(
+              "Group purchase remaining payment conflict",
+              409,
+            );
+          }
+
+          // =============================================
+          // 13. UPDATE INITIAL APPOINTMENT
+          // =============================================
+
+          const updatedAppointment = await tx.appointment.updateMany({
+            where: {
+              id: appointment.id,
+              groupPurchaseId: purchase.id,
+              bookingMethod: purchase.bookingMethod,
+              appointmentStatus: AppointmentStatus.CONFIRMED,
+              paymentStatus: expectedPaymentStatus,
+            },
+            data: {
+              paymentStatus: PaymentStatus.PAID,
+            },
+          });
+
+          if (updatedAppointment.count !== 1) {
+            throw new AppError(
+              "Group purchase appointment payment conflict",
+              409,
+            );
+          }
+
+          // =============================================
+          // 14. CREATE SALON PAYMENT RECORD
+          // =============================================
+
+          const payment = await tx.payment.create({
+            data: {
+              customerId: purchase.customerId,
+              groupPurchaseId: purchase.id,
+              purpose: PaymentPurpose.GROUP_PURCHASE,
+              provider: PaymentProvider.SALON,
+              salonPaymentMethod: payload.paymentMethod,
+              amount: remainingAmount,
+              currency: "HKD",
+              status: PaymentStatus.PAID,
+              paidAt: now,
+            },
+          });
+
+          // =============================================
+          // 15. CUSTOMER NOTIFICATION
+          // =============================================
+
+          const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
+            Number(payment.amount),
+            payment.currency,
+          );
+
+          await notificationService.createNotification(
+            {
+              appointmentId: appointment.id,
+              userId: purchase.customerId,
+              type: "REMAINING_PAYMENT_RECEIVED",
+              title: translations.en!.title!,
+              message: translations.en!.message!,
+              translations,
+            },
+            tx,
+          );
+
+          // =============================================
+          // 16. AUDIT LOG
+          // =============================================
+
+          await auditLogService.createAuditLog(
+            {
+              userId,
+              action: "REMAINING_PAYMENT_RECORDED",
+              entityType: "GROUP_PURCHASE",
+              entityId: purchase.id,
+              metadata: {
+                paymentId: payment.id,
+                appointmentId: appointment.id,
+                branchId: appointment.branchId,
+                bookingMethod: purchase.bookingMethod,
+                previousPaymentStatus: expectedPaymentStatus,
+                newPaymentStatus: PaymentStatus.PAID,
+                totalAmount: Number(totalAmount),
+                depositAmount: Number(depositAmount),
+                remainingAmount: Number(remainingAmount),
+                paymentMethod: payload.paymentMethod,
+                provider: PaymentProvider.SALON,
+              },
+            },
+            tx,
+          );
+
+          // =============================================
+          // 17. RESPONSE
+          // =============================================
+
+          return {
+            purchaseId: purchase.id,
+            appointmentId: appointment.id,
+            bookingMethod: purchase.bookingMethod,
+            appointmentStatus: appointment.appointmentStatus,
+            paymentStatus: PaymentStatus.PAID,
+            totalAmount: Number(totalAmount),
+            depositAmount: Number(depositAmount),
+            remainingAmount: Number(remainingAmount),
+            remainingPayment: {
+              id: payment.id,
+              amount: Number(payment.amount),
+              paymentMethod: payment.salonPaymentMethod,
+              provider: payment.provider,
+              status: payment.status,
+              paidAt: payment.paidAt,
+            },
+          };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 15000,
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034" &&
+        attempt < 3
+      ) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError("Group purchase remaining payment retry failed", 409);
+};
+
 export const groupPurchaseService = {
   createGroupPurchase,
   getMyGroupPurchases,
   getGroupPurchaseById,
   createGroupPurchaseAppointment,
+  recordGroupPurchaseRemainingPayment,
 };

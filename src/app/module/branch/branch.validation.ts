@@ -19,59 +19,107 @@ const branchTranslationsSchema = z
   .strict();
 
 const createBranchValidationSchema = z.object({
-  body: z.object({
-    name: z
-      .string()
-      .min(2, "Branch name must be at least 2 characters")
-      .max(100, "Branch name must not exceed 100 characters"),
+  body: z
+    .object({
+      name: z
+        .string()
+        .min(2, "Branch name must be at least 2 characters")
+        .max(100, "Branch name must not exceed 100 characters"),
 
-    address: z
-      .string()
-      .min(3, "Address is required")
-      .max(255, "Address must not exceed 255 characters"),
+      address: z
+        .string()
+        .min(3, "Address is required")
+        .max(255, "Address must not exceed 255 characters"),
 
-    phone: z
-      .string()
-      .regex(/^\+852\d{8}$/, "Phone must be a valid Hong Kong number")
-      .optional(),
+      phone: z
+        .string()
+        .regex(/^\+852\d{8}$/, "Phone must be a valid Hong Kong number")
+        .optional(),
 
-    description: z
-      .string()
-      .max(1000, "Description must not exceed 1000 characters")
-      .optional(),
+      description: z
+        .string()
+        .max(1000, "Description must not exceed 1000 characters")
+        .optional(),
 
-    imageObjectKey: z.string().optional(),
-    translations: branchTranslationsSchema.optional(),
-  }),
+      imageObjectKey: z.string().optional(),
+
+      translations: branchTranslationsSchema.optional(),
+
+      latitude: z
+        .number()
+        .finite()
+        .min(-90, "Latitude must be at least -90")
+        .max(90, "Latitude must not exceed 90")
+        .optional(),
+
+      longitude: z
+        .number()
+        .finite()
+        .min(-180, "Longitude must be at least -180")
+        .max(180, "Longitude must not exceed 180")
+        .optional(),
+    })
+    .refine(
+      (data) =>
+        (data.latitude === undefined) === (data.longitude === undefined),
+      {
+        message: "Latitude and longitude must be provided together",
+        path: ["latitude"],
+      },
+    ),
 });
 
 const updateBranchValidationSchema = z.object({
-  body: z.object({
-    name: z
-      .string()
-      .min(2, "Branch name must be at least 2 characters")
-      .max(100, "Branch name must not exceed 100 characters")
-      .optional(),
+  body: z
+    .object({
+      name: z
+        .string()
+        .min(2, "Branch name must be at least 2 characters")
+        .max(100, "Branch name must not exceed 100 characters")
+        .optional(),
 
-    address: z
-      .string()
-      .min(3, "Address is required")
-      .max(255, "Address must not exceed 255 characters")
-      .optional(),
+      address: z
+        .string()
+        .min(3, "Address is required")
+        .max(255, "Address must not exceed 255 characters")
+        .optional(),
 
-    phone: z
-      .string()
-      .regex(/^\+852\d{8}$/, "Phone must be a valid Hong Kong number")
-      .optional(),
+      phone: z
+        .string()
+        .regex(/^\+852\d{8}$/, "Phone must be a valid Hong Kong number")
+        .optional(),
 
-    description: z
-      .string()
-      .max(1000, "Description must not exceed 1000 characters")
-      .optional(),
+      description: z
+        .string()
+        .max(1000, "Description must not exceed 1000 characters")
+        .optional(),
 
-    imageObjectKey: z.string().optional(),
-    translations: branchTranslationsSchema.optional(),
-  }),
+      imageObjectKey: z.string().optional(),
+
+      translations: branchTranslationsSchema.optional(),
+
+      latitude: z
+        .number()
+        .finite()
+        .min(-90, "Latitude must be at least -90")
+        .max(90, "Latitude must not exceed 90")
+        .optional(),
+
+      longitude: z
+        .number()
+        .finite()
+        .min(-180, "Longitude must be at least -180")
+        .max(180, "Longitude must not exceed 180")
+        .optional(),
+    })
+    .refine(
+      (data) =>
+        (data.latitude === undefined) === (data.longitude === undefined),
+      {
+        message: "Latitude and longitude must be provided together",
+        path: ["latitude"],
+      },
+    ),
 });
 
 const updateBranchStatusValidationSchema = z.object({
@@ -358,6 +406,38 @@ const getBranchStaffOutputValidationSchema = z.object({
     }),
 });
 
+const getNearbyBranchesValidationSchema = z.object({
+  body: z.object({
+    latitude: z.coerce
+      .number()
+      .finite()
+      .min(-90, "Latitude must be at least -90")
+      .max(90, "Latitude must not exceed 90"),
+
+    longitude: z.coerce
+      .number()
+      .finite()
+      .min(-180, "Longitude must be at least -180")
+      .max(180, "Longitude must not exceed 180"),
+
+    radiusKm: z.coerce
+      .number()
+      .finite()
+      .positive("radiusKm must be greater than 0")
+      .max(100, "radiusKm cannot exceed 100")
+      .default(10),
+
+    page: z.coerce.number().int().min(1, "Page must be at least 1").default(1),
+
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1, "Limit must be at least 1")
+      .max(100, "Limit cannot exceed 100")
+      .default(20),
+  }),
+});
+
 export const branchValidation = {
   createBranchValidationSchema,
   updateBranchValidationSchema,
@@ -369,4 +449,5 @@ export const branchValidation = {
   getBranchDailySummaryValidationSchema,
   getBranchDailySeriesValidationSchema,
   getBranchStaffOutputValidationSchema,
+  getNearbyBranchesValidationSchema,
 };

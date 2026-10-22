@@ -47,4 +47,13 @@ router.post(
   ),
   groupPurchaseController.createGroupPurchaseAppointment,
 );
+
+router.post(
+  "/:purchaseId/remaining-payment",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  validateRequest(
+    groupPurchaseValidation.recordGroupPurchaseRemainingPaymentValidationSchema,
+  ),
+  groupPurchaseController.recordGroupPurchaseRemainingPayment,
+);
 export const GroupPurchaseRoutes = router;

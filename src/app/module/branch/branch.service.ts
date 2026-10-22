@@ -27,6 +27,7 @@ import {
   ICreateBranchPayload,
   ICustomerOperationalSearchQuery,
   ICustomerOperationalSearchResponse,
+  INearbyBranchesQuery,
   IUpdateBookingPolicyPayload,
   IUpdateBranchPayload,
   IUpdateBranchStatusPayload,
@@ -168,6 +169,10 @@ const createBranch = async (payload: ICreateBranchPayload) => {
         imageObjectKey: payload.imageObjectKey || null,
 
         translations,
+
+        // Map-based branch location
+        latitude: payload.latitude ?? null,
+        longitude: payload.longitude ?? null,
       },
     });
 
@@ -274,6 +279,10 @@ const getBranches = async (
 
         status: true,
 
+        // Map location
+        latitude: true,
+        longitude: true,
+
         createdAt: true,
 
         updatedAt: true,
@@ -316,6 +325,10 @@ const getBranches = async (
 
         status: branch.status,
 
+        // Map location
+        latitude: branch.latitude,
+        longitude: branch.longitude,
+
         createdAt: branch.createdAt,
 
         updatedAt: branch.updatedAt,
@@ -352,6 +365,207 @@ const getBranches = async (
     },
   };
 };
+
+const getNearbyBranches = async (
+  query: INearbyBranchesQuery,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. VALIDATE CUSTOMER LOCATION
+  // =====================================================
+
+  const latitude = Number(query.latitude);
+  const longitude = Number(query.longitude);
+
+  const radiusKm = query.radiusKm === undefined ? 10 : Number(query.radiusKm);
+
+  const page = query.page === undefined ? 1 : Number(query.page);
+
+  const limit = query.limit === undefined ? 20 : Number(query.limit);
+
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
+    throw new AppError("Invalid latitude", 400);
+  }
+
+  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    throw new AppError("Invalid longitude", 400);
+  }
+
+  if (!Number.isFinite(radiusKm) || radiusKm <= 0 || radiusKm > 100) {
+    throw new AppError("radiusKm must be between 0 and 100", 400);
+  }
+
+  if (
+    !Number.isSafeInteger(page) ||
+    page < 1 ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > 100
+  ) {
+    throw new AppError("Invalid pagination parameters", 400);
+  }
+
+  // =====================================================
+  // 2. FETCH ACTIVE BRANCHES WITH COORDINATES
+  // =====================================================
+
+  const branches = await prisma.branch.findMany({
+    where: {
+      status: BranchStatus.ACTIVE,
+      latitude: { not: null },
+      longitude: { not: null },
+    },
+
+    select: {
+      id: true,
+      name: true,
+      address: true,
+      phone: true,
+      description: true,
+      translations: true,
+      imageObjectKey: true,
+      status: true,
+      latitude: true,
+      longitude: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  // =====================================================
+  // 3. HAVERSINE DISTANCE CALCULATION
+  // =====================================================
+
+  const toRadians = (degrees: number): number => (degrees * Math.PI) / 180;
+
+  const calculateDistanceKm = (
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number,
+  ): number => {
+    const earthRadiusKm = 6371.0088;
+
+    const deltaLat = toRadians(lat2 - lat1);
+    const deltaLon = toRadians(lon2 - lon1);
+
+    const a =
+      Math.sin(deltaLat / 2) ** 2 +
+      Math.cos(toRadians(lat1)) *
+        Math.cos(toRadians(lat2)) *
+        Math.sin(deltaLon / 2) ** 2;
+
+    const centralAngle =
+      2 *
+      Math.atan2(
+        Math.sqrt(Math.min(1, Math.max(0, a))),
+        Math.sqrt(1 - Math.min(1, Math.max(0, a))),
+      );
+
+    return earthRadiusKm * centralAngle;
+  };
+
+  // =====================================================
+  // 4. CALCULATE DISTANCES AND FILTER BY RADIUS
+  // =====================================================
+
+  const nearbyBranches = branches
+    .filter(
+      (
+        branch,
+      ): branch is typeof branch & {
+        latitude: number;
+        longitude: number;
+      } =>
+        branch.latitude !== null &&
+        branch.longitude !== null &&
+        Number.isFinite(branch.latitude) &&
+        Number.isFinite(branch.longitude) &&
+        branch.latitude >= -90 &&
+        branch.latitude <= 90 &&
+        branch.longitude >= -180 &&
+        branch.longitude <= 180,
+    )
+    .map((branch) => ({
+      ...branch,
+      distanceKm: calculateDistanceKm(
+        latitude,
+        longitude,
+        branch.latitude,
+        branch.longitude,
+      ),
+    }))
+    .filter((branch) => branch.distanceKm <= radiusKm);
+
+  // =====================================================
+  // 5. SORT NEAREST FIRST
+  // =====================================================
+
+  nearbyBranches.sort(
+    (a, b) => a.distanceKm - b.distanceKm || a.id.localeCompare(b.id),
+  );
+
+  // =====================================================
+  // 6. PAGINATION
+  // =====================================================
+
+  const total = nearbyBranches.length;
+  const totalPages = Math.ceil(total / limit);
+  const skip = (page - 1) * limit;
+
+  const paginatedBranches = nearbyBranches.slice(skip, skip + limit);
+
+  // =====================================================
+  // 7. LOCALIZATION AND SIGNED IMAGE URLS
+  // =====================================================
+
+  const items = await Promise.all(
+    paginatedBranches.map(async (branch) => {
+      const localized = localizeBranch(branch, language);
+
+      const imageUrl = branch.imageObjectKey
+        ? await uploadService.getImageUrl(branch.imageObjectKey)
+        : null;
+
+      return {
+        id: branch.id,
+        name: localized.name,
+        address: localized.address,
+        phone: branch.phone,
+        description: localized.description,
+        imageObjectKey: branch.imageObjectKey,
+        imageUrl,
+        status: branch.status,
+
+        latitude: branch.latitude,
+        longitude: branch.longitude,
+
+        distanceKm: Number(branch.distanceKm.toFixed(2)),
+
+        createdAt: branch.createdAt,
+        updatedAt: branch.updatedAt,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 8. RESPONSE
+  // =====================================================
+
+  return {
+    items,
+
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    },
+  };
+};
+
 // =====================================================
 // GET SINGLE BRANCH
 // =====================================================
@@ -385,6 +599,10 @@ const getBranchById = async (
       imageObjectKey: true,
 
       status: true,
+
+      // Map location
+      latitude: true,
+      longitude: true,
 
       createdAt: true,
 
@@ -431,11 +649,16 @@ const getBranchById = async (
 
     status: branch.status,
 
+    // Map location
+    latitude: branch.latitude,
+    longitude: branch.longitude,
+
     createdAt: branch.createdAt,
 
     updatedAt: branch.updatedAt,
   };
 };
+
 // =====================================================
 // UPDATE BRANCH
 // =====================================================
@@ -530,15 +753,42 @@ const updateBranch = async (
     payload.translations,
     {
       name: nextName,
-
       address: nextAddress,
-
       description: nextDescription,
     },
   );
 
   // =====================================================
-  // 6. UPDATE BRANCH
+  // 6. VALIDATE MAP COORDINATES
+  // =====================================================
+
+  const hasLatitude = payload.latitude !== undefined;
+  const hasLongitude = payload.longitude !== undefined;
+
+  if (hasLatitude !== hasLongitude) {
+    throw new AppError("Latitude and longitude must be provided together", 400);
+  }
+
+  if (hasLatitude && hasLongitude) {
+    if (
+      !Number.isFinite(payload.latitude) ||
+      payload.latitude! < -90 ||
+      payload.latitude! > 90
+    ) {
+      throw new AppError("Latitude must be between -90 and 90", 400);
+    }
+
+    if (
+      !Number.isFinite(payload.longitude) ||
+      payload.longitude! < -180 ||
+      payload.longitude! > 180
+    ) {
+      throw new AppError("Longitude must be between -180 and 180", 400);
+    }
+  }
+
+  // =====================================================
+  // 7. UPDATE BRANCH
   // =====================================================
 
   const updatedBranch = await prisma.branch.update({
@@ -548,11 +798,8 @@ const updateBranch = async (
 
     data: {
       name: nextName,
-
       address: nextAddress,
-
       description: nextDescription,
-
       translations,
 
       ...(payload.phone !== undefined && {
@@ -562,11 +809,18 @@ const updateBranch = async (
       ...(payload.imageObjectKey !== undefined && {
         imageObjectKey: payload.imageObjectKey,
       }),
+
+      // Map-based branch location
+      ...(hasLatitude &&
+        hasLongitude && {
+          latitude: payload.latitude,
+          longitude: payload.longitude,
+        }),
     },
   });
 
   // =====================================================
-  // 7. GENERATE SIGNED IMAGE URL
+  // 8. GENERATE SIGNED IMAGE URL
   // =====================================================
 
   const imageUrl = updatedBranch.imageObjectKey
@@ -574,7 +828,7 @@ const updateBranch = async (
     : null;
 
   // =====================================================
-  // 8. LOCALIZE RESPONSE
+  // 9. LOCALIZE RESPONSE
   // =====================================================
 
   const localized = localizeBranch(updatedBranch, language);
@@ -583,21 +837,21 @@ const updateBranch = async (
     id: updatedBranch.id,
 
     name: localized.name,
-
     address: localized.address,
 
     phone: updatedBranch.phone,
-
     description: localized.description,
 
     imageObjectKey: updatedBranch.imageObjectKey,
-
     imageUrl,
 
     status: updatedBranch.status,
 
-    createdAt: updatedBranch.createdAt,
+    // Map location
+    latitude: updatedBranch.latitude,
+    longitude: updatedBranch.longitude,
 
+    createdAt: updatedBranch.createdAt,
     updatedAt: updatedBranch.updatedAt,
   };
 };
@@ -2036,6 +2290,7 @@ export const branchService = {
   createBranch,
 
   getBranches,
+  getNearbyBranches,
 
   getBranchById,
 

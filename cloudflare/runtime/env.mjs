@@ -16,5 +16,6 @@ export const env = z.object({
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
   EMAIL_SENDER: z.string().min(1),
+  ENABLE_BOOK_NOW_PURCHASE: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
   SMTP_USER: z.string().optional(), SMTP_PASSWORD: z.string().optional(),
 }).parse(process.env);

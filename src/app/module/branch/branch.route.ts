@@ -27,6 +27,21 @@ router.post(
 
 router.get("/", branchController.getBranches);
 
+const nearbyQueryToBody = (req: Request, res: Response, next: NextFunction) => {
+  req.body = {
+    ...req.query,
+  };
+
+  next();
+};
+
+router.get(
+  "/nearby",
+  nearbyQueryToBody,
+  validateRequest(branchValidation.getNearbyBranchesValidationSchema),
+  branchController.getNearbyBranches,
+);
+
 router.get("/:branchId", branchController.getBranchById);
 
 router.patch(

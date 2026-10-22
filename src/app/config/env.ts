@@ -12,6 +12,7 @@ const schema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32),
   JWT_REFRESH_EXPIRES_IN: z.string().default("7d"),
   BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
+  ENABLE_BOOK_NOW_PURCHASE: z.enum(["true", "false"]).default("false").transform(value => value === "true"),
   SMTP_USER: z.string().min(1).optional(),
   SMTP_PASSWORD: z.string().min(1).optional(),
   EMAIL_SENDER: z.string().min(1).optional(),

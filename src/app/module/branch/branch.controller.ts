@@ -40,6 +40,21 @@ const getBranches = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getNearbyBranches = catchAsync(async (req: Request, res: Response) => {
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  const result = await branchService.getNearbyBranches(req.body, language);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Nearby branches fetched successfully",
+    data: result,
+  });
+});
+
 // =====================================================
 // GET SINGLE BRANCH
 // =====================================================
@@ -319,6 +334,7 @@ const getBranchStaffOutput = catchAsync(async (req: Request, res: Response) => {
 export const branchController = {
   createBranch,
   getBranches,
+  getNearbyBranches,
   getBranchById,
   updateBranch,
   updateBranchStatus,

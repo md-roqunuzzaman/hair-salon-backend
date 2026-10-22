@@ -3,6 +3,7 @@ import {
   AppointmentStatus,
   BookingMethod,
   DayOfWeek,
+  GroupPurchaseFlow,
   PackageStatus,
   PaymentProvider,
   PaymentPurpose,
@@ -91,40 +92,99 @@ const expirePendingAppointmentIfNeeded = async (appointmentId: string) => {
 const expirePendingAppointments = async (appointmentId?: string) => {
   return prisma.$transaction(
     async (tx) => {
+      const now = new Date();
+
+      // =====================================================
+      // 1. FILTER ONLY NORMAL PENDING APPOINTMENTS
+      // =====================================================
+
       const where = {
-        ...(appointmentId && { id: appointmentId }),
+        ...(appointmentId && {
+          id: appointmentId,
+        }),
+
+        // IMPORTANT:
+        // Group Purchase-linked appointments are managed
+        // by the Group Purchase expiry lifecycle.
+        groupPurchaseId: null,
+
         appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
         paymentStatus: PaymentStatus.PENDING,
-        holdExpiresAt: { lte: new Date() },
+
+        holdExpiresAt: {
+          lte: now,
+        },
       };
+
+      // =====================================================
+      // 2. FETCH EXPIRED APPOINTMENTS
+      // =====================================================
+
       const appointments = await tx.appointment.findMany({
         where,
-        select: { id: true, customerId: true },
+
+        select: {
+          id: true,
+          customerId: true,
+        },
+
         take: 100,
       });
+
       let expiredCount = 0;
+
+      // =====================================================
+      // 3. PROCESS EACH APPOINTMENT
+      // =====================================================
+
       for (const appointment of appointments) {
+        // =================================================
+        // 4. ATOMIC EXPIRY CLAIM
+        // =================================================
+
         const changed = await tx.appointment.updateMany({
-          where: { ...where, id: appointment.id },
+          where: {
+            ...where,
+            id: appointment.id,
+          },
+
           data: {
             appointmentStatus: AppointmentStatus.EXPIRED,
+
             paymentStatus: PaymentStatus.FAILED,
+
+            holdExpiresAt: null,
           },
         });
-        if (changed.count !== 1) continue;
+
+        if (changed.count !== 1) {
+          continue;
+        }
+
+        // =================================================
+        // 5. MULTILINGUAL CUSTOMER NOTIFICATION
+        // =================================================
+
         await notificationService.createNotification(
           {
             userId: appointment.customerId,
+
             appointmentId: appointment.id,
+
             type: "BOOKING_EXPIRED",
+
             title: "Booking expired",
+
             message:
               "Your booking expired because payment was not completed before the deadline. Please make a new booking.",
+
             translations: {
               "zh-CN": {
                 title: "预约已过期",
                 message: "您未在付款期限内完成付款，预约已过期。请重新预约。",
               },
+
               "zh-HK": {
                 title: "預約已過期",
                 message: "您未在付款期限內完成付款，預約已過期。請重新預約。",
@@ -133,11 +193,21 @@ const expirePendingAppointments = async (appointmentId?: string) => {
           },
           tx,
         );
+
         expiredCount++;
       }
-      return { expiredCount };
+
+      // =====================================================
+      // 6. RESPONSE
+      // =====================================================
+
+      return {
+        expiredCount,
+      };
     },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    },
   );
 };
 
@@ -193,7 +263,7 @@ type ResolveAvailableStaffParams = {
   excludeAppointmentId?: string;
 };
 
-const resolveAvailableStaff = async ({
+export const resolveAvailableStaff = async ({
   tx,
   branchId,
   serviceId,
@@ -2843,12 +2913,16 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 5. PAYMENT VALIDATION
+  // 5. GROUP PURCHASE IDENTIFICATION
   // =====================================================
 
-  const isGroupPurchase =
+  const isGroupPurchaseRedemption =
     appointment.bookingMethod === BookingMethod.GROUP_PURCHASE &&
     appointment.groupPurchaseId !== null;
+
+  const isInitialBookNowAppointment =
+    appointment.groupPurchaseId !== null &&
+    appointment.bookingMethod !== BookingMethod.GROUP_PURCHASE;
 
   if (
     appointment.bookingMethod === BookingMethod.GROUP_PURCHASE &&
@@ -2857,8 +2931,23 @@ const cancelAppointment = async (
     throw new AppError("Group purchase reference is missing", 409);
   }
 
+  // =====================================================
+  // 6. BLOCK INITIAL BOOK NOW CANCELLATION
+  // =====================================================
+
+  if (isInitialBookNowAppointment) {
+    throw new AppError(
+      "Initial Book Now appointment cancellation requires package-level cancellation processing",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 7. PRESERVE PAID BOOKING RESTRICTION
+  // =====================================================
+
   if (
-    !isGroupPurchase &&
+    !isGroupPurchaseRedemption &&
     (appointment.paymentStatus === PaymentStatus.PAID ||
       appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID)
   ) {
@@ -2869,16 +2958,16 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 6. SERIALIZABLE TRANSACTION
+  // 8. SERIALIZABLE TRANSACTION + RETRY
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
     try {
       const result = await prisma.$transaction(
         async (tx) => {
-          // ---------------------------------------------
-          // Re-read current appointment
-          // ---------------------------------------------
+          // =============================================
+          // 8.1 RE-READ CURRENT APPOINTMENT
+          // =============================================
 
           const current = await tx.appointment.findUnique({
             where: {
@@ -2910,9 +2999,9 @@ const cancelAppointment = async (
             throw new AppError("Appointment not found", 404);
           }
 
-          // ---------------------------------------------
-          // Recheck ownership
-          // ---------------------------------------------
+          // =============================================
+          // 8.2 RECHECK AUTHORIZATION
+          // =============================================
 
           if (role === Role.CUSTOMER && current.customerId !== userId) {
             throw new AppError(
@@ -2920,10 +3009,6 @@ const cancelAppointment = async (
               403,
             );
           }
-
-          // ---------------------------------------------
-          // Recheck branch manager permission
-          // ---------------------------------------------
 
           if (role === Role.BRANCH_MANAGER) {
             const managerBranch = await tx.branchManagerBranch.findUnique({
@@ -2943,9 +3028,9 @@ const cancelAppointment = async (
             }
           }
 
-          // ---------------------------------------------
-          // Recheck status
-          // ---------------------------------------------
+          // =============================================
+          // 8.3 RECHECK APPOINTMENT STATUS
+          // =============================================
 
           if (!cancellableStatuses.includes(current.appointmentStatus)) {
             throw new AppError(
@@ -2954,9 +3039,9 @@ const cancelAppointment = async (
             );
           }
 
-          // ---------------------------------------------
-          // Recheck cancellation cutoff
-          // ---------------------------------------------
+          // =============================================
+          // 8.4 RECHECK CUSTOMER CUTOFF
+          // =============================================
 
           if (role === Role.CUSTOMER) {
             const policy = current.branch.bookingPolicy;
@@ -2982,13 +3067,17 @@ const cancelAppointment = async (
             }
           }
 
-          // ---------------------------------------------
-          // Identify Group Purchase booking
-          // ---------------------------------------------
+          // =============================================
+          // 8.5 IDENTIFY GROUP PURCHASE TYPE
+          // =============================================
 
-          const isCurrentGroupPurchase =
+          const isCurrentRedemption =
             current.bookingMethod === BookingMethod.GROUP_PURCHASE &&
             current.groupPurchaseId !== null;
+
+          const isCurrentInitialBookNow =
+            current.groupPurchaseId !== null &&
+            current.bookingMethod !== BookingMethod.GROUP_PURCHASE;
 
           if (
             current.bookingMethod === BookingMethod.GROUP_PURCHASE &&
@@ -2997,12 +3086,23 @@ const cancelAppointment = async (
             throw new AppError("Group purchase reference is missing", 409);
           }
 
-          // ---------------------------------------------
-          // Preserve existing paid booking restriction
-          // ---------------------------------------------
+          // =============================================
+          // 8.6 BLOCK INITIAL BOOK NOW CANCELLATION
+          // =============================================
+
+          if (isCurrentInitialBookNow) {
+            throw new AppError(
+              "Initial Book Now appointment cancellation requires package-level cancellation processing",
+              409,
+            );
+          }
+
+          // =============================================
+          // 8.7 PRESERVE PAID BOOKING RESTRICTION
+          // =============================================
 
           if (
-            !isCurrentGroupPurchase &&
+            !isCurrentRedemption &&
             (current.paymentStatus === PaymentStatus.PAID ||
               current.paymentStatus === PaymentStatus.PARTIALLY_PAID)
           ) {
@@ -3012,9 +3112,9 @@ const cancelAppointment = async (
             );
           }
 
-          // ---------------------------------------------
-          // Validate linked Group Purchase
-          // ---------------------------------------------
+          // =============================================
+          // 8.8 VALIDATE GROUP PURCHASE
+          // =============================================
 
           let purchase: {
             id: string;
@@ -3023,7 +3123,7 @@ const cancelAppointment = async (
             paymentStatus: PaymentStatus;
           } | null = null;
 
-          if (isCurrentGroupPurchase && current.groupPurchaseId) {
+          if (isCurrentRedemption && current.groupPurchaseId) {
             purchase = await tx.groupPurchase.findUnique({
               where: {
                 id: current.groupPurchaseId,
@@ -3049,9 +3149,9 @@ const cancelAppointment = async (
             }
           }
 
-          // =================================================
-          // 7. CANCEL APPOINTMENT
-          // =================================================
+          // =============================================
+          // 9. ATOMIC APPOINTMENT CANCELLATION
+          // =============================================
 
           const updated = await tx.appointment.updateMany({
             where: {
@@ -3059,6 +3159,11 @@ const cancelAppointment = async (
               appointmentStatus: {
                 in: cancellableStatuses,
               },
+
+              // Prevent linked appointment type
+              // from changing between read/update.
+              bookingMethod: current.bookingMethod,
+              groupPurchaseId: current.groupPurchaseId,
             },
             data: {
               appointmentStatus: AppointmentStatus.CANCELLED,
@@ -3074,14 +3179,14 @@ const cancelAppointment = async (
             );
           }
 
-          // =================================================
-          // 8. CALCULATE GROUP PURCHASE QUANTITY
-          // =================================================
+          // =============================================
+          // 10. CALCULATE PACKAGE QUANTITY
+          // =============================================
 
           let groupPurchaseSummary: ICancelAppointmentResponse["groupPurchase"] =
             undefined;
 
-          if (isCurrentGroupPurchase && purchase) {
+          if (isCurrentRedemption && purchase) {
             const redeemedQuantity = await tx.appointment.count({
               where: {
                 groupPurchaseId: purchase.id,
@@ -3104,9 +3209,9 @@ const cancelAppointment = async (
             };
           }
 
-          // =====================================================
-          // 9. CREATE MULTILINGUAL NOTIFICATION
-          // =====================================================
+          // =============================================
+          // 11. CUSTOMER NOTIFICATION
+          // =============================================
 
           const translations = notificationTemplates.BOOKING_CANCELLED();
 
@@ -3114,13 +3219,9 @@ const cancelAppointment = async (
             {
               appointmentId: current.id,
               userId: current.customerId,
-
               type: "BOOKING_CANCELLED",
-
               title: translations.en!.title!,
-
               message: translations.en!.message!,
-
               translations,
             },
             tx,
@@ -3137,7 +3238,7 @@ const cancelAppointment = async (
       );
 
       // =====================================================
-      // 10. FINAL RESPONSE
+      // 12. FINAL RESPONSE
       // =====================================================
 
       return {
@@ -3584,14 +3685,12 @@ const verifyQr = async (
     where: {
       qrToken,
     },
-
     include: {
       staff: {
         select: {
           userId: true,
         },
       },
-
       branch: {
         include: {
           bookingPolicy: true,
@@ -3603,6 +3702,8 @@ const verifyQr = async (
   if (!appointment) {
     throw new AppError("Invalid QR", 404);
   }
+
+  const isGroupPurchaseAppointment = appointment.groupPurchaseId !== null;
 
   // =====================================================
   // 3. BOOKING METHOD VALIDATION
@@ -3682,7 +3783,13 @@ const verifyQr = async (
   // =====================================================
 
   if (appointment.bookingMethod === BookingMethod.RESERVE_NOW) {
-    if (!payload.paymentMethod) {
+    // Normal appointment:
+    // QR verification collects salon payment.
+    //
+    // Group Purchase:
+    // Remaining payment is recorded separately.
+
+    if (!isGroupPurchaseAppointment && !payload.paymentMethod) {
       throw new AppError(
         "Payment method is required for reservation verification",
         400,
@@ -3704,7 +3811,7 @@ const verifyQr = async (
   }
 
   // =====================================================
-  // 9. QR EXPIRY - OWNER SELECTED RULE (NEW)
+  // 9. QR EXPIRY
   // =====================================================
 
   const qrVerificationRule =
@@ -3737,7 +3844,6 @@ const verifyQr = async (
     where: {
       id: userId,
     },
-
     select: {
       id: true,
       name: true,
@@ -3764,11 +3870,11 @@ const verifyQr = async (
             where: {
               id: appointment.id,
             },
-
             select: {
               id: true,
               customerId: true,
               branchId: true,
+              groupPurchaseId: true,
               bookingMethod: true,
               appointmentStatus: true,
               paymentStatus: true,
@@ -3778,10 +3884,7 @@ const verifyQr = async (
               currency: true,
               date: true,
               startTime: true,
-
-              // NEW: Required for BEFORE_END_TIME
               endTime: true,
-
               staff: {
                 select: {
                   userId: true,
@@ -3819,8 +3922,53 @@ const verifyQr = async (
             );
           }
 
+          const currentIsGroupPurchase = current.groupPurchaseId !== null;
+
           // =============================================
-          // 13. FINAL AUTHORIZATION RECHECK
+          // 13. GROUP PURCHASE VALIDATION
+          // =============================================
+
+          if (currentIsGroupPurchase) {
+            const purchase = await tx.groupPurchase.findUnique({
+              where: {
+                id: current.groupPurchaseId!,
+              },
+              select: {
+                id: true,
+                customerId: true,
+                purchaseFlow: true,
+                bookingMethod: true,
+                paymentStatus: true,
+              },
+            });
+
+            if (!purchase) {
+              throw new AppError("Group purchase not found", 404);
+            }
+
+            if (
+              purchase.customerId !== current.customerId ||
+              purchase.purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_NOW ||
+              purchase.bookingMethod !== current.bookingMethod
+            ) {
+              throw new AppError("Group purchase appointment mismatch", 409);
+            }
+
+            const expectedPurchasePaymentStatus =
+              current.bookingMethod === BookingMethod.DEPOSIT
+                ? PaymentStatus.PARTIALLY_PAID
+                : PaymentStatus.UNPAID;
+
+            if (purchase.paymentStatus !== expectedPurchasePaymentStatus) {
+              throw new AppError(
+                "Group purchase payment state is invalid for QR verification",
+                409,
+              );
+            }
+          }
+
+          // =============================================
+          // 14. FINAL AUTHORIZATION RECHECK
           // =============================================
 
           if (role === Role.STAFF) {
@@ -3851,17 +3999,13 @@ const verifyQr = async (
           }
 
           // =============================================
-          // 14. FINAL QR EXPIRY CHECK (NEW)
+          // 15. FINAL QR EXPIRY CHECK
           // =============================================
-
-          // Re-read the latest branch policy inside transaction.
-          // This prevents relying on the earlier policy snapshot.
 
           const currentBookingPolicy = await tx.branchBookingPolicy.findUnique({
             where: {
               branchId: current.branchId,
             },
-
             select: {
               qrVerificationRule: true,
             },
@@ -3892,11 +4036,11 @@ const verifyQr = async (
           }
 
           // =============================================
-          // 15. PAYMENT STATE VALIDATION
+          // 16. FINAL PAYMENT VALIDATION
           // =============================================
 
           if (current.bookingMethod === BookingMethod.RESERVE_NOW) {
-            if (!payload.paymentMethod) {
+            if (!currentIsGroupPurchase && !payload.paymentMethod) {
               throw new AppError(
                 "Payment method is required for reservation verification",
                 400,
@@ -3924,7 +4068,7 @@ const verifyQr = async (
           }
 
           // =============================================
-          // 16. ATOMIC SINGLE-USE QR CLAIM
+          // 17. ATOMIC SINGLE-USE QR CLAIM
           // =============================================
 
           const claimResult = await tx.appointment.updateMany({
@@ -3935,11 +4079,17 @@ const verifyQr = async (
               appointmentStatus: AppointmentStatus.RESERVED,
               paymentStatus: current.paymentStatus,
             },
-
             data: {
               appointmentStatus: AppointmentStatus.CONFIRMED,
 
-              ...(current.bookingMethod === BookingMethod.RESERVE_NOW
+              // Normal RESERVE_NOW:
+              // QR verification records full payment.
+              //
+              // Group Purchase RESERVE_NOW:
+              // Payment is recorded separately.
+
+              ...(current.bookingMethod === BookingMethod.RESERVE_NOW &&
+              !currentIsGroupPurchase
                 ? {
                     paymentStatus: PaymentStatus.PAID,
                   }
@@ -3958,25 +4108,24 @@ const verifyQr = async (
           }
 
           // =============================================
-          // 17. RECORD FULL SALON PAYMENT
+          // 18. RECORD NORMAL RESERVE_NOW PAYMENT
           // =============================================
 
           let paymentId: string | null = null;
 
-          if (current.bookingMethod === BookingMethod.RESERVE_NOW) {
+          if (
+            current.bookingMethod === BookingMethod.RESERVE_NOW &&
+            !currentIsGroupPurchase
+          ) {
             const payment = await tx.payment.create({
               data: {
                 customerId: current.customerId,
                 appointmentId: current.id,
-
                 purpose: PaymentPurpose.APPOINTMENT,
                 provider: PaymentProvider.SALON,
-
                 salonPaymentMethod: payload.paymentMethod!,
-
                 amount: current.price,
                 currency: current.currency,
-
                 status: PaymentStatus.PAID,
                 paidAt: qrVerifiedAt,
               },
@@ -3986,14 +4135,13 @@ const verifyQr = async (
           }
 
           // =============================================
-          // 18. GET UPDATED APPOINTMENT
+          // 19. GET UPDATED APPOINTMENT
           // =============================================
 
           const updatedAppointment = await tx.appointment.findUniqueOrThrow({
             where: {
               id: current.id,
             },
-
             select: {
               id: true,
               customerId: true,
@@ -4003,9 +4151,9 @@ const verifyQr = async (
             },
           });
 
-          // =====================================================
-          // 19. MULTILINGUAL CUSTOMER NOTIFICATION
-          // =====================================================
+          // =============================================
+          // 20. CUSTOMER NOTIFICATION
+          // =============================================
 
           const translations =
             current.bookingMethod === BookingMethod.RESERVE_NOW
@@ -4016,61 +4164,45 @@ const verifyQr = async (
             {
               appointmentId: current.id,
               userId: current.customerId,
-
               type: "BOOKING_CONFIRMED",
-
               title: translations.en!.title!,
               message: translations.en!.message!,
-
               translations,
             },
             tx,
           );
 
           // =============================================
-          // 20. AUDIT LOG
+          // 21. AUDIT LOG
           // =============================================
 
           await auditLogService.createAuditLog(
             {
               userId,
-
               action: "QR_VERIFIED",
-
               entityType: "APPOINTMENT",
-
               entityId: current.id,
-
               metadata: {
                 previousStatus: current.appointmentStatus,
-
                 newStatus: AppointmentStatus.CONFIRMED,
-
                 previousPaymentStatus: current.paymentStatus,
-
                 newPaymentStatus: updatedAppointment.paymentStatus,
-
                 branchId: current.branchId,
-
                 bookingMethod: current.bookingMethod,
-
+                groupPurchaseId: current.groupPurchaseId,
                 paymentId,
-
                 paymentMethod:
-                  current.bookingMethod === BookingMethod.RESERVE_NOW
+                  current.bookingMethod === BookingMethod.RESERVE_NOW &&
+                  !currentIsGroupPurchase
                     ? payload.paymentMethod
                     : null,
-
                 paymentProvider:
-                  current.bookingMethod === BookingMethod.RESERVE_NOW
+                  current.bookingMethod === BookingMethod.RESERVE_NOW &&
+                  !currentIsGroupPurchase
                     ? PaymentProvider.SALON
                     : null,
-
                 qrVerifiedAt: qrVerifiedAt.toISOString(),
-
                 performedByRole: role,
-
-                // NEW: Record which QR rule was applied
                 qrVerificationRule: currentQrRule,
               },
             },
@@ -4085,7 +4217,7 @@ const verifyQr = async (
       );
 
       // =====================================================
-      // 21. FINAL RESPONSE
+      // 22. FINAL RESPONSE
       // =====================================================
 
       if (!result.qrVerifiedAt) {
@@ -4094,13 +4226,9 @@ const verifyQr = async (
 
       return {
         appointmentId: result.id,
-
         appointmentStatus: "CONFIRMED",
-
         paymentStatus: result.paymentStatus,
-
         qrVerifiedAt: result.qrVerifiedAt,
-
         verifiedBy: {
           id: verifiedByUser.id,
           name: verifiedByUser.name,
@@ -4125,6 +4253,7 @@ const verifyQr = async (
 
   throw new AppError("Unable to verify QR. Please try again", 409);
 };
+
 const completeAppointment = async (
   appointmentId: string,
   userId: string,
@@ -5456,6 +5585,10 @@ const recordRemainingPayment = async (
 
   if (!appointment) {
     throw new AppError("Appointment not found", httpStatus.NOT_FOUND);
+  }
+
+  if (appointment.groupPurchaseId) {
+    throw new AppError("Use the group purchase remaining-payment endpoint for this appointment", 409);
   }
 
   // =====================================================

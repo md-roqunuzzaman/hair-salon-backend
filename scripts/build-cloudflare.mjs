@@ -31,8 +31,11 @@ for (const name of ['forgot-password', 'reset-password']) {
   if (await compiledTemplates.renderFile(`${name}.ejs`, data) !== original) throw new Error(`Email template parity failed: ${name}`);
 }
 let migration = await readFile('cloudflare/migrations/0001_initial.sql', 'utf8');
+const initialSql = migration;
 for (const [model, info] of Object.entries(metadata)) {
   for (const [field, { max }] of Object.entries(info.money)) {
+    const tableSql = initialSql.split(`CREATE TABLE "${model}" (`)[1]?.split('\n);')[0] ?? '';
+    if (!tableSql.includes(`"${field}" `)) continue;
     for (const event of ['INSERT', 'UPDATE']) {
       migration += `\nCREATE TRIGGER "money_${model}_${field}_${event}" BEFORE ${event} ON "${model}" WHEN NEW."${field}" IS NOT NULL AND (typeof(NEW."${field}") != 'integer' OR abs(NEW."${field}") > ${max}) BEGIN SELECT RAISE(ABORT, 'Money precision exceeded'); END;\n`;
     }
@@ -41,7 +44,15 @@ for (const [model, info] of Object.entries(metadata)) {
 await writeFile(`${directory}/migration.sql`, migration);
 const upgrade = await readFile('cloudflare/migrations/0002_wallet_topup_promotion.sql', 'utf8');
 const qrUpgrade = await readFile('cloudflare/migrations/0003_branch_qr_verification_rule.sql', 'utf8');
-const migrations = [migration, upgrade, qrUpgrade].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+let unified = await readFile('cloudflare/migrations/0004_unified_group_purchase.sql', 'utf8');
+for (const field of ['depositPercentage', 'depositAmount', 'remainingAmount']) {
+  const max = metadata.GroupPurchase.money[field].max;
+  for (const event of ['INSERT', 'UPDATE']) unified += `\nCREATE TRIGGER "money_GroupPurchase_${field}_${event}" BEFORE ${event} ON "GroupPurchase" WHEN NEW."${field}" IS NOT NULL AND (typeof(NEW."${field}") != 'integer' OR abs(NEW."${field}") > ${max}) BEGIN SELECT RAISE(ABORT, 'Money precision exceeded'); END;\n`;
+}
+const attemptFence = await readFile('cloudflare/migrations/0005_refund_attempt_fence.sql', 'utf8');
+const settlementIdentity = await readFile('cloudflare/migrations/0006_group_settlement_identity.sql', 'utf8');
+const branchCoordinates = await readFile('cloudflare/migrations/0007_branch_coordinates.sql', 'utf8');
+const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);

@@ -106,6 +106,8 @@
       "description": "String",
       "imageObjectKey": "String",
       "translations": "Json",
+      "latitude": "Float",
+      "longitude": "Float",
       "status": "BranchStatus",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
@@ -219,9 +221,22 @@
       "amount": {
         "scale": 2,
         "max": "9999999999"
+      },
+      "depositPercentage": {
+        "scale": 2,
+        "max": "99999"
+      },
+      "depositAmount": {
+        "scale": 2,
+        "max": "9999999999"
+      },
+      "remainingAmount": {
+        "scale": 2,
+        "max": "9999999999"
       }
     },
     "relations": {
+      "settledPayment": "Payment",
       "customer": "User",
       "package": "Package",
       "payments": "Payment",
@@ -238,6 +253,12 @@
       "paymentStatus": "PaymentStatus",
       "reservationExpiresAt": "DateTime",
       "purchasedAt": "DateTime",
+      "settledPaymentId": "String",
+      "bookingMethod": "BookingMethod",
+      "depositPercentage": "Decimal",
+      "depositAmount": "Decimal",
+      "remainingAmount": "Decimal",
+      "purchaseFlow": "GroupPurchaseFlow",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }
@@ -362,6 +383,7 @@
       "customer": "User",
       "appointment": "Appointment",
       "groupPurchase": "GroupPurchase",
+      "settledGroupPurchase": "GroupPurchase",
       "refunds": "Refund",
       "walletTopup": "WalletTopup",
       "refundRequests": "RefundRequest"
@@ -417,6 +439,10 @@
       "reason": "String",
       "status": "RefundStatus",
       "refundedAt": "DateTime",
+      "idempotencyKey": "String",
+      "refundClaimToken": "String",
+      "refundClaimExpiresAt": "DateTime",
+      "refundAttemptedAt": "DateTime",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }
@@ -821,13 +847,14 @@
     },
     "relations": {
       "wallet": "Wallet",
-      "payments": "Payment",
-      "promotion": "Promotion"
+      "promotion": "Promotion",
+      "payments": "Payment"
     },
     "arrays": [],
     "scalars": {
       "id": "String",
       "walletId": "String",
+      "promotionId": "String",
       "amount": "Decimal",
       "potentialBonus": "Decimal",
       "status": "WalletTopupStatus",
@@ -835,8 +862,7 @@
       "paidAt": "DateTime",
       "failedAt": "DateTime",
       "createdAt": "DateTime",
-      "updatedAt": "DateTime",
-      "promotionId": "String"
+      "updatedAt": "DateTime"
     }
   }
 }

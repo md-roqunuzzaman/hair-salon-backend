@@ -8,6 +8,7 @@ import { sendResponse } from "../../utils/sendResponse.js";
 
 import { groupPurchaseService } from "./group-purchase.service.js";
 import { DEFAULT_LANGUAGE, isLanguage } from "../../utils/language.js";
+import { AppError } from "../../utils/app-error.js";
 
 const createGroupPurchase = catchAsync(async (req: Request, res: Response) => {
   const customerId = req.user!.userId;
@@ -119,9 +120,58 @@ const createGroupPurchaseAppointment = catchAsync(
     });
   },
 );
+
+const recordGroupPurchaseRemainingPayment = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. VALIDATE AUTHENTICATED USER
+    // =====================================================
+
+    const user = req.user;
+
+    if (!user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    // =====================================================
+    // 2. VALIDATE PURCHASE ID
+    // =====================================================
+
+    const purchaseId = req.params.purchaseId;
+
+    if (typeof purchaseId !== "string" || !purchaseId.trim()) {
+      throw new AppError("Valid purchase ID is required", 400);
+    }
+
+    // =====================================================
+    // 3. RECORD REMAINING PAYMENT
+    // =====================================================
+
+    const result =
+      await groupPurchaseService.recordGroupPurchaseRemainingPayment(
+        purchaseId,
+        req.body,
+        user.userId,
+        user.role,
+      );
+
+    // =====================================================
+    // 4. SEND RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Group purchase remaining payment recorded successfully",
+      data: result,
+    });
+  },
+);
+
 export const groupPurchaseController = {
   createGroupPurchase,
   getMyGroupPurchases,
   getGroupPurchaseById,
   createGroupPurchaseAppointment,
+  recordGroupPurchaseRemainingPayment,
 };

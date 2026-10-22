@@ -11,8 +11,25 @@ export class MigrationFixture {
     applyMigrations(storage, migrations.slice(0, 2));
     storage.sql.exec("INSERT OR IGNORE INTO Branch (id, name, address, updatedAt) VALUES ('branch', 'Branch', 'Address', 1)");
     storage.sql.exec("INSERT OR IGNORE INTO BranchBookingPolicy (id, branchId, cancellationCutoffHours, updatedAt) VALUES ('policy', 'branch', 5, 1)");
+    applyMigrations(storage, migrations.slice(0, 4));
+    storage.sql.exec("INSERT INTO Payment (id, customerId, purpose, amount, updatedAt) VALUES ('legacy-payment', 'customer', 'GROUP_PURCHASE', 10000, 1)");
+    storage.sql.exec("INSERT INTO Refund (id, paymentId, amount, reason, createdAt, updatedAt) VALUES ('legacy-refund', 'legacy-payment', 10000, 'LATE_GROUP_PURCHASE_PAYMENT', 1, 1)");
     applyMigrations(storage, migrations);
     applyMigrations(storage, migrations);
+    if (storage.sql.exec("SELECT refundAttemptedAt FROM Refund WHERE id = 'legacy-refund'").one().refundAttemptedAt !== 1) throw new Error('Legacy refund attempt fence was not backfilled');
+    storage.sql.exec("INSERT INTO Refund (id, paymentId, amount, reason, updatedAt) VALUES ('claim-refund', 'legacy-payment', 10000, 'test', 1)");
+    const claim = token => { storage.sql.exec("UPDATE Refund SET refundAttemptedAt = 2, refundClaimToken = ? WHERE id = 'claim-refund' AND refundAttemptedAt IS NULL", token).toArray(); return storage.sql.exec("SELECT changes() AS count").one().count; };
+    if (claim('claim-one') !== 1 || claim('claim-two') !== 0) throw new Error('Refund attempt compare-and-set is not atomic');
+
+    const oldBranch = storage.sql.exec("SELECT name, address, latitude, longitude FROM Branch WHERE id = 'branch'").one();
+    if (oldBranch.name !== 'Branch' || oldBranch.address !== 'Address' || oldBranch.latitude !== null || oldBranch.longitude !== null) throw new Error('Coordinates migration changed existing branch data');
+    storage.sql.exec("UPDATE Branch SET latitude = ?, longitude = ? WHERE id = 'branch'", 22.3193, 114.1694);
+    applyMigrations(storage, migrations);
+    const located = storage.sql.exec("SELECT latitude, longitude FROM Branch WHERE id = 'branch'").one();
+    if (located.latitude !== 22.3193 || located.longitude !== 114.1694) throw new Error('Coordinates lost precision or were reset on initialization');
+    storage.sql.exec("INSERT INTO Branch (id, name, address, latitude, longitude, updatedAt) VALUES ('located', 'Located', 'HK', 0, 0, 1)");
+    const zero = storage.sql.exec("SELECT latitude, longitude FROM Branch WHERE id = 'located'").one();
+    if (zero.latitude !== 0 || zero.longitude !== 0) throw new Error('Zero coordinates were lost');
     const policy = storage.sql.exec("SELECT qrVerificationRule, cancellationCutoffHours FROM BranchBookingPolicy WHERE id = 'policy'").one();
     if (policy.qrVerificationRule !== 'BEFORE_START_TIME' || policy.cancellationCutoffHours !== 5) throw new Error('QR upgrade changed existing policy');
     storage.sql.exec("UPDATE BranchBookingPolicy SET qrVerificationRule = 'BEFORE_END_TIME' WHERE id = 'policy'");

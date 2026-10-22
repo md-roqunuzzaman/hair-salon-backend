@@ -44,7 +44,8 @@ model WalletTransaction {
 model WalletTopup {
   id String @id @default(uuid())
 
-  walletId String
+  walletId    String
+  promotionId String?
 
   amount         Decimal @db.Decimal(10, 2)
   potentialBonus Decimal @default(0) @db.Decimal(10, 2)
@@ -56,13 +57,15 @@ model WalletTopup {
   paidAt   DateTime?
   failedAt DateTime?
 
-  wallet      Wallet     @relation(fields: [walletId], references: [id], onDelete: Restrict)
-  payments    Payment[]
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  promotion   Promotion? @relation(fields: [promotionId], references: [id])
-  promotionId String?
+  wallet    Wallet     @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  promotion Promotion? @relation(fields: [promotionId], references: [id], onDelete: SetNull)
+
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([walletId])
+  @@index([promotionId])
   @@index([status])
 }
