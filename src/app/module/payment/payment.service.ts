@@ -1269,11 +1269,11 @@ const createGroupPurchaseStripeIntent = async (
   // =====================================================
 
   const isBookNow =
-    purchase.purchaseFlow === GroupPurchaseFlow.BUY_NOW_BOOK_NOW;
+    purchase.purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK;
 
   if (
     purchase.purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_LATER &&
-    purchase.purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_NOW
+    purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK
   ) {
     throw new AppError("Unsupported purchase flow", 422);
   }
@@ -1464,7 +1464,7 @@ const createGroupPurchaseStripeIntent = async (
     }
 
     const currentExpectedAmount =
-      currentPurchase.purchaseFlow === GroupPurchaseFlow.BUY_NOW_BOOK_NOW &&
+      currentPurchase.purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK &&
       currentPurchase.bookingMethod === BookingMethod.DEPOSIT
         ? currentPurchase.depositAmount
         : currentPurchase.amount;
@@ -1647,7 +1647,7 @@ export const handleGroupPurchaseStripeEvent = async (
           }
 
           const isBookNow =
-            purchase.purchaseFlow === GroupPurchaseFlow.BUY_NOW_BOOK_NOW;
+            purchase.purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK;
 
           const isDeposit =
             isBookNow && purchase.bookingMethod === BookingMethod.DEPOSIT;

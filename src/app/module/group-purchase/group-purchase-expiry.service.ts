@@ -91,7 +91,7 @@ const expirePendingGroupPurchases = async () => {
             }
 
             const isBookNow =
-              current.purchaseFlow === GroupPurchaseFlow.BUY_NOW_BOOK_NOW;
+              current.purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK;
 
             // =============================================
             // 5. VALIDATE LINKED APPOINTMENT

@@ -52,7 +52,9 @@ for (const field of ['depositPercentage', 'depositAmount', 'remainingAmount']) {
 const attemptFence = await readFile('cloudflare/migrations/0005_refund_attempt_fence.sql', 'utf8');
 const settlementIdentity = await readFile('cloudflare/migrations/0006_group_settlement_identity.sql', 'utf8');
 const branchCoordinates = await readFile('cloudflare/migrations/0007_branch_coordinates.sql', 'utf8');
-const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+const directBookRename = await readFile('cloudflare/migrations/0008_rename_direct_book.sql', 'utf8');
+const policySchema = await readFile('cloudflare/migrations/0009_policy_schema.sql', 'utf8');
+const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);

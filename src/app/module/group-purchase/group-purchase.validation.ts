@@ -9,7 +9,7 @@ const createGroupPurchaseValidationSchema = z.object({
       quantity: z.number().int().positive(),
 
       purchaseFlow: z
-        .enum(["BUY_NOW_BOOK_LATER", "BUY_NOW_BOOK_NOW"])
+        .enum(["BUY_NOW_BOOK_LATER", "DIRECT_BOOK"])
         .default("BUY_NOW_BOOK_LATER"),
 
       bookingMethod: z.enum(["PAY_NOW", "DEPOSIT", "RESERVE_NOW"]).optional(),
@@ -29,7 +29,7 @@ const createGroupPurchaseValidationSchema = z.object({
         .optional(),
     })
     .superRefine((data, ctx) => {
-      if (data.purchaseFlow === "BUY_NOW_BOOK_NOW") {
+      if (data.purchaseFlow === "DIRECT_BOOK") {
         if (!data.bookingMethod) {
           ctx.addIssue({
             code: "custom",
@@ -72,7 +72,7 @@ const createGroupPurchaseValidationSchema = z.object({
           ctx.addIssue({
             code: "custom",
             path: ["purchaseFlow"],
-            message: "Booking details are only allowed for BUY_NOW_BOOK_NOW",
+            message: "Booking details are only allowed for DIRECT_BOOK",
           });
         }
       }

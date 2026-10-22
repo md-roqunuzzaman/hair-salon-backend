@@ -1,0 +1,50 @@
+model GroupPurchaseRefundPolicy {
+  id String @id @default(uuid())
+
+  packageId String  @unique
+  package   Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  isEnabled Boolean @default(true)
+
+  refundAllowed Boolean @default(true)
+
+  // Refund rules based on hours since purchase
+  refundTiers Json
+
+  // Package usage restrictions
+  allowPartiallyUsedRefund Boolean @default(false)
+  allowExpiredRefund       Boolean @default(false)
+
+  // Whether existing appointments must be cancelled first
+  requireNoActiveAppointments Boolean @default(true)
+
+  version Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GroupPurchaseCancellationPolicy {
+  id String @id @default(uuid())
+
+  packageId String  @unique
+  package   Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  isEnabled Boolean @default(true)
+
+  cancellationAllowed Boolean @default(true)
+
+  // Minimum notice required to cancel an appointment
+  minimumCancellationHours Int @default(2)
+
+  // Cancellation within this window restores entitlement
+  restorationMinimumHours Int @default(24)
+
+  // Whether late cancellations forfeit entitlement
+  forfeitOnLateCancellation Boolean @default(true)
+
+  version Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

@@ -1,4 +1,62 @@
 {
+  "BranchCancellationPolicy": {
+    "money": {},
+    "relations": {
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "branchId": "String",
+      "isEnabled": "Boolean",
+      "cancellationAllowed": "Boolean",
+      "minimumCancellationHours": "Int",
+      "refundTiers": "Json",
+      "nonRefundable": "Boolean",
+      "version": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "GroupPurchaseRefundPolicy": {
+    "money": {},
+    "relations": {
+      "package": "Package"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "packageId": "String",
+      "isEnabled": "Boolean",
+      "refundAllowed": "Boolean",
+      "refundTiers": "Json",
+      "allowPartiallyUsedRefund": "Boolean",
+      "allowExpiredRefund": "Boolean",
+      "requireNoActiveAppointments": "Boolean",
+      "version": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "GroupPurchaseCancellationPolicy": {
+    "money": {},
+    "relations": {
+      "package": "Package"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "packageId": "String",
+      "isEnabled": "Boolean",
+      "cancellationAllowed": "Boolean",
+      "minimumCancellationHours": "Int",
+      "restorationMinimumHours": "Int",
+      "forfeitOnLateCancellation": "Boolean",
+      "version": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
   "Appointment": {
     "money": {
       "price": {
@@ -53,6 +111,9 @@
       "qrToken": "String",
       "qrVerifiedAt": "DateTime",
       "qrVerifiedBy": "String",
+      "cancellationPolicySnapshot": "Json",
+      "cancellationPolicyVersion": "Int",
+      "entitlementCancellationOutcome": "EntitlementCancellationOutcome",
       "completedAt": "DateTime",
       "completionNotes": "String",
       "cancelledAt": "DateTime",
@@ -95,7 +156,8 @@
       "staffSchedules": "StaffSchedule",
       "appointments": "Appointment",
       "promotions": "PromotionBranch",
-      "reviews": "Review"
+      "reviews": "Review",
+      "cancellationPolicy": "BranchCancellationPolicy"
     },
     "arrays": [],
     "scalars": {
@@ -259,6 +321,10 @@
       "depositAmount": "Decimal",
       "remainingAmount": "Decimal",
       "purchaseFlow": "GroupPurchaseFlow",
+      "refundPolicySnapshot": "Json",
+      "refundPolicyVersion": "Int",
+      "cancellationPolicySnapshot": "Json",
+      "cancellationPolicyVersion": "Int",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }
@@ -293,6 +359,8 @@
       }
     },
     "relations": {
+      "refundPolicy": "GroupPurchaseRefundPolicy",
+      "cancellationPolicy": "GroupPurchaseCancellationPolicy",
       "groupPurchases": "GroupPurchase",
       "staff": "StaffPackage",
       "appointments": "Appointment",

@@ -1,3 +1,76 @@
+model BranchCancellationPolicy {
+  id String @id @default(uuid())
+
+  branchId String @unique
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  isEnabled Boolean @default(true)
+
+  cancellationAllowed Boolean @default(true)
+
+  minimumCancellationHours Int @default(2)
+
+  refundTiers Json
+
+  nonRefundable Boolean @default(false)
+
+  version Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GroupPurchaseRefundPolicy {
+  id String @id @default(uuid())
+
+  packageId String  @unique
+  package   Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  isEnabled Boolean @default(true)
+
+  refundAllowed Boolean @default(true)
+
+  // Refund rules based on hours since purchase
+  refundTiers Json
+
+  // Package usage restrictions
+  allowPartiallyUsedRefund Boolean @default(false)
+  allowExpiredRefund       Boolean @default(false)
+
+  // Whether existing appointments must be cancelled first
+  requireNoActiveAppointments Boolean @default(true)
+
+  version Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GroupPurchaseCancellationPolicy {
+  id String @id @default(uuid())
+
+  packageId String  @unique
+  package   Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  isEnabled Boolean @default(true)
+
+  cancellationAllowed Boolean @default(true)
+
+  // Minimum notice required to cancel an appointment
+  minimumCancellationHours Int @default(2)
+
+  // Cancellation within this window restores entitlement
+  restorationMinimumHours Int @default(24)
+
+  // Whether late cancellations forfeit entitlement
+  forfeitOnLateCancellation Boolean @default(true)
+
+  version Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model Appointment {
   id String @id @default(uuid())
 
@@ -26,16 +99,21 @@ model Appointment {
 
   holdExpiresAt DateTime?
 
-  qrToken      String?   @unique
-  qrVerifiedAt DateTime?
-  qrVerifiedBy String?
+  qrToken                    String?   @unique
+  qrVerifiedAt               DateTime?
+  qrVerifiedBy               String?
+  // Cancellation policy captured when appointment is booked
+  cancellationPolicySnapshot Json?
+  cancellationPolicyVersion  Int?
 
-  completedAt        DateTime?
-  completionNotes    String?
-  cancelledAt        DateTime?
-  cancellationReason String?
-  noShowAt           DateTime?
-  noShowReason       String?
+  // Group purchase entitlement cancellation outcome
+  entitlementCancellationOutcome EntitlementCancellationOutcome?
+  completedAt                    DateTime?
+  completionNotes                String?
+  cancelledAt                    DateTime?
+  cancellationReason             String?
+  noShowAt                       DateTime?
+  noShowReason                   String?
 
   customer User @relation("CustomerAppointments", fields: [customerId], references: [id], onDelete: Restrict)
 
@@ -100,29 +178,30 @@ model AuditLog {
 }
 
 model Branch {
-  id               String                 @id @default(uuid())
-  name             String
-  address          String
-  phone            String?
-  description      String?
-  imageObjectKey   String?
-  translations     Json?
-  latitude         Float?
-  longitude        Float?
-  status           BranchStatus           @default(ACTIVE)
-  bookingPolicy    BranchBookingPolicy?
-  businessHours    BranchBusinessHour[]
-  hourlyCapacities BranchHourlyCapacity[]
-  services         ServiceBranch[]
-  packages         PackageBranch[]
-  staff            StaffBranch[]
-  managers         BranchManagerBranch[]
-  staffSchedules   StaffSchedule[]
-  appointments     Appointment[]
-  promotions       PromotionBranch[]
-  reviews          Review[]
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
+  id                 String                    @id @default(uuid())
+  name               String
+  address            String
+  phone              String?
+  description        String?
+  imageObjectKey     String?
+  translations       Json?
+  latitude           Float?
+  longitude          Float?
+  status             BranchStatus              @default(ACTIVE)
+  bookingPolicy      BranchBookingPolicy?
+  businessHours      BranchBusinessHour[]
+  hourlyCapacities   BranchHourlyCapacity[]
+  services           ServiceBranch[]
+  packages           PackageBranch[]
+  staff              StaffBranch[]
+  managers           BranchManagerBranch[]
+  staffSchedules     StaffSchedule[]
+  appointments       Appointment[]
+  promotions         PromotionBranch[]
+  reviews            Review[]
+  cancellationPolicy BranchCancellationPolicy?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
 }
 
 model BranchBusinessHour {
@@ -370,7 +449,22 @@ enum QrVerificationRule {
 
 enum GroupPurchaseFlow {
   BUY_NOW_BOOK_LATER
-  BUY_NOW_BOOK_NOW
+  DIRECT_BOOK
+}
+
+enum RefundCalculationType {
+  PERCENTAGE
+  FIXED
+}
+
+enum RefundRequestType {
+  APPOINTMENT_CANCELLATION
+  GROUP_PURCHASE_REFUND
+}
+
+enum EntitlementCancellationOutcome {
+  RESTORED
+  FORFEITED
 }
 
 model GroupPurchase {
@@ -386,18 +480,25 @@ model GroupPurchase {
 
   reservationExpiresAt DateTime?
   purchasedAt          DateTime?
-  settledPaymentId String? @unique
-  settledPayment Payment? @relation("GroupPurchaseSettlement", fields: [settledPaymentId], references: [id], onDelete: Restrict)
+  settledPaymentId     String?   @unique
+  settledPayment       Payment?  @relation("GroupPurchaseSettlement", fields: [settledPaymentId], references: [id], onDelete: Restrict)
 
-  bookingMethod     BookingMethod?
-  depositPercentage BigInt?
-  depositAmount     BigInt?
-  remainingAmount   BigInt?
-  purchaseFlow      GroupPurchaseFlow @default(BUY_NOW_BOOK_LATER)
-  customer          User              @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  package           Package           @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  payments          Payment[]
-  appointments      Appointment[]
+  bookingMethod        BookingMethod?
+  depositPercentage    BigInt?
+  depositAmount        BigInt?
+  remainingAmount      BigInt?
+  purchaseFlow         GroupPurchaseFlow @default(BUY_NOW_BOOK_LATER)
+  customer             User              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  package              Package           @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  payments             Payment[]
+  appointments         Appointment[]
+  // Package refund policy captured at purchase time
+  refundPolicySnapshot Json?
+  refundPolicyVersion  Int?
+
+  // Redemption cancellation policy captured at purchase time
+  cancellationPolicySnapshot Json?
+  cancellationPolicyVersion  Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -447,12 +548,13 @@ model Package {
   // PRICING
   // =====================================================
 
-  regularPrice    BigInt
-  packagePrice    BigInt
-  durationMinutes Int
-
-  status        PackageStatus @default(ACTIVE)
-  listingStatus ListingStatus @default(LISTED)
+  regularPrice       BigInt
+  packagePrice       BigInt
+  durationMinutes    Int
+  refundPolicy       GroupPurchaseRefundPolicy?
+  cancellationPolicy GroupPurchaseCancellationPolicy?
+  status             PackageStatus                    @default(ACTIVE)
+  listingStatus      ListingStatus                    @default(LISTED)
 
   // =====================================================
   // GROUP PURCHASE SETTINGS
@@ -551,7 +653,7 @@ model Payment {
 
   appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
 
-  groupPurchase GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
+  groupPurchase        GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
   settledGroupPurchase GroupPurchase? @relation("GroupPurchaseSettlement")
 
   refunds Refund[]
@@ -591,11 +693,11 @@ model Refund {
 
   status RefundStatus @default(PENDING)
 
-  refundedAt     DateTime?
-  idempotencyKey String?   @unique
-  refundClaimToken String? @unique
+  refundedAt           DateTime?
+  idempotencyKey       String?   @unique
+  refundClaimToken     String?   @unique
   refundClaimExpiresAt DateTime?
-  refundAttemptedAt DateTime?
+  refundAttemptedAt    DateTime?
 
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 

@@ -3948,7 +3948,7 @@ const verifyQr = async (
 
             if (
               purchase.customerId !== current.customerId ||
-              purchase.purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_NOW ||
+              purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK ||
               purchase.bookingMethod !== current.bookingMethod
             ) {
               throw new AppError("Group purchase appointment mismatch", 409);

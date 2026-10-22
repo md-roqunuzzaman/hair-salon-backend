@@ -153,5 +153,20 @@ enum QrVerificationRule {
 
 enum GroupPurchaseFlow {
   BUY_NOW_BOOK_LATER
-  BUY_NOW_BOOK_NOW
+  DIRECT_BOOK
+}
+
+enum RefundCalculationType {
+  PERCENTAGE
+  FIXED
+}
+
+enum RefundRequestType {
+  APPOINTMENT_CANCELLATION
+  GROUP_PURCHASE_REFUND
+}
+
+enum EntitlementCancellationOutcome {
+  RESTORED
+  FORFEITED
 }

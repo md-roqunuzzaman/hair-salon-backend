@@ -2,7 +2,7 @@ import { BookingMethod, GroupPurchaseFlow, PaymentStatus, Prisma } from "../../.
 import config from "../../config/index.js";
 
 export const groupPurchaseOptions = () => ({
-  availablePurchaseFlows: [GroupPurchaseFlow.BUY_NOW_BOOK_LATER, ...(config.enable_book_now_purchase ? [GroupPurchaseFlow.BUY_NOW_BOOK_NOW] : [])],
+  availablePurchaseFlows: [GroupPurchaseFlow.BUY_NOW_BOOK_LATER, ...(config.enable_book_now_purchase ? [GroupPurchaseFlow.DIRECT_BOOK] : [])],
   staffSelectionRequired: false,
   buyLaterRequiresFullPayment: true,
   onlinePaymentProviders: ["STRIPE", "WALLET"],

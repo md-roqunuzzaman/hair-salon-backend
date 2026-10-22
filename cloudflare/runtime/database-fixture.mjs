@@ -1,5 +1,7 @@
 import { createDatabase } from './database.mjs';
 import branchCoordinates from '../migrations/0007_branch_coordinates.sql';
+import directBookRename from '../migrations/0008_rename_direct_book.sql';
+import policySchema from '../migrations/0009_policy_schema.sql';
 import migration from '../migrations/0001_initial.sql';
 import upgrade from '../migrations/0002_wallet_topup_promotion.sql';
 import settlementIdentity from '../migrations/0006_group_settlement_identity.sql';
@@ -11,13 +13,17 @@ import { Sessions } from './sessions.mjs';
 export class DatabaseFixture {
   constructor(state) {
     this.state = state;
-    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates));
+    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema));
     this.db = createDatabase(state.storage);
   }
   async fetch() {
     try {
       const db = this.db;
       const locatedBranch = await db.branch.create({ data: { name: 'Coordinates', address: 'Hong Kong', latitude: 22.3193, longitude: 114.1694 } });
+      const policy = await db.branchCancellationPolicy.create({ data: { branchId: locatedBranch.id, refundTiers: [{ hours: 12, percentage: 100 }] } });
+      const storedPolicy = await db.branchCancellationPolicy.findUnique({ where: { branchId: locatedBranch.id } });
+      if (storedPolicy.refundTiers[0].hours !== 12 || storedPolicy.version !== 1 || !storedPolicy.isEnabled) throw new Error('Policy adapter JSON/default roundtrip failed');
+      await db.branchCancellationPolicy.delete({ where: { id: policy.id } });
       const coordinates = await db.branch.findUnique({ where: { id: locatedBranch.id }, select: { latitude: true, longitude: true } });
       if (coordinates.latitude !== 22.3193 || coordinates.longitude !== 114.1694) throw new Error('Prisma coordinate roundtrip failed');
       const cleared = await db.branch.update({ where: { id: locatedBranch.id }, data: { latitude: null, longitude: null } });

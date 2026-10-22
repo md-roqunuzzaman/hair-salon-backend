@@ -18,12 +18,13 @@ model Package {
   // PRICING
   // =====================================================
 
-  regularPrice    Decimal @db.Decimal(10, 2)
-  packagePrice    Decimal @db.Decimal(10, 2)
-  durationMinutes Int
-
-  status        PackageStatus @default(ACTIVE)
-  listingStatus ListingStatus @default(LISTED)
+  regularPrice       Decimal                          @db.Decimal(10, 2)
+  packagePrice       Decimal                          @db.Decimal(10, 2)
+  durationMinutes    Int
+  refundPolicy       GroupPurchaseRefundPolicy?
+  cancellationPolicy GroupPurchaseCancellationPolicy?
+  status             PackageStatus                    @default(ACTIVE)
+  listingStatus      ListingStatus                    @default(LISTED)
 
   // =====================================================
   // GROUP PURCHASE SETTINGS

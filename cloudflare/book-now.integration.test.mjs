@@ -40,7 +40,7 @@ async function setup(t, flag) {
 for (const flag of [undefined, 'false']) test(`Book Now public creation is disabled for flag=${flag ?? 'missing'}`, async t => {
   const { api, fixture, state } = await setup(t, flag);
   const before = await state();
-  const result = await api('/api/v1/group-purchases', { body: { ...fixture, quantity: 2, purchaseFlow: 'BUY_NOW_BOOK_NOW', bookingMethod: 'PAY_NOW', startTime: '10:00' }, status: 422 });
+  const result = await api('/api/v1/group-purchases', { body: { ...fixture, quantity: 2, purchaseFlow: 'DIRECT_BOOK', bookingMethod: 'PAY_NOW', startTime: '10:00' }, status: 422 });
   assert.match(result.message, /not enabled/);
   assert.deepEqual(await state(), before);
   const options = (await api(`/api/v1/packages/${fixture.packageId}`)).data.groupPurchaseOptions;
@@ -53,29 +53,29 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
   const root = '/api/v1/group-purchases';
   await t.test('frontend discovery exposes two modes and effective branch methods', async () => {
     const options = (await api(`/api/v1/packages/${fixture.packageId}`)).data.groupPurchaseOptions;
-    assert.deepEqual(options.availablePurchaseFlows, ['BUY_NOW_BOOK_LATER', 'BUY_NOW_BOOK_NOW']);
+    assert.deepEqual(options.availablePurchaseFlows, ['BUY_NOW_BOOK_LATER', 'DIRECT_BOOK']);
     assert.equal(options.staffSelectionRequired, false);
     const policy = (await api(`/api/v1/branches/${fixture.branchId}/booking-policy`)).data;
     assert.deepEqual(policy.groupPurchaseBookingMethods, ['PAY_NOW', 'DEPOSIT', 'RESERVE_NOW']);
     assert.equal(policy.depositPercentage, 30);
   });
   await t.test('validation and amount tampering cannot bypass rules', async () => {
-    await api(root, { body: { packageId: fixture.packageId, quantity: 1, purchaseFlow: 'BUY_NOW_BOOK_NOW' }, status: 400 });
-    await api(root, { body: { ...fixture, quantity: 0, purchaseFlow: 'BUY_NOW_BOOK_NOW', bookingMethod: 'PAY_NOW', startTime: '08:00' }, status: 400 });
+    await api(root, { body: { packageId: fixture.packageId, quantity: 1, purchaseFlow: 'DIRECT_BOOK' }, status: 400 });
+    await api(root, { body: { ...fixture, quantity: 0, purchaseFlow: 'DIRECT_BOOK', bookingMethod: 'PAY_NOW', startTime: '08:00' }, status: 400 });
   });
   let index = 0;
   for (const [method, provider] of [['PAY_NOW', 'STRIPE'], ['DEPOSIT', 'STRIPE'], ['PAY_NOW', 'WALLET'], ['DEPOSIT', 'WALLET'], ['RESERVE_NOW', 'SALON']]) {
     const startTime = `${String(8 + index++ * 2).padStart(2, '0')}:00`;
     await t.test(`${method} via ${provider}: public purchase to full payment`, async () => {
       const before = await state();
-      const created = (await api(root, { body: { ...fixture, quantity: 2, purchaseFlow: 'BUY_NOW_BOOK_NOW', bookingMethod: method, startTime, amount: 1, depositAmount: 1 }, status: 201 })).data;
+      const created = (await api(root, { body: { ...fixture, quantity: 2, purchaseFlow: 'DIRECT_BOOK', bookingMethod: method, startTime, amount: 1, depositAmount: 1 }, status: 201 })).data;
       const id = created.purchaseId; const appointmentId = created.firstAppointment.appointmentId;
       assert.equal(created.amount, 200.5);
       assert.equal(created.depositAmount, method === 'DEPOSIT' ? 60.15 : null);
       assert.equal(created.paymentStatus, method === 'RESERVE_NOW' ? 'UNPAID' : 'PENDING');
       assert.equal(created.reservationExpiresAt === null, method === 'RESERVE_NOW');
       const pendingDetail = (await api(`${root}/${id}`)).data;
-      assert.equal(pendingDetail.purchaseFlow, 'BUY_NOW_BOOK_NOW');
+      assert.equal(pendingDetail.purchaseFlow, 'DIRECT_BOOK');
       assert.equal(pendingDetail.bookingMethod, method);
       assert.equal(pendingDetail.firstAppointment.appointmentId, appointmentId);
       await api(`${root}/${id}`, { roleToken: managerToken });
@@ -148,7 +148,7 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
     await api(`${root}/${purchase.id}/book-appointment`, { body: { branchId: fixture.branchId, date: fixture.date, startTime: '20:00' }, status: 409 });
   });
   await t.test('public pending purchase expires once and late signed success refunds once', async () => {
-    const created = (await api(root, { body: { ...fixture, quantity: 2, purchaseFlow: 'BUY_NOW_BOOK_NOW', bookingMethod: 'PAY_NOW', startTime: '18:00' }, status: 201 })).data;
+    const created = (await api(root, { body: { ...fixture, quantity: 2, purchaseFlow: 'DIRECT_BOOK', bookingMethod: 'PAY_NOW', startTime: '18:00' }, status: 201 })).data;
     const intent = (await api('/api/v1/payments/group-purchase/create-intent', { body: { purchaseId: created.purchaseId }, status: 201 })).data;
     await api('/__book-now-expire', { body: { purchaseId: created.purchaseId } });
     await cron(); await cron();
@@ -169,7 +169,7 @@ test('Buy Later and policy-driven Direct Booking public regressions', async t =>
   const { api, fixture, state, webhook } = await setup(t, 'true');
   const root = '/api/v1/group-purchases';
   const policy = data => api('/__book-now-policy', { body: { branchId: fixture.branchId, data } });
-  const direct = (bookingMethod, startTime = '10:00') => ({ ...fixture, quantity: 2, purchaseFlow: 'BUY_NOW_BOOK_NOW', bookingMethod, startTime });
+  const direct = (bookingMethod, startTime = '10:00') => ({ ...fixture, quantity: 2, purchaseFlow: 'DIRECT_BOOK', bookingMethod, startTime });
   await t.test('disabled methods, absent deposit, invalid deposit and notice/advance rules have no side effects', async () => {
     const before = await state();
     await policy({ allowedBookingMethods: ['PAY_NOW'] });

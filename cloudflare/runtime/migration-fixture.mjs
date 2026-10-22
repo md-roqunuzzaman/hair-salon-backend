@@ -14,8 +14,26 @@ export class MigrationFixture {
     applyMigrations(storage, migrations.slice(0, 4));
     storage.sql.exec("INSERT INTO Payment (id, customerId, purpose, amount, updatedAt) VALUES ('legacy-payment', 'customer', 'GROUP_PURCHASE', 10000, 1)");
     storage.sql.exec("INSERT INTO Refund (id, paymentId, amount, reason, createdAt, updatedAt) VALUES ('legacy-refund', 'legacy-payment', 10000, 'LATE_GROUP_PURCHASE_PAYMENT', 1, 1)");
+    storage.sql.exec("INSERT INTO Package (id, type, name, regularPrice, packagePrice, durationMinutes, updatedAt) VALUES ('legacy-package', 'GROUP_PURCHASE_PACKAGE', 'Package', 10000, 10000, 30, 1)");
+    storage.sql.exec("INSERT INTO GroupPurchase (id, customerId, packageId, quantity, unitPrice, amount, purchaseFlow, updatedAt) VALUES ('legacy-direct', 'customer', 'legacy-package', 2, 10000, 20000, 'BUY_NOW_BOOK_NOW', 1)");
     applyMigrations(storage, migrations);
     applyMigrations(storage, migrations);
+    const direct = storage.sql.exec("SELECT purchaseFlow, quantity, amount FROM GroupPurchase WHERE id = 'legacy-direct'").one();
+    if (direct.purchaseFlow !== 'DIRECT_BOOK' || direct.quantity !== 2 || direct.amount !== 20000) throw new Error('Direct Book rename changed purchase data or failed to migrate');
+    const snapshot = storage.sql.exec("SELECT refundPolicySnapshot, refundPolicyVersion, cancellationPolicySnapshot, cancellationPolicyVersion FROM GroupPurchase WHERE id = 'legacy-direct'").one();
+    if (Object.values(snapshot).some(value => value !== null)) throw new Error('Upgrade invented policy snapshots for historical purchases');
+    storage.sql.exec("INSERT INTO BranchCancellationPolicy (id, branchId, refundTiers, updatedAt) VALUES ('branch-policy', 'branch', '[]', 1)");
+    storage.sql.exec("INSERT INTO GroupPurchaseRefundPolicy (id, packageId, refundTiers, updatedAt) VALUES ('refund-policy', 'legacy-package', '[]', 1)");
+    storage.sql.exec("INSERT INTO GroupPurchaseCancellationPolicy (id, packageId, updatedAt) VALUES ('cancel-policy', 'legacy-package', 1)");
+    storage.sql.exec("UPDATE GroupPurchase SET refundPolicySnapshot = ?, refundPolicyVersion = 1 WHERE id = 'legacy-direct'", JSON.stringify({ refundAllowed: true, refundTiers: [] }));
+    applyMigrations(storage, migrations);
+    if (JSON.parse(storage.sql.exec("SELECT refundPolicySnapshot FROM GroupPurchase WHERE id = 'legacy-direct'").one().refundPolicySnapshot).refundAllowed !== true) throw new Error('Policy snapshot was lost on repeated initialization');
+    let duplicatePolicy = false;
+    try { storage.sql.exec("INSERT INTO BranchCancellationPolicy (id, branchId, refundTiers, updatedAt) VALUES ('duplicate-policy', 'branch', '[]', 1)"); } catch { duplicatePolicy = true; }
+    if (!duplicatePolicy) throw new Error('One policy per branch uniqueness was not enforced');
+    let missingPolicyOwner = false;
+    try { storage.sql.exec("INSERT INTO GroupPurchaseRefundPolicy (id, packageId, refundTiers, updatedAt) VALUES ('orphan-policy', 'missing', '[]', 1)"); } catch { missingPolicyOwner = true; }
+    if (!missingPolicyOwner) throw new Error('Policy package foreign key was not enforced');
     if (storage.sql.exec("SELECT refundAttemptedAt FROM Refund WHERE id = 'legacy-refund'").one().refundAttemptedAt !== 1) throw new Error('Legacy refund attempt fence was not backfilled');
     storage.sql.exec("INSERT INTO Refund (id, paymentId, amount, reason, updatedAt) VALUES ('claim-refund', 'legacy-payment', 10000, 'test', 1)");
     const claim = token => { storage.sql.exec("UPDATE Refund SET refundAttemptedAt = 2, refundClaimToken = ? WHERE id = 'claim-refund' AND refundAttemptedAt IS NULL", token).toArray(); return storage.sql.exec("SELECT changes() AS count").one().count; };

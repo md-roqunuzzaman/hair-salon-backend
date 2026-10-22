@@ -1,5 +1,9 @@
 # Book Now staging testing
 
+The direct-booking API enum is now `DIRECT_BOOK`. Frontend requests must use `"purchaseFlow":"DIRECT_BOOK"`; the old name is no longer accepted. `BUY_NOW_BOOK_LATER` and the existing `ENABLE_BOOK_NOW_PURCHASE` flag are unchanged. PostgreSQL migrations `20261022120000_rename_direct_book` and `20261022121000_policy_schema` cover the rename and new policy schema. Cloudflare v8 renames stored values; v9 adds policy tables and nullable snapshots during normal Worker initialization. Historical migrations are unchanged.
+
+The new BranchCancellationPolicy, GroupPurchaseRefundPolicy and GroupPurchaseCancellationPolicy models are synchronized with the generated Cloudflare schema and runtime metadata. Existing purchases/appointments retain null policy snapshots; no historical policy is invented. These are storage additions only: configurable tier evaluation, policy management APIs and snapshot capture at checkout are not implemented by this schema alignment. Existing cancellation/refund behavior remains in force. PostgreSQL migration execution still requires rehearsal on a disposable restored database if that deployment is used.
+
 Book Now now has a shared environment-controlled opt-in. Its default is disabled in both Node and Cloudflare. No flag or deployed configuration was enabled by this change. Use Stripe test-mode credentials for staging acceptance.
 
 ## Flag and readiness
@@ -16,9 +20,9 @@ Missing or `false` disables new Book Now creation and Book Now Stripe intent cre
 
 No additional schema migration is introduced by this flag change. The previously added v4-v6 migration chain is still required by Unified Group Purchase. Existing backups, checksum validation, payment attempt fences, canonical settlement identity and initial-cancellation protection remain in place.
 
-The complete regression suite passed during frontend alignment. The final expanded public API suite passed all 18 tests, including signed Buy Later and Direct Booking webhooks, all five payment combinations, policy rejection, concurrent wallet/slot requests and manager branch access. TypeScript checking passed. PAY_NOW, DEPOSIT (configured strictly between 0 and 100 percent) and RESERVE_NOW are ready for an explicitly enabled public **staging test**. Real Stripe test-account delivery and frontend behaviour on the deployed Worker remain acceptance checks, not automatically certified production readiness.
+After v9 schema alignment, the complete regression suite passed all 138 tests. This includes all 18 public API tests for signed Buy Later and Direct Booking webhooks, all five payment combinations, policy rejection, concurrent wallet/slot requests and manager branch access. TypeScript checking, schema parity, adapter policy JSON/default roundtrip and v9 migration preservation/constraints passed. PAY_NOW, DEPOSIT (configured strictly between 0 and 100 percent) and RESERVE_NOW are ready for an explicitly enabled public **staging test**. Real Stripe test-account delivery and frontend behaviour on the deployed Worker remain acceptance checks, not automatically certified production readiness.
 
-Production Cloudflare build and schema parity passed. Staging dry-run reported `Total Upload: 7093.40 KiB / gzip: 1976.39 KiB`, the expected bindings, and `--dry-run: exiting now.` The CLI remained open afterward and was interrupted; bundle validation completed, but that invocation did not return a clean zero exit. No publish occurred.
+Production Cloudflare build and schema parity passed after v9 alignment. The current Wrangler staging dry-run stalled without validation output and was interrupted; this run is not certified as a successful deployment check. The earlier pre-v9 dry-run output does not validate the new bundle. Run `npx wrangler deploy --dry-run --env staging` successfully before staging deployment. No publish occurred.
 
 ## Postman environment
 
@@ -48,7 +52,7 @@ Send `Content-Type: application/json`. Use Customer Bearer authorization except 
 {
   "packageId": "{{packageId}}",
   "quantity": 2,
-  "purchaseFlow": "BUY_NOW_BOOK_NOW",
+  "purchaseFlow": "DIRECT_BOOK",
   "bookingMethod": "PAY_NOW",
   "branchId": "{{branchId}}",
   "staffId": "{{staffId}}",
@@ -83,7 +87,7 @@ After success: purchase PAID; initial appointment CONFIRMED/PAID; no QR; reserve
 {
   "packageId": "{{packageId}}",
   "quantity": 2,
-  "purchaseFlow": "BUY_NOW_BOOK_NOW",
+  "purchaseFlow": "DIRECT_BOOK",
   "bookingMethod": "DEPOSIT",
   "branchId": "{{branchId}}",
   "staffId": "{{staffId}}",
@@ -125,7 +129,7 @@ Allowed methods are the existing CASH, CARD, FPS and OTHER enum values. Do not s
 {
   "packageId": "{{packageId}}",
   "quantity": 2,
-  "purchaseFlow": "BUY_NOW_BOOK_NOW",
+  "purchaseFlow": "DIRECT_BOOK",
   "bookingMethod": "RESERVE_NOW",
   "branchId": "{{branchId}}",
   "staffId": "{{staffId}}",
@@ -172,7 +176,7 @@ Commands: `npm run test:book-now`, `npm run test:regression`, `npm run cloudflar
 
 ## Frontend alignment audit
 
-There are two purchase modes. `BUY_NOW_BOOK_LATER` requires full upfront payment; `BUY_NOW_BOOK_NOW` is labelled **Book Directly**. Booking methods are choices within Direct Booking, not additional purchase modes. Creation already commits purchase, initial appointment and inventory in one transaction. Stripe/Wallet settlement, QR, salon collection, redemption serialization, durable refund attempts and canonical payment identity are retained.
+There are two purchase modes. `BUY_NOW_BOOK_LATER` requires full upfront payment; `DIRECT_BOOK` is labelled **Book Directly**. Booking methods are choices within Direct Booking, not additional purchase modes. Creation already commits purchase, initial appointment and inventory in one transaction. Stripe/Wallet settlement, QR, salon collection, redemption serialization, durable refund attempts and canonical payment identity are retained.
 
 The alignment changes expose missing discovery and checkout state on existing endpoints, reject missing deposit configuration instead of silently charging 10%, explicitly reject non-group packages, and scope manager purchase detail access to a linked appointment in a managed branch. A manager cannot view an unbooked Buy Later purchase through this detail endpoint. Customer ownership and owner access are unchanged.
 
@@ -186,7 +190,7 @@ All paths below are relative to `/api/v1`. Success responses wrap the described 
 
 ```json
 {
-  "availablePurchaseFlows": ["BUY_NOW_BOOK_LATER", "BUY_NOW_BOOK_NOW"],
+  "availablePurchaseFlows": ["BUY_NOW_BOOK_LATER", "DIRECT_BOOK"],
   "staffSelectionRequired": false,
   "buyLaterRequiresFullPayment": true,
   "onlinePaymentProviders": ["STRIPE", "WALLET"]
@@ -221,7 +225,7 @@ For quantity 2 at unit price HKD 100.25 and configured 30% DEPOSIT, a creation r
 {
   "purchaseId": "<purchase UUID>",
   "packageId": "<package UUID>",
-  "purchaseFlow": "BUY_NOW_BOOK_NOW",
+  "purchaseFlow": "DIRECT_BOOK",
   "bookingMethod": "DEPOSIT",
   "quantity": 2,
   "unitPrice": 100.25,
@@ -279,6 +283,6 @@ Poll `GET /group-purchases/{{purchaseId}}` until PAID; firstAppointment remains 
 
 ## Cloudflare staging rollout
 
-Run `npm run test:regression`, `npm run typecheck`, then `npm run cloudflare:build` and `npx wrangler deploy --dry-run --env staging`. Keep the existing database singleton and immutable migrations. This alignment adds no migration; the existing chain through v7 must remain intact.
+Run `npm run test:regression`, `npm run typecheck`, then `npm run cloudflare:build` and `npx wrangler deploy --dry-run --env staging`. Keep the existing database singleton and immutable migrations. Deploy the complete chain through v9; v8 migrates the enum value and v9 adds the new policy storage. Do not reset the database or edit v1-v8 to bypass a checksum failure.
 
 When authorized to enable staging, set `ENABLE_BOOK_NOW_PURCHASE` to exact string `true` using `npx wrangler secret put ENABLE_BOOK_NOW_PURCHASE --env staging`, then run `npm run cloudflare:deploy:staging`. No flag was enabled and no deployment was performed by this task. Complete all three Direct Booking method checklists above plus the Buy Later sequence. Use Stripe test keys and the correct test webhook signing secret; do not manually forge webhook JSON in Postman.

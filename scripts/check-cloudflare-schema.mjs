@@ -25,6 +25,8 @@ try {
   await apply(actual, await readFile('cloudflare/migrations/0005_refund_attempt_fence.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0006_group_settlement_identity.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0007_branch_coordinates.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0008_rename_direct_book.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0009_policy_schema.sql', 'utf8'));
   const fingerprint = async db => {
     const tables = (await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all()).results;
     const result = {};

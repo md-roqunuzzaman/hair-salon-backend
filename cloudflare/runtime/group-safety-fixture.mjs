@@ -36,7 +36,7 @@ export async function runGroupSafety(db) {
     const reserve = method === 'RESERVE_NOW';
     const purchase = await db.groupPurchase.create({ data: { customerId: customer.id, packageId: item.id, quantity: 2, unitPrice: '100.25', amount: '200.50', purchaseFlow: flow, bookingMethod: method, paymentStatus: reserve ? 'UNPAID' : 'PENDING', reservationExpiresAt: reserve ? null : new Date(Date.now() + 300000), depositAmount: method === 'DEPOSIT' ? '60.15' : null, remainingAmount: method === 'DEPOSIT' ? '140.35' : null } });
     await db.package.update({ where: { id: item.id }, data: reserve ? { soldQuantity: 2 } : { reservedQuantity: 2 } });
-    if (flow === 'BUY_NOW_BOOK_NOW') await db.appointment.create({ data: { customerId: customer.id, branchId: branch.id, staffId: staff.id, packageId: item.id, groupPurchaseId: purchase.id, bookingMethod: method, appointmentStatus: reserve ? 'RESERVED' : 'PENDING_PAYMENT', paymentStatus: reserve ? 'UNPAID' : 'PENDING', date: new Date(date), startTime: time, endTime: `${time.slice(0, 2)}:30`, price: '100.25', durationMinutes: 30, itemName: 'Group package', holdExpiresAt: reserve ? null : purchase.reservationExpiresAt, qrToken: reserve ? crypto.randomUUID() : null } });
+    if (flow === 'DIRECT_BOOK') await db.appointment.create({ data: { customerId: customer.id, branchId: branch.id, staffId: staff.id, packageId: item.id, groupPurchaseId: purchase.id, bookingMethod: method, appointmentStatus: reserve ? 'RESERVED' : 'PENDING_PAYMENT', paymentStatus: reserve ? 'UNPAID' : 'PENDING', date: new Date(date), startTime: time, endTime: `${time.slice(0, 2)}:30`, price: '100.25', durationMinutes: 30, itemName: 'Group package', holdExpiresAt: reserve ? null : purchase.reservationExpiresAt, qrToken: reserve ? crypto.randomUUID() : null } });
     return purchase;
   };
   const stripePayment = async purchase => {
@@ -50,7 +50,7 @@ export async function runGroupSafety(db) {
   try {
     // Public creation guard remains deliberately disabled.
     const pack = await pkg();
-    await rejects(() => groupPurchaseService.createGroupPurchase(customer.id, { packageId: pack.id, quantity: 1, purchaseFlow: 'BUY_NOW_BOOK_NOW', bookingMethod: 'PAY_NOW', branchId: branch.id, date, startTime: '10:00' }), 'Book Now public creation flag remains disabled');
+    await rejects(() => groupPurchaseService.createGroupPurchase(customer.id, { packageId: pack.id, quantity: 1, purchaseFlow: 'DIRECT_BOOK', bookingMethod: 'PAY_NOW', branchId: branch.id, date, startTime: '10:00' }), 'Book Now public creation flag remains disabled');
     const created = await groupPurchaseService.createGroupPurchase(customer.id, { packageId: pack.id, quantity: 1 });
     check(created.amount === 100.25, 'Buy Later creation uses decimal unit price times quantity');
     check((await db.package.findUnique({ where: { id: pack.id } })).reservedQuantity === 1, 'Buy Later reserves inventory');
@@ -62,7 +62,7 @@ export async function runGroupSafety(db) {
     await paymentService.handleGroupPurchaseStripeEvent(event('payment_intent.payment_failed'), paid.intent);
     check((await db.payment.findUnique({ where: { id: paid.payment.id } })).status === 'PAID', 'Failure event cannot overwrite paid settlement');
     for (const method of ['PAY_NOW', 'DEPOSIT']) {
-      const p = await make('BUY_NOW_BOOK_NOW', method, method === 'DEPOSIT' ? '11:00' : '12:00');
+      const p = await make('DIRECT_BOOK', method, method === 'DEPOSIT' ? '11:00' : '12:00');
       const { intent } = await settle(p);
       let current = await db.groupPurchase.findUnique({ where: { id: p.id }, include: { appointments: true } });
       const a = current.appointments[0];
@@ -81,7 +81,7 @@ export async function runGroupSafety(db) {
       }
     }
     for (const method of [null, 'PAY_NOW', 'DEPOSIT']) {
-      const p = await make(method ? 'BUY_NOW_BOOK_NOW' : 'BUY_NOW_BOOK_LATER', method, '13:00');
+      const p = await make(method ? 'DIRECT_BOOK' : 'BUY_NOW_BOOK_LATER', method, '13:00');
       const before = await db.wallet.findUnique({ where: { customerId: customer.id } });
       const result = await walletService.payGroupPurchaseWithWallet(customer.id, p.id, { useBonus: true });
       check(result.amountPaid === (method === 'DEPOSIT' ? 60.15 : 200.5), `${method ?? 'BUY_LATER'} wallet correct purchase amount`);
@@ -97,7 +97,7 @@ export async function runGroupSafety(db) {
       }
 
     }
-    const reserve = await make('BUY_NOW_BOOK_NOW', 'RESERVE_NOW', '14:00');
+    const reserve = await make('DIRECT_BOOK', 'RESERVE_NOW', '14:00');
     await rejects(() => groupPurchaseService.createGroupPurchaseAppointment(customer.id, reserve.id, { branchId: branch.id, date, startTime: '15:00' }), 'Unpaid reserve cannot redeem');
     const ra = await db.appointment.findFirst({ where: { groupPurchaseId: reserve.id } });
     await rejects(() => appointmentService.cancelAppointment(ra.id, customer.id, 'CUSTOMER', { reason: 'Test cancellation' }), 'Initial Book Now cancellation remains protected');
@@ -140,11 +140,11 @@ export async function runGroupSafety(db) {
     check((await db.notification.count({ where: { userId: customer.id, type: 'REFUND_COMPLETED' } })) === notes, 'Finalization replay creates no duplicate notification');
     check((await db.groupPurchase.findUnique({ where: { id: late.id } })).paymentStatus === 'FAILED', 'Late success never resurrects expired purchase');
 
-    const protectedDeposit = await make('BUY_NOW_BOOK_NOW', 'DEPOSIT', '20:00');
+    const protectedDeposit = await make('DIRECT_BOOK', 'DEPOSIT', '20:00');
     await settle(protectedDeposit);
     await db.groupPurchase.update({ where: { id: protectedDeposit.id }, data: { reservationExpiresAt: new Date(0) } });
-    const protectedReserve = await make('BUY_NOW_BOOK_NOW', 'RESERVE_NOW', '21:00');
-    const expiringNow = await make('BUY_NOW_BOOK_NOW', 'PAY_NOW', '22:00');
+    const protectedReserve = await make('DIRECT_BOOK', 'RESERVE_NOW', '21:00');
+    const expiringNow = await make('DIRECT_BOOK', 'PAY_NOW', '22:00');
     await db.groupPurchase.update({ where: { id: expiringNow.id }, data: { reservationExpiresAt: new Date(0) } });
     await groupPurchaseExpiryService.expirePendingGroupPurchases();
     check((await db.groupPurchase.findUnique({ where: { id: protectedDeposit.id } })).paymentStatus === 'PARTIALLY_PAID', 'Expiry does not affect settled deposit');
@@ -202,7 +202,7 @@ export async function runGroupSafety(db) {
     const concurrentRedemption = await Promise.allSettled(['06:00', '07:00'].map(startTime => groupPurchaseService.createGroupPurchaseAppointment(customer.id, buyLater.id, { branchId: branch.id, date, startTime })));
     check(concurrentRedemption.filter(item => item.status === 'fulfilled').length === 1, 'Concurrent redemptions admit only purchased quantity');
     check(await db.appointment.count({ where: { groupPurchaseId: buyLater.id, appointmentStatus: { not: 'CANCELLED' } } }) === 1, 'Concurrent redemption count is bounded');
-    const bookNowMultiple = await make('BUY_NOW_BOOK_NOW', 'PAY_NOW', '08:00');
+    const bookNowMultiple = await make('DIRECT_BOOK', 'PAY_NOW', '08:00');
     const multiPayment = await settle(bookNowMultiple);
     await groupPurchaseService.createGroupPurchaseAppointment(customer.id, bookNowMultiple.id, { branchId: branch.id, date, startTime: '09:00' });
     await paymentService.handleGroupPurchaseStripeEvent(event(), multiPayment.intent);

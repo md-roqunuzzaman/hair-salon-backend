@@ -23,7 +23,7 @@ The existing group-purchase services now use durable refund attempts and purchas
 ## Preserved rules and guards
 
 - BUY_NOW_BOOK_LATER purchases reserve package quantity while payment is pending; settlement converts reserved to sold once. Full purchase payment is required for redemption.
-- BUY_NOW_BOOK_NOW PAY_NOW confirms the initial appointment without a QR token. DEPOSIT charges the deposit on the entire purchase amount, reserves the initial appointment and produces a QR token after payment. RESERVE_NOW is UNPAID with immediate QR, no payment reservation expiry and inventory already sold.
+- DIRECT_BOOK PAY_NOW confirms the initial appointment without a QR token. DEPOSIT charges the deposit on the entire purchase amount, reserves the initial appointment and produces a QR token after payment. RESERVE_NOW is UNPAID with immediate QR, no payment reservation expiry and inventory already sold.
 - DEPOSIT and RESERVE_NOW require QR verification before salon remainder/full collection. Remaining payment and entitlement redemption cannot be repeated beyond the valid state/quantity.
 - Initial Book Now appointments remain protected from direct cancellation. Ordinary cancelled redemptions cease consuming quantity; cancelling repeatedly cannot create extra quantity.
 - Appointment expiry excludes group-linked appointments. Group expiry handles its own pending initial appointment and inventory transactionally; PAID, PARTIALLY_PAID and UNPAID Reserve Now purchases are excluded.

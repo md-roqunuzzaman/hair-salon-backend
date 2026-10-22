@@ -797,7 +797,7 @@ const payGroupPurchaseWithWallet = async (
           // =====================================================
 
           const isBookNow =
-            purchase.purchaseFlow === GroupPurchaseFlow.BUY_NOW_BOOK_NOW;
+            purchase.purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK;
 
           if (
             purchase.purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_LATER &&

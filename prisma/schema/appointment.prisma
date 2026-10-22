@@ -26,16 +26,21 @@ model Appointment {
 
   holdExpiresAt DateTime?
 
-  qrToken      String?   @unique
-  qrVerifiedAt DateTime?
-  qrVerifiedBy String?
+  qrToken                    String?   @unique
+  qrVerifiedAt               DateTime?
+  qrVerifiedBy               String?
+  // Cancellation policy captured when appointment is booked
+  cancellationPolicySnapshot Json?
+  cancellationPolicyVersion  Int?
 
-  completedAt        DateTime?
-  completionNotes    String?
-  cancelledAt        DateTime?
-  cancellationReason String?
-  noShowAt           DateTime?
-  noShowReason       String?
+  // Group purchase entitlement cancellation outcome
+  entitlementCancellationOutcome EntitlementCancellationOutcome?
+  completedAt                    DateTime?
+  completionNotes                String?
+  cancelledAt                    DateTime?
+  cancellationReason             String?
+  noShowAt                       DateTime?
+  noShowReason                   String?
 
   customer User @relation("CustomerAppointments", fields: [customerId], references: [id], onDelete: Restrict)
 

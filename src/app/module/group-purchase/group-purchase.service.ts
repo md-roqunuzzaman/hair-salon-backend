@@ -57,7 +57,7 @@ const createGroupPurchase = async (
   const purchaseFlow =
     payload.purchaseFlow ?? GroupPurchaseFlow.BUY_NOW_BOOK_LATER;
 
-  const isBookNow = purchaseFlow === GroupPurchaseFlow.BUY_NOW_BOOK_NOW;
+  const isBookNow = purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK;
 
   // =====================================================
   // 1. VALIDATE REQUEST
@@ -65,7 +65,7 @@ const createGroupPurchase = async (
 
   if (
     purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_LATER &&
-    purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_NOW
+    purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK
   ) {
     throw new AppError("Invalid purchase flow", 400);
   }
@@ -1362,7 +1362,7 @@ const createGroupPurchaseAppointment = async (
           // 5. CHECK REMAINING PURCHASED QUANTITY
           // =============================================
 
-          // Includes the initial BUY_NOW_BOOK_NOW
+          // Includes the initial DIRECT_BOOK
           // appointment, if one was created.
           //
           // Cancelled appointments follow the existing
@@ -1614,7 +1614,7 @@ export const recordGroupPurchaseRemainingPayment = async (
           // 5. VALIDATE PURCHASE FLOW
           // =============================================
 
-          if (purchase.purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_NOW) {
+          if (purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK) {
             throw new AppError(
               "Remaining payment is only available for Book Now purchases",
               400,
@@ -1769,7 +1769,7 @@ export const recordGroupPurchaseRemainingPayment = async (
           const updatedPurchase = await tx.groupPurchase.updateMany({
             where: {
               id: purchase.id,
-              purchaseFlow: GroupPurchaseFlow.BUY_NOW_BOOK_NOW,
+              purchaseFlow: GroupPurchaseFlow.DIRECT_BOOK,
               bookingMethod: purchase.bookingMethod,
               paymentStatus: expectedPaymentStatus,
             },
