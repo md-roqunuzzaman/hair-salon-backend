@@ -34,6 +34,17 @@ router.patch(
   packageController.updatePackage,
 );
 
+// =====================================================
+// GET GROUP PURCHASE REFUND POLICY
+// =====================================================
+
+
+
+// =====================================================
+// CREATE / UPDATE GROUP PURCHASE REFUND POLICY
+// =====================================================
+
+
 router.patch(
   "/:packageId/status",
   auth(Role.BRAND_OWNER),
@@ -54,5 +65,16 @@ router.put(
   validateRequest(packageValidation.assignPackageBranchesValidationSchema),
   packageController.assignPackageToBranches,
 );
+
+// =====================================================
+// GET GROUP PURCHASE CANCELLATION POLICY
+// =====================================================
+
+
+
+// =====================================================
+// UPDATE GROUP PURCHASE CANCELLATION POLICY
+// =====================================================
+
 
 export const PackageRoutes = router;

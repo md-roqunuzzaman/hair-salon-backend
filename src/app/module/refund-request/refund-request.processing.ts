@@ -1,3 +1,5 @@
+import { validatePolicyRefund, finalizePolicyGroupRefund, recordPolicyRefundCompletion } from '../cancellation-refund/policy-refund.execution.js';
+import { executionSnapshot } from '../cancellation-refund/cancellation-refund.interface.js';
 import { notificationService } from "../notification/notification.service.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { logUnexpectedError } from "../../utils/normalize-error.js";
@@ -117,6 +119,9 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
       }
 
       const payment = request.payment;
+      if (payment.groupPurchaseId) await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id"=${payment.groupPurchaseId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id"=${payment.id} FOR UPDATE`;
+      const policyExecution = await validatePolicyRefund(tx, request);
 
       if (
         payment.provider !== PaymentProvider.STRIPE ||
@@ -165,8 +170,8 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
       // =================================================
 
       if (
-        payment.purpose === PaymentPurpose.APPOINTMENT ||
-        payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT
+        !policyExecution && (payment.purpose === PaymentPurpose.APPOINTMENT ||
+        payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT)
       ) {
         const appointment = payment.appointment;
 
@@ -211,7 +216,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
       // 3. GROUP PURCHASE POLICY
       // =================================================
 
-      if (payment.purpose === PaymentPurpose.GROUP_PURCHASE) {
+      if (payment.purpose === PaymentPurpose.GROUP_PURCHASE && !policyExecution) {
         const purchase = payment.groupPurchase;
 
         if (!purchase) {
@@ -310,6 +315,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
       },
       {
         idempotencyKey: `refund-request-${claimed.requestId}`,
+        maxNetworkRetries: 0,
       },
     );
   } catch (error) {
@@ -469,7 +475,7 @@ const finalizeApprovedStripeRefund = async (requestId: string, stripeRefund: Str
           },
         });
 
-        if (cancelled.count !== 1) {
+        if (cancelled.count !== 1 && !(executionSnapshot(request.policySnapshot) && appointment.appointmentStatus === AppointmentStatus.CANCELLED)) {
           throw new AppError(
             "REFUNDED_APPOINTMENT_REQUIRES_RECONCILIATION",
             409,
@@ -520,6 +526,8 @@ const finalizeApprovedStripeRefund = async (requestId: string, stripeRefund: Str
       // REFUND REQUEST COMPLETED
       // ===============================================
 
+      await finalizePolicyGroupRefund(tx, request);
+      if (payment.purpose !== PaymentPurpose.GROUP_PURCHASE) await recordPolicyRefundCompletion(tx, request, request.refundId, payment.currency);
       await tx.refundRequest.update({
         where: { id: requestId },
         data: {
@@ -647,6 +655,7 @@ const processApprovedWalletRefund = async (
           }
 
           const paymentId = request.paymentId;
+          if (request.payment.groupPurchaseId) await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id"=${request.payment.groupPurchaseId} FOR UPDATE`;
 
           // 2. Lock payment to serialize all refunds.
           const lockedPayments = await tx.$queryRaw<Array<{ id: string }>>`
@@ -677,10 +686,13 @@ const processApprovedWalletRefund = async (
 
           if (
             payment.purpose !== PaymentPurpose.APPOINTMENT &&
+            !(executionSnapshot(request.policySnapshot) && payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT) &&
             payment.purpose !== PaymentPurpose.GROUP_PURCHASE
           ) {
             throw new AppError("REFUND_PURPOSE_NOT_SUPPORTED", 409);
           }
+
+          const policyExecution = await validatePolicyRefund(tx, request);
 
           // 3. Validate refund amount.
           const refundAmount = request.amount;
@@ -723,7 +735,7 @@ const processApprovedWalletRefund = async (
           }
 
           // 4. Validate appointment/group purchase policies.
-          if (payment.purpose === PaymentPurpose.APPOINTMENT) {
+          if (payment.purpose === PaymentPurpose.APPOINTMENT && !policyExecution) {
             const appointment = request.payment.appointment;
 
             if (!appointment) {
@@ -773,7 +785,7 @@ const processApprovedWalletRefund = async (
             }
           }
 
-          if (payment.purpose === PaymentPurpose.GROUP_PURCHASE) {
+          if (payment.purpose === PaymentPurpose.GROUP_PURCHASE && !policyExecution) {
             const purchase = request.payment.groupPurchase;
 
             if (!purchase) {
@@ -818,7 +830,7 @@ const processApprovedWalletRefund = async (
           }
 
           const referenceId =
-            payment.purpose === PaymentPurpose.APPOINTMENT
+            (payment.purpose === PaymentPurpose.APPOINTMENT || payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT)
               ? payment.appointmentId
               : payment.groupPurchaseId;
 
@@ -827,7 +839,7 @@ const processApprovedWalletRefund = async (
           }
 
           const transactionType =
-            payment.purpose === PaymentPurpose.APPOINTMENT
+            (payment.purpose === PaymentPurpose.APPOINTMENT || payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT)
               ? WalletTransactionType.APPOINTMENT_PAYMENT
               : WalletTransactionType.GROUP_PURCHASE_PAYMENT;
 
@@ -971,7 +983,7 @@ const processApprovedWalletRefund = async (
           });
 
           // 11. Cancel refunded appointment.
-          if (payment.purpose === PaymentPurpose.APPOINTMENT) {
+          if (payment.purpose === PaymentPurpose.APPOINTMENT || payment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT) {
             const appointment = request.payment.appointment!;
 
             const cancelled = await tx.appointment.updateMany({
@@ -989,7 +1001,7 @@ const processApprovedWalletRefund = async (
               },
             });
 
-            if (cancelled.count !== 1) {
+            if (cancelled.count !== 1 && !(executionSnapshot(request.policySnapshot) && appointment.appointmentStatus === AppointmentStatus.CANCELLED)) {
               throw new AppError(
                 "REFUNDED_APPOINTMENT_REQUIRES_RECONCILIATION",
                 409,
@@ -1028,6 +1040,8 @@ const processApprovedWalletRefund = async (
             });
           }
 
+          await finalizePolicyGroupRefund(tx, request);
+          await recordPolicyRefundCompletion(tx, request, refund.id, payment.currency);
           // 13. Complete the approved refund request.
           const completed = await tx.refundRequest.updateMany({
             where: {

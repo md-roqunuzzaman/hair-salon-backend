@@ -392,7 +392,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       return handleGroupPurchaseStripeEvent(event, intent);
     }
     const approved = await prisma.refund.findFirst({ where: { OR: [{ providerRefundId: providerRefund.id }, ...(providerRefund.metadata?.refundId ? [{ id: providerRefund.metadata.refundId }] : [])] }, include: { refundRequest: true, payment: true } });
-    if (approved?.refundRequest && approved.payment.purpose === PaymentPurpose.GROUP_PURCHASE) {
+    if (approved?.refundRequest) {
       const result = await reconcileApprovedStripeRefund(approved.refundRequest.id);
       if (result.status !== "COMPLETED") throw new AppError("Stripe refund is still pending", 503);
     }

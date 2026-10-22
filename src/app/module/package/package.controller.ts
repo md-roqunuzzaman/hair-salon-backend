@@ -180,7 +180,7 @@ const getBranchPackages = catchAsync(async (req: Request, res: Response) => {
 });
 
 // =====================================================
-// EXPORT CONTROLLER
+// UPDATE GROUP PURCHASE REFUND POLICY
 // =====================================================
 
 export const packageController = {

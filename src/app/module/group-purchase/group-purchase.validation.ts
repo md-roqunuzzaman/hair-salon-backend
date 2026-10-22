@@ -64,7 +64,6 @@ const createGroupPurchaseValidationSchema = z.object({
       } else {
         if (
           data.bookingMethod !== undefined ||
-          data.branchId !== undefined ||
           data.staffId !== undefined ||
           data.date !== undefined ||
           data.startTime !== undefined

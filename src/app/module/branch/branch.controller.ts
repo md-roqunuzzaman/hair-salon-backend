@@ -168,7 +168,32 @@ const updateBookingPolicy = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+// =====================================================
+// UPDATE BRANCH CANCELLATION POLICY
+// =====================================================
 
+const updateCancellationPolicy = catchAsync(
+  async (req: Request, res: Response) => {
+    const { branchId } = req.params;
+
+    const userId = req.user!.userId;
+    const role = req.user!.role;
+
+    const result = await branchService.updateCancellationPolicy(
+      branchId as string,
+      req.body,
+      userId,
+      role,
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Branch cancellation policy updated successfully",
+      data: result,
+    });
+  },
+);
 const searchBranchCustomers = catchAsync(
   async (req: Request, res: Response) => {
     if (!req.user) {
@@ -331,6 +356,27 @@ const getBranchStaffOutput = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+// =====================================================
+// GET BRANCH CANCELLATION POLICY
+// =====================================================
+
+const getCancellationPolicy = catchAsync(
+  async (req: Request, res: Response) => {
+    const { branchId } = req.params;
+
+    const result = await branchService.getCancellationPolicy(
+      branchId as string,
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Branch cancellation policy retrieved successfully",
+      data: result,
+    });
+  },
+);
 export const branchController = {
   createBranch,
   getBranches,
@@ -346,4 +392,6 @@ export const branchController = {
   getBranchDailySummary,
   getBranchDailySeries,
   getBranchStaffOutput,
+  updateCancellationPolicy,
+  getCancellationPolicy,
 };

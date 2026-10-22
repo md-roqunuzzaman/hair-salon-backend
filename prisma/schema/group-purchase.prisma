@@ -1,7 +1,9 @@
 model GroupPurchase {
-  id         String @id @default(uuid())
-  customerId String
-  packageId  String
+  id               String  @id @default(uuid())
+  customerId       String
+  packageId        String
+  purchaseBranchId String?
+  purchaseBranch   Branch? @relation("PurchasePolicyBranch", fields: [purchaseBranchId], references: [id], onDelete: Restrict)
 
   quantity  Int
   unitPrice Decimal @db.Decimal(10, 2)
@@ -23,6 +25,8 @@ model GroupPurchase {
   package              Package           @relation(fields: [packageId], references: [id], onDelete: Restrict)
   payments             Payment[]
   appointments         Appointment[]
+  forfeitedQuantity    Int               @default(0)
+  refundedQuantity     Int               @default(0)
   // Package refund policy captured at purchase time
   refundPolicySnapshot Json?
   refundPolicyVersion  Int?

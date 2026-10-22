@@ -6,36 +6,7 @@ import path from 'node:path';
 import { createHmac } from 'node:crypto';
 const require = createRequire(path.resolve('node_modules/wrangler/package.json'));
 const { Miniflare, Log, LogLevel } = await import(pathToFileURL(require.resolve('miniflare')).href);
-async function setup(t, flag) {
-  const mf = new Miniflare({ log: new Log(LogLevel.NONE), modules: true, scriptPath: 'cloudflare/.build/integration.mjs', compatibilityDate: '2025-10-11', compatibilityFlags: ['nodejs_compat', 'enable_nodejs_http_server_modules'], modulesRules: [{ type: 'CompiledWasm', include: ['**/*.wasm'] }], durableObjects: { SALON_DB: { className: 'SalonTestDatabase', useSQLite: true } }, bindings: {
-    NODE_ENV: 'production', CORS_ORIGIN: 'https://frontend.example.com', BCRYPT_SALT_ROUNDS: '10', JWT_ACCESS_SECRET: 'test-access-secret-'.repeat(3), JWT_REFRESH_SECRET: 'test-refresh-secret-'.repeat(3), STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_WEBHOOK_SECRET: 'whsec_test', OPENAI_API_KEY: 'test-key', R2_ACCOUNT_ID: 'test-account', R2_ACCESS_KEY_ID: 'test-key', R2_SECRET_ACCESS_KEY: 'test-secret', R2_BUCKET_NAME: 'test', EMAIL_SENDER: 'test@example.com', BOOTSTRAP_TOKEN: 'test-bootstrap-token-'.repeat(3), BRAND_OWNER_NAME: 'Owner', BRAND_OWNER_EMAIL: 'owner@example.com', BRAND_OWNER_PASSWORD: 'OwnerPassword123!', ...(flag !== undefined && { ENABLE_BOOK_NOW_PURCHASE: flag }),
-  } });
-  t.after(() => mf.dispose());
-  let token;
-  const api = async (url, { body, method = body ? 'POST' : 'GET', status = 200, roleToken = token } = {}) => {
-    const response = await mf.dispatchFetch(`https://test${url}`, { method, headers: { ...(body && { 'content-type': 'application/json' }), ...(roleToken && { authorization: `Bearer ${roleToken}` }) }, ...(body && { body: JSON.stringify(body) }) });
-    const text = await response.text(); assert.equal(response.status, status, `${method} ${url}: ${text}`);
-    return text ? JSON.parse(text) : null;
-  };
-  const bootstrap = await mf.dispatchFetch('https://test/__setup', { method: 'POST', headers: { authorization: `Bearer ${'test-bootstrap-token-'.repeat(3)}` } });
-  assert.equal(bootstrap.status, 200, await bootstrap.text());
-  const credentials = { email: 'book-now-customer@example.com', password: 'StrongPassword123!' };
-  const registered = await api('/api/v1/auth/register', { body: { ...credentials, name: 'Book Now Customer' }, status: 201 });
-  token = (await api('/api/v1/auth/login', { body: credentials })).data.accessToken;
-  const ownerToken = (await api('/api/v1/auth/login', { body: { email: 'owner@example.com', password: 'OwnerPassword123!' } })).data.accessToken;
-  const fixture = await api('/__book-now-fixture', { body: { customerId: registered.data.id } });
-  const managerToken = (await api('/api/v1/auth/login', { body: { email: 'book-now-manager@example.com', password: credentials.password } })).data.accessToken;
-  const otherManagerToken = (await api('/api/v1/auth/login', { body: { email: 'book-now-other-manager@example.com', password: credentials.password } })).data.accessToken;
-  const state = () => api('/__book-now-state');
-  const webhook = async event => {
-    const body = JSON.stringify(event); const time = Math.floor(Date.now() / 1000);
-    const signature = createHmac('sha256', 'whsec_test').update(`${time}.${body}`).digest('hex');
-    const response = await mf.dispatchFetch('https://test/api/v1/payments/stripe/webhook', { method: 'POST', headers: { 'content-type': 'application/json', 'stripe-signature': `t=${time},v1=${signature}` }, body });
-    assert.equal(response.status, 200, await response.text());
-  };
-  const cron = async () => { const namespace = await mf.getDurableObjectNamespace('SALON_DB'); const response = await namespace.get(namespace.idFromName('salon-v1')).fetch('https://internal/__internal/cron'); assert.equal(response.status, 200, await response.text()); };
-  return { api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron };
-}
+import { setup } from './test-support/public-worker.mjs';
 
 for (const flag of [undefined, 'false']) test(`Book Now public creation is disabled for flag=${flag ?? 'missing'}`, async t => {
   const { api, fixture, state } = await setup(t, flag);
@@ -51,6 +22,34 @@ for (const flag of [undefined, 'false']) test(`Book Now public creation is disab
 test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end to end', async t => {
   const { api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron } = await setup(t, 'true');
   const root = '/api/v1/group-purchases';
+  await t.test('policy management routes persist and version JSON on the Cloudflare schema', async () => {
+    const packagePath = `/api/v1/branches/${fixture.branchId}/group-purchase-refund-policy`;
+    const refundPolicy = { isEnabled: true, refundAllowed: true, refundTiers: [{ minimumHoursAfterPurchase: 0, calculationType: 'PERCENTAGE', value: 100 }], allowPartiallyUsedRefund: false, allowExpiredRefund: false, requireNoActiveAppointments: true };
+    await api(packagePath, { method: 'PUT', body: refundPolicy, status: 403 });
+    const first = (await api(packagePath, { method: 'PUT', body: refundPolicy, roleToken: ownerToken })).data;
+    assert.equal(first.version, 1);
+    const second = (await api(packagePath, { method: 'PUT', body: refundPolicy, roleToken: ownerToken })).data;
+    assert.equal(second.version, 2);
+    assert.equal(second.branchId, fixture.branchId);
+    await api(packagePath, { roleToken: otherManagerToken, status: 403 });
+    await api(packagePath, { method: 'PUT', body: refundPolicy, roleToken: otherManagerToken, status: 403 });
+    assert.equal((await api(packagePath, { method: 'PUT', body: refundPolicy, roleToken: managerToken })).data.version, 3);
+    assert.deepEqual((await api(packagePath, { roleToken: ownerToken })).data.refundTiers, refundPolicy.refundTiers);
+    const branchPath = `/api/v1/branches/${fixture.branchId}/cancellation-policy`;
+    const cancellationPolicy = { isEnabled: true, cancellationAllowed: true, minimumCancellationHours: 2, nonRefundable: false, refundTiers: [{ minimumHoursBefore: 2, calculationType: 'PERCENTAGE', value: 50 }] };
+    await api(branchPath, { method: 'PUT', body: cancellationPolicy, roleToken: otherManagerToken, status: 403 });
+    assert.equal((await api(branchPath, { method: 'PUT', body: cancellationPolicy, roleToken: managerToken })).data.version, 1);
+    assert.equal((await api(branchPath, { method: 'PUT', body: cancellationPolicy, roleToken: ownerToken })).data.version, 2);
+    assert.deepEqual((await api(branchPath)).data.refundTiers, cancellationPolicy.refundTiers);
+    const groupCancellationPath = `/api/v1/branches/${fixture.branchId}/group-purchase-cancellation-policy`;
+    const groupCancellation = {isEnabled:true,cancellationAllowed:true,minimumCancellationHours:2,restorationMinimumHours:24,lateCancellationOutcome:'RESTORED'};
+    await api(groupCancellationPath, {method:'PUT',body:groupCancellation,status:403});
+    await api(groupCancellationPath, {method:'PUT',body:groupCancellation,roleToken:otherManagerToken,status:403});
+    assert.equal((await api(groupCancellationPath,{method:'PUT',body:groupCancellation,roleToken:managerToken})).data.version,1);
+    assert.equal((await api(groupCancellationPath,{method:'PUT',body:groupCancellation,roleToken:ownerToken})).data.version,2);
+    assert.equal((await api(groupCancellationPath,{roleToken:managerToken})).data.lateCancellationOutcome,'RESTORED');
+    await api(groupCancellationPath,{roleToken:otherManagerToken,status:403});
+  });
   await t.test('frontend discovery exposes two modes and effective branch methods', async () => {
     const options = (await api(`/api/v1/packages/${fixture.packageId}`)).data.groupPurchaseOptions;
     assert.deepEqual(options.availablePurchaseFlows, ['BUY_NOW_BOOK_LATER', 'DIRECT_BOOK']);

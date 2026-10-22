@@ -1266,7 +1266,8 @@ const getBookingPolicy = async (branchId: string) => {
 
   const allowedBookingMethods = bookingPolicy.allowedBookingMethods;
 
-  const depositEnabled = bookingPolicy.depositEnabled && allowedBookingMethods.includes("DEPOSIT");
+  const depositEnabled =
+    bookingPolicy.depositEnabled && allowedBookingMethods.includes("DEPOSIT");
 
   return {
     slotIntervalMinutes: bookingPolicy.slotIntervalMinutes,
@@ -1285,9 +1286,14 @@ const getBookingPolicy = async (branchId: string) => {
     qrVerificationRule: bookingPolicy.qrVerificationRule,
 
     allowedBookingMethods,
-    groupPurchaseBookingMethods: allowedBookingMethods.filter(method =>
-      method !== "DEPOSIT" || (depositEnabled && bookingPolicy.depositPercentage !== null &&
-        Number(bookingPolicy.depositPercentage) > 0 && Number(bookingPolicy.depositPercentage) < 100)),
+    groupPurchaseBookingMethods: allowedBookingMethods.filter(
+      (method) =>
+        method !== "DEPOSIT" ||
+        (depositEnabled &&
+          bookingPolicy.depositPercentage !== null &&
+          Number(bookingPolicy.depositPercentage) > 0 &&
+          Number(bookingPolicy.depositPercentage) < 100),
+    ),
     staffSelectionRequired: false,
 
     depositEnabled,
@@ -1298,10 +1304,251 @@ const getBookingPolicy = async (branchId: string) => {
         : null,
   };
 };
+
+// =====================================================
+// CREATE / UPDATE BRANCH CANCELLATION POLICY
+// =====================================================
+
+type CancellationRefundTier = {
+  minimumHoursBefore: number;
+  calculationType: "PERCENTAGE" | "FIXED";
+  value: number;
+};
+
+type UpdateCancellationPolicyPayload = {
+  isEnabled: boolean;
+  cancellationAllowed: boolean;
+  minimumCancellationHours: number;
+  nonRefundable: boolean;
+  refundTiers: CancellationRefundTier[];
+};
+
+const updateCancellationPolicy = async (
+  branchId: string,
+  payload: UpdateCancellationPolicyPayload,
+  userId: string,
+  role: Role,
+) => {
+  // =====================================================
+  // 1. ROLE VALIDATION
+  // =====================================================
+
+  if (role !== Role.BRAND_OWNER && role !== Role.BRANCH_MANAGER) {
+    throw new AppError(
+      "You are not allowed to manage cancellation policies",
+      403,
+    );
+  }
+
+  // =====================================================
+  // 2. CHECK BRANCH
+  // =====================================================
+
+  const branch = await prisma.branch.findUnique({
+    where: { id: branchId },
+    select: { id: true },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  // =====================================================
+  // 3. BRANCH MANAGER SCOPE
+  // =====================================================
+
+  if (role === Role.BRANCH_MANAGER) {
+    const managerBranch = await prisma.branchManagerBranch.findUnique({
+      where: {
+        userId_branchId: {
+          userId,
+          branchId,
+        },
+      },
+      select: { userId: true },
+    });
+
+    if (!managerBranch) {
+      throw new AppError("FORBIDDEN_BRANCH_SCOPE", 403);
+    }
+  }
+
+  // =====================================================
+  // 4. VALIDATE POLICY CONFIGURATION
+  // =====================================================
+
+  if (
+    !Number.isSafeInteger(payload.minimumCancellationHours) ||
+    payload.minimumCancellationHours < 0
+  ) {
+    throw new AppError("Invalid minimumCancellationHours", 400);
+  }
+
+  if (!Array.isArray(payload.refundTiers) || payload.refundTiers.length === 0) {
+    throw new AppError("At least one refund tier is required", 400);
+  }
+
+  const seenHours = new Set<number>();
+
+  for (const tier of payload.refundTiers) {
+    if (
+      !Number.isSafeInteger(tier.minimumHoursBefore) ||
+      tier.minimumHoursBefore < payload.minimumCancellationHours
+    ) {
+      throw new AppError("Invalid refund tier minimum hours", 400);
+    }
+
+    if (seenHours.has(tier.minimumHoursBefore)) {
+      throw new AppError("Duplicate refund tier minimum hours", 400);
+    }
+
+    seenHours.add(tier.minimumHoursBefore);
+
+    if (!Number.isFinite(tier.value) || tier.value < 0) {
+      throw new AppError("Invalid refund tier value", 400);
+    }
+
+    if (tier.calculationType === "PERCENTAGE") {
+      if (tier.value > 100) {
+        throw new AppError("Refund percentage cannot exceed 100", 400);
+      }
+    } else if (tier.calculationType !== "FIXED") {
+      throw new AppError("Invalid refund calculation type", 400);
+    }
+
+    if (
+      tier.calculationType === "FIXED" &&
+      Math.round(tier.value * 100) / 100 !== tier.value
+    ) {
+      throw new AppError(
+        "Fixed refund value supports at most two decimal places",
+        400,
+      );
+    }
+  }
+
+  const sortedTiers = [...payload.refundTiers].sort(
+    (a, b) => b.minimumHoursBefore - a.minimumHoursBefore,
+  );
+
+  if (
+    sortedTiers[sortedTiers.length - 1].minimumHoursBefore !==
+    payload.minimumCancellationHours
+  ) {
+    throw new AppError(
+      "Refund tiers must cover the minimum cancellation notice",
+      400,
+    );
+  }
+
+  // =====================================================
+  // 5. TRANSACTION: UPDATE POLICY + AUDIT
+  // =====================================================
+
+  return prisma.$transaction(async (tx) => {
+    const existingPolicy = await tx.branchCancellationPolicy.findUnique({
+      where: { branchId },
+    });
+
+    const policyData = {
+      policyFormat: 'REFUND_TIERS_V1',
+      isEnabled: payload.isEnabled,
+      cancellationAllowed: payload.cancellationAllowed,
+      minimumCancellationHours: payload.minimumCancellationHours,
+      nonRefundable: payload.nonRefundable,
+      refundTiers: sortedTiers as Prisma.InputJsonArray,
+    };
+
+    // Optimistic concurrency control for version updates.
+    let updatedPolicy;
+
+    if (existingPolicy) {
+      const updated = await tx.branchCancellationPolicy.updateMany({
+        where: {
+          branchId,
+          version: existingPolicy.version,
+        },
+        data: {
+          ...policyData,
+          version: { increment: 1 },
+        },
+      });
+
+      if (updated.count !== 1) {
+        throw new AppError(
+          "Cancellation policy changed. Please try again.",
+          409,
+        );
+      }
+
+      updatedPolicy = await tx.branchCancellationPolicy.findUniqueOrThrow({
+        where: { branchId },
+      });
+    } else {
+      updatedPolicy = await tx.branchCancellationPolicy.create({
+        data: {
+          branchId,
+          ...policyData,
+          version: 1,
+        },
+      });
+    }
+
+    await auditLogService.createAuditLog(
+      {
+        userId,
+        action: "BRANCH_CANCELLATION_POLICY_UPDATED",
+        entityType: "BRANCH",
+        entityId: branchId,
+        metadata: {
+          previousPolicy: existingPolicy,
+          newPolicy: updatedPolicy,
+        },
+      },
+      tx,
+    );
+
+    return updatedPolicy;
+  });
+};
 // =====================================================
 // UPDATE BOOKING POLICY
 // =====================================================
 
+// =====================================================
+// GET BRANCH CANCELLATION POLICY
+// =====================================================
+
+const getCancellationPolicy = async (branchId: string) => {
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  if (!uuidRegex.test(branchId)) {
+    throw new AppError("Invalid branch ID", 400);
+  }
+
+  const branch = await prisma.branch.findUnique({
+    where: { id: branchId },
+    select: { id: true },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  const policy = await prisma.branchCancellationPolicy.findUnique({
+    where: { branchId },
+  });
+
+  if (!policy) {
+    throw new AppError(
+      "Branch cancellation policy has not been configured",
+      404,
+    );
+  }
+
+  return policy;
+};
 const updateBookingPolicy = async (
   branchId: string,
   payload: IUpdateBookingPolicyPayload,
@@ -2297,7 +2544,7 @@ export const branchService = {
   getNearbyBranches,
 
   getBranchById,
-
+  getCancellationPolicy,
   updateBranch,
 
   updateBranchStatus,
@@ -2309,6 +2556,7 @@ export const branchService = {
   getBookingPolicy,
 
   updateBookingPolicy,
+  updateCancellationPolicy,
   searchBranchCustomers,
   getBranchDailySummary,
   getBranchDailySeries,

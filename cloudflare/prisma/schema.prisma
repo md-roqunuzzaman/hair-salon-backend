@@ -7,6 +7,8 @@ model BranchCancellationPolicy {
   isEnabled Boolean @default(true)
 
   cancellationAllowed Boolean @default(true)
+  refundAllowed       Boolean @default(true)
+  policyFormat        String  @default("REFUND_TIERS_V1")
 
   minimumCancellationHours Int @default(2)
 
@@ -23,12 +25,14 @@ model BranchCancellationPolicy {
 model GroupPurchaseRefundPolicy {
   id String @id @default(uuid())
 
-  packageId String  @unique
-  package   Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  branchId String @unique
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   isEnabled Boolean @default(true)
 
   refundAllowed Boolean @default(true)
+  policyFormat  String  @default("REFUND_TIERS_V1")
+  boundaryMode  String  @default("MINIMUM_INCLUSIVE")
 
   // Refund rules based on hours since purchase
   refundTiers Json
@@ -49,23 +53,38 @@ model GroupPurchaseRefundPolicy {
 model GroupPurchaseCancellationPolicy {
   id String @id @default(uuid())
 
-  packageId String  @unique
-  package   Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  branchId String @unique
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  // =====================================================
+  // POLICY SETTINGS
+  // =====================================================
 
   isEnabled Boolean @default(true)
 
   cancellationAllowed Boolean @default(true)
 
-  // Minimum notice required to cancel an appointment
+  // Minimum hours before appointment start
+  // Cancellation is blocked below this threshold
   minimumCancellationHours Int @default(2)
 
-  // Cancellation within this window restores entitlement
+  // Cancellation at or above this threshold
+  // restores the package entitlement
   restorationMinimumHours Int @default(24)
 
-  // Whether late cancellations forfeit entitlement
-  forfeitOnLateCancellation Boolean @default(true)
+  // Cancellation allowed below restorationMinimumHours
+  // but at or above minimumCancellationHours
+  lateCancellationOutcome EntitlementCancellationOutcome @default(FORFEITED)
+
+  // =====================================================
+  // VERSIONING
+  // =====================================================
 
   version Int @default(1)
+
+  // =====================================================
+  // TIMESTAMPS
+  // =====================================================
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -105,6 +124,8 @@ model Appointment {
   // Cancellation policy captured when appointment is booked
   cancellationPolicySnapshot Json?
   cancellationPolicyVersion  Int?
+  cancellationIdempotencyKey String?   @unique
+  cancellationResult         Json?
 
   // Group purchase entitlement cancellation outcome
   entitlementCancellationOutcome EntitlementCancellationOutcome?
@@ -178,30 +199,33 @@ model AuditLog {
 }
 
 model Branch {
-  id                 String                    @id @default(uuid())
-  name               String
-  address            String
-  phone              String?
-  description        String?
-  imageObjectKey     String?
-  translations       Json?
-  latitude           Float?
-  longitude          Float?
-  status             BranchStatus              @default(ACTIVE)
-  bookingPolicy      BranchBookingPolicy?
-  businessHours      BranchBusinessHour[]
-  hourlyCapacities   BranchHourlyCapacity[]
-  services           ServiceBranch[]
-  packages           PackageBranch[]
-  staff              StaffBranch[]
-  managers           BranchManagerBranch[]
-  staffSchedules     StaffSchedule[]
-  appointments       Appointment[]
-  promotions         PromotionBranch[]
-  reviews            Review[]
-  cancellationPolicy BranchCancellationPolicy?
-  createdAt          DateTime                  @default(now())
-  updatedAt          DateTime                  @updatedAt
+  id                              String                           @id @default(uuid())
+  name                            String
+  address                         String
+  phone                           String?
+  description                     String?
+  imageObjectKey                  String?
+  translations                    Json?
+  latitude                        Float?
+  longitude                       Float?
+  status                          BranchStatus                     @default(ACTIVE)
+  bookingPolicy                   BranchBookingPolicy?
+  businessHours                   BranchBusinessHour[]
+  hourlyCapacities                BranchHourlyCapacity[]
+  services                        ServiceBranch[]
+  packages                        PackageBranch[]
+  staff                           StaffBranch[]
+  managers                        BranchManagerBranch[]
+  staffSchedules                  StaffSchedule[]
+  appointments                    Appointment[]
+  promotions                      PromotionBranch[]
+  reviews                         Review[]
+  cancellationPolicy              BranchCancellationPolicy?
+  groupPurchaseRefundPolicy       GroupPurchaseRefundPolicy?
+  groupPurchaseCancellationPolicy GroupPurchaseCancellationPolicy?
+  policyPurchases                 GroupPurchase[]                  @relation("PurchasePolicyBranch")
+  createdAt                       DateTime                         @default(now())
+  updatedAt                       DateTime                         @updatedAt
 }
 
 model BranchBusinessHour {
@@ -468,9 +492,11 @@ enum EntitlementCancellationOutcome {
 }
 
 model GroupPurchase {
-  id         String @id @default(uuid())
-  customerId String
-  packageId  String
+  id               String  @id @default(uuid())
+  customerId       String
+  packageId        String
+  purchaseBranchId String?
+  purchaseBranch   Branch? @relation("PurchasePolicyBranch", fields: [purchaseBranchId], references: [id], onDelete: Restrict)
 
   quantity  Int
   unitPrice BigInt
@@ -492,6 +518,8 @@ model GroupPurchase {
   package              Package           @relation(fields: [packageId], references: [id], onDelete: Restrict)
   payments             Payment[]
   appointments         Appointment[]
+  forfeitedQuantity    Int               @default(0)
+  refundedQuantity     Int               @default(0)
   // Package refund policy captured at purchase time
   refundPolicySnapshot Json?
   refundPolicyVersion  Int?
@@ -548,13 +576,12 @@ model Package {
   // PRICING
   // =====================================================
 
-  regularPrice       BigInt
-  packagePrice       BigInt
-  durationMinutes    Int
-  refundPolicy       GroupPurchaseRefundPolicy?
-  cancellationPolicy GroupPurchaseCancellationPolicy?
-  status             PackageStatus                    @default(ACTIVE)
-  listingStatus      ListingStatus                    @default(LISTED)
+  regularPrice    BigInt
+  packagePrice    BigInt
+  durationMinutes Int
+
+  status        PackageStatus @default(ACTIVE)
+  listingStatus ListingStatus @default(LISTED)
 
   // =====================================================
   // GROUP PURCHASE SETTINGS
@@ -802,8 +829,28 @@ model RefundRequest {
   customer User  @relation("CustomerRefundRequests", fields: [customerId], references: [id], onDelete: Restrict)
   reviewer User? @relation("ReviewedRefundRequests", fields: [reviewedBy], references: [id], onDelete: SetNull)
 
-  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  refund  Refund? @relation(fields: [refundId], references: [id], onDelete: SetNull)
+  payment     Payment           @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund      Refund?           @relation(fields: [refundId], references: [id], onDelete: SetNull)
+  // Type of refund/cancellation request
+  requestType RefundRequestType @default(APPOINTMENT_CANCELLATION)
+
+  // Original policy used to calculate eligibility
+  policySnapshot Json?
+  policyVersion  Int?
+
+  // Refund calculation details
+  eligiblePaidAmount BigInt?
+  refundPercentage   BigInt?
+  refundDeduction    BigInt?
+
+  // Cancellation-only request (0% refund)
+  isCancellationOnly Boolean @default(false)
+
+  // Policy evaluation timestamp
+  policyEvaluatedAt DateTime?
+
+  // Idempotency for duplicate request prevention
+  idempotencyKey String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hair-salon-backend-staging",
+  "account_id": "b57cd96d4a71d1b21f38db1b04f4dea8",
+  "main": "cloudflare/maintenance/worker.mjs",
+  "compatibility_date": "2025-10-11",
+  "compatibility_flags": ["nodejs_compat", "enable_nodejs_http_server_modules"],
+  "workers_dev": true,
+  "limits": { "cpu_ms": 300000 },
+  "observability": { "enabled": false },
+  "durable_objects": { "bindings": [{ "name": "SALON_DB", "class_name": "SalonDatabase" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalonDatabase"] }],
+  "triggers": { "crons": [] },
+  "vars": { "NODE_ENV": "production", "BCRYPT_SALT_ROUNDS": "12" }
+}

@@ -32,6 +32,8 @@ model Appointment {
   // Cancellation policy captured when appointment is booked
   cancellationPolicySnapshot Json?
   cancellationPolicyVersion  Int?
+  cancellationIdempotencyKey String?   @unique
+  cancellationResult         Json?
 
   // Group purchase entitlement cancellation outcome
   entitlementCancellationOutcome EntitlementCancellationOutcome?

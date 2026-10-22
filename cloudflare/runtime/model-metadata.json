@@ -10,6 +10,8 @@
       "branchId": "String",
       "isEnabled": "Boolean",
       "cancellationAllowed": "Boolean",
+      "refundAllowed": "Boolean",
+      "policyFormat": "String",
       "minimumCancellationHours": "Int",
       "refundTiers": "Json",
       "nonRefundable": "Boolean",
@@ -21,14 +23,16 @@
   "GroupPurchaseRefundPolicy": {
     "money": {},
     "relations": {
-      "package": "Package"
+      "branch": "Branch"
     },
     "arrays": [],
     "scalars": {
       "id": "String",
-      "packageId": "String",
+      "branchId": "String",
       "isEnabled": "Boolean",
       "refundAllowed": "Boolean",
+      "policyFormat": "String",
+      "boundaryMode": "String",
       "refundTiers": "Json",
       "allowPartiallyUsedRefund": "Boolean",
       "allowExpiredRefund": "Boolean",
@@ -41,17 +45,17 @@
   "GroupPurchaseCancellationPolicy": {
     "money": {},
     "relations": {
-      "package": "Package"
+      "branch": "Branch"
     },
     "arrays": [],
     "scalars": {
       "id": "String",
-      "packageId": "String",
+      "branchId": "String",
       "isEnabled": "Boolean",
       "cancellationAllowed": "Boolean",
       "minimumCancellationHours": "Int",
       "restorationMinimumHours": "Int",
-      "forfeitOnLateCancellation": "Boolean",
+      "lateCancellationOutcome": "EntitlementCancellationOutcome",
       "version": "Int",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
@@ -113,6 +117,8 @@
       "qrVerifiedBy": "String",
       "cancellationPolicySnapshot": "Json",
       "cancellationPolicyVersion": "Int",
+      "cancellationIdempotencyKey": "String",
+      "cancellationResult": "Json",
       "entitlementCancellationOutcome": "EntitlementCancellationOutcome",
       "completedAt": "DateTime",
       "completionNotes": "String",
@@ -157,7 +163,10 @@
       "appointments": "Appointment",
       "promotions": "PromotionBranch",
       "reviews": "Review",
-      "cancellationPolicy": "BranchCancellationPolicy"
+      "cancellationPolicy": "BranchCancellationPolicy",
+      "groupPurchaseRefundPolicy": "GroupPurchaseRefundPolicy",
+      "groupPurchaseCancellationPolicy": "GroupPurchaseCancellationPolicy",
+      "policyPurchases": "GroupPurchase"
     },
     "arrays": [],
     "scalars": {
@@ -298,6 +307,7 @@
       }
     },
     "relations": {
+      "purchaseBranch": "Branch",
       "settledPayment": "Payment",
       "customer": "User",
       "package": "Package",
@@ -309,6 +319,7 @@
       "id": "String",
       "customerId": "String",
       "packageId": "String",
+      "purchaseBranchId": "String",
       "quantity": "Int",
       "unitPrice": "Decimal",
       "amount": "Decimal",
@@ -321,6 +332,8 @@
       "depositAmount": "Decimal",
       "remainingAmount": "Decimal",
       "purchaseFlow": "GroupPurchaseFlow",
+      "forfeitedQuantity": "Int",
+      "refundedQuantity": "Int",
       "refundPolicySnapshot": "Json",
       "refundPolicyVersion": "Int",
       "cancellationPolicySnapshot": "Json",
@@ -359,8 +372,6 @@
       }
     },
     "relations": {
-      "refundPolicy": "GroupPurchaseRefundPolicy",
-      "cancellationPolicy": "GroupPurchaseCancellationPolicy",
       "groupPurchases": "GroupPurchase",
       "staff": "StaffPackage",
       "appointments": "Appointment",
@@ -588,6 +599,18 @@
       "amount": {
         "scale": 2,
         "max": "9999999999"
+      },
+      "eligiblePaidAmount": {
+        "scale": 2,
+        "max": "9999999999"
+      },
+      "refundPercentage": {
+        "scale": 2,
+        "max": "99999"
+      },
+      "refundDeduction": {
+        "scale": 2,
+        "max": "9999999999"
       }
     },
     "relations": {
@@ -608,6 +631,15 @@
       "reviewedAt": "DateTime",
       "reviewNote": "String",
       "refundId": "String",
+      "requestType": "RefundRequestType",
+      "policySnapshot": "Json",
+      "policyVersion": "Int",
+      "eligiblePaidAmount": "Decimal",
+      "refundPercentage": "Decimal",
+      "refundDeduction": "Decimal",
+      "isCancellationOnly": "Boolean",
+      "policyEvaluatedAt": "DateTime",
+      "idempotencyKey": "String",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }

@@ -1,0 +1,1884 @@
+[
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/register",
+    "middleware": [
+      "validateRequest(authValidation.registerValidationSchema)"
+    ],
+    "controller": "authController.registerUser",
+    "source": "src/app/module/auth/auth.route.ts",
+    "requestContract": [
+      "validateRequest(authValidation.registerValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/login",
+    "middleware": [
+      "validateRequest(authValidation.LoginZodSchema)"
+    ],
+    "controller": "authController.loginUser",
+    "source": "src/app/module/auth/auth.route.ts",
+    "requestContract": [
+      "validateRequest(authValidation.LoginZodSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/logout",
+    "middleware": [
+      "auth()"
+    ],
+    "controller": "authController.logoutUser",
+    "source": "src/app/module/auth/auth.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/refresh-token",
+    "middleware": [],
+    "controller": "authController.refreshToken",
+    "source": "src/app/module/auth/auth.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/forgot-password",
+    "middleware": [
+      "validateRequest(authValidation.forgotPasswordValidationSchema)"
+    ],
+    "controller": "authController.forgotPassword",
+    "source": "src/app/module/auth/auth.route.ts",
+    "requestContract": [
+      "validateRequest(authValidation.forgotPasswordValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/verify-reset-otp",
+    "middleware": [
+      "validateRequest(authValidation.verifyResetOtpValidationSchema)"
+    ],
+    "controller": "authController.verifyResetOtp",
+    "source": "src/app/module/auth/auth.route.ts",
+    "requestContract": [
+      "validateRequest(authValidation.verifyResetOtpValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/reset-password",
+    "middleware": [
+      "validateRequest(authValidation.resetPasswordValidationSchema)"
+    ],
+    "controller": "authController.resetPassword",
+    "source": "src/app/module/auth/auth.route.ts",
+    "requestContract": [
+      "validateRequest(authValidation.resetPasswordValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/users/me",
+    "middleware": [
+      "auth()"
+    ],
+    "controller": "userController.getMe",
+    "source": "src/app/module/user/user.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/users/me",
+    "middleware": [
+      "auth()",
+      "validateRequest(userValidation.updateProfileValidationSchema)"
+    ],
+    "controller": "userController.updateMe",
+    "source": "src/app/module/user/user.route.ts",
+    "requestContract": [
+      "validateRequest(userValidation.updateProfileValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/users/me/password",
+    "middleware": [
+      "auth()",
+      "validateRequest(userValidation.changePasswordValidationSchema)"
+    ],
+    "controller": "userController.changePassword",
+    "source": "src/app/module/user/user.route.ts",
+    "requestContract": [
+      "validateRequest(userValidation.changePasswordValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/brand/theme",
+    "middleware": [],
+    "controller": "brandController.getBrandTheme",
+    "source": "src/app/module/brand/brand.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/brand/theme",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(brandValidation.updateBrandThemeValidationSchema)"
+    ],
+    "controller": "brandController.updateBrandTheme",
+    "source": "src/app/module/brand/brand.route.ts",
+    "requestContract": [
+      "validateRequest(brandValidation.updateBrandThemeValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/brand",
+    "middleware": [],
+    "controller": "brandController.getBrand",
+    "source": "src/app/module/brand/brand.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/brand",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(brandValidation.updateBrandValidationSchema)"
+    ],
+    "controller": "brandController.updateBrand",
+    "source": "src/app/module/brand/brand.route.ts",
+    "requestContract": [
+      "validateRequest(brandValidation.updateBrandValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/branches",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(branchValidation.createBranchValidationSchema)"
+    ],
+    "controller": "branchController.createBranch",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.createBranchValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches",
+    "middleware": [],
+    "controller": "branchController.getBranches",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/nearby",
+    "middleware": [
+      "nearbyQueryToBody",
+      "validateRequest(branchValidation.getNearbyBranchesValidationSchema)"
+    ],
+    "controller": "branchController.getNearbyBranches",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.getNearbyBranchesValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId",
+    "middleware": [],
+    "controller": "branchController.getBranchById",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/branches/:branchId",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(branchValidation.updateBranchValidationSchema)"
+    ],
+    "controller": "branchController.updateBranch",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.updateBranchValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/branches/:branchId/status",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(branchValidation.updateBranchStatusValidationSchema)"
+    ],
+    "controller": "branchController.updateBranchStatus",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.updateBranchStatusValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/business-hours",
+    "middleware": [],
+    "controller": "branchController.getBusinessHours",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/branches/:branchId/business-hours",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(branchValidation.updateBusinessHoursValidationSchema)"
+    ],
+    "controller": "branchController.updateBusinessHours",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.updateBusinessHoursValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/booking-policy",
+    "middleware": [],
+    "controller": "branchController.getBookingPolicy",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/branches/:branchId/booking-policy",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(branchValidation.updateBookingPolicyValidationSchema)"
+    ],
+    "controller": "branchController.updateBookingPolicy",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.updateBookingPolicyValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/branches/:branchId/cancellation-policy",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(branchValidation.updateCancellationPolicyValidationSchema)"
+    ],
+    "controller": "branchController.updateCancellationPolicy",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.updateCancellationPolicyValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/cancellation-policy",
+    "middleware": [],
+    "controller": "branchController.getCancellationPolicy",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/packages",
+    "middleware": [],
+    "controller": "packageController.getBranchPackages",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/staff",
+    "middleware": [],
+    "controller": "staffController.getBranchStaff",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/services/:serviceId/staff",
+    "middleware": [],
+    "controller": "staffController.getEligibleStaffForService",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/packages/:packageId/staff",
+    "middleware": [],
+    "controller": "staffController.getEligibleStaffForPackage",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/appointments",
+    "middleware": [
+      "(req: Request, res: Response, next: NextFunction) => {\r\n    console.log(\"========== ROUTE HIT ==========\");\r\n    console.log(\"URL:\", req.originalUrl);\r\n    console.log(\"Branch ID:\", req.params.branchId);\r\n    console.log(\"===============================\");\r\n    next();\r\n  }",
+      "auth(Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)",
+      "appointmentQueryToBody",
+      "validateRequest(appointmentValidation.getBranchAppointmentsValidationSchema)"
+    ],
+    "controller": "appointmentController.getBranchAppointments",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.getBranchAppointmentsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/reviews",
+    "middleware": [
+      "queryToBody",
+      "validateRequest(reviewValidation.getReviewsValidationSchema)"
+    ],
+    "controller": "reviewController.getBranchReviews",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(reviewValidation.getReviewsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/dashboard",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "queryToBody",
+      "validateRequest(dashboardValidation.getDashboardValidationSchema)"
+    ],
+    "controller": "dashboardController.getBranchDashboard",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(dashboardValidation.getDashboardValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/customers/search",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "queryToBody",
+      "validateRequest(branchValidation.customerOperationalSearchValidationSchema)"
+    ],
+    "controller": "branchController.searchBranchCustomers",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.customerOperationalSearchValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/reports/daily-summary",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "dailySummaryQueryToBody",
+      "validateRequest(branchValidation.getBranchDailySummaryValidationSchema)"
+    ],
+    "controller": "branchController.getBranchDailySummary",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.getBranchDailySummaryValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/reports/daily-series",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "dailySeriesQueryToBody",
+      "validateRequest(branchValidation.getBranchDailySeriesValidationSchema)"
+    ],
+    "controller": "branchController.getBranchDailySeries",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.getBranchDailySeriesValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/reports/staff-output",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "staffOutputQueryToBody",
+      "validateRequest(branchValidation.getBranchStaffOutputValidationSchema)"
+    ],
+    "controller": "branchController.getBranchStaffOutput",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchValidation.getBranchStaffOutputValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/group-purchase-refund-policy",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)"
+    ],
+    "controller": "branchGroupPurchasePolicyController.getGroupPurchaseRefundPolicy",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/branches/:branchId/group-purchase-refund-policy",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(branchGroupPurchasePolicyValidation.updateGroupPurchaseRefundPolicyValidationSchema)"
+    ],
+    "controller": "branchGroupPurchasePolicyController.updateGroupPurchaseRefundPolicy",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchGroupPurchasePolicyValidation.updateGroupPurchaseRefundPolicyValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/group-purchase-cancellation-policy",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)"
+    ],
+    "controller": "branchGroupPurchasePolicyController.getGroupPurchaseCancellationPolicy",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/branches/:branchId/group-purchase-cancellation-policy",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(branchGroupPurchasePolicyValidation.updateGroupPurchaseCancellationPolicyValidationSchema)"
+    ],
+    "controller": "branchGroupPurchasePolicyController.updateGroupPurchaseCancellationPolicy",
+    "source": "src/app/module/branch/branch.route.ts",
+    "requestContract": [
+      "validateRequest(branchGroupPurchasePolicyValidation.updateGroupPurchaseCancellationPolicyValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branches/:branchId/hourly-capacity",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)"
+    ],
+    "controller": "branchHourlyCapacityController.getBranchHourlyCapacity",
+    "source": "src/app/module/branch-hourly-capacity/branch-hourly-capacity.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/branches/:branchId/hourly-capacity",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(\r\n    branchHourlyCapacityValidation.updateBranchHourlyCapacitySchema,\r\n  )"
+    ],
+    "controller": "branchHourlyCapacityController.updateBranchHourlyCapacity",
+    "source": "src/app/module/branch-hourly-capacity/branch-hourly-capacity.route.ts",
+    "requestContract": [
+      "validateRequest(\r\n    branchHourlyCapacityValidation.updateBranchHourlyCapacitySchema,\r\n  )"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/services",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(serviceValidation.createServiceValidationSchema)"
+    ],
+    "controller": "serviceController.createService",
+    "source": "src/app/module/service/service.route.ts",
+    "requestContract": [
+      "validateRequest(serviceValidation.createServiceValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/services",
+    "middleware": [],
+    "controller": "serviceController.getServices",
+    "source": "src/app/module/service/service.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/services/:serviceId",
+    "middleware": [],
+    "controller": "serviceController.getServiceById",
+    "source": "src/app/module/service/service.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/services/:serviceId",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(serviceValidation.updateServiceValidationSchema)"
+    ],
+    "controller": "serviceController.updateService",
+    "source": "src/app/module/service/service.route.ts",
+    "requestContract": [
+      "validateRequest(serviceValidation.updateServiceValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/services/:serviceId/status",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(serviceValidation.updateServiceStatusValidationSchema)"
+    ],
+    "controller": "serviceController.updateServiceStatus",
+    "source": "src/app/module/service/service.route.ts",
+    "requestContract": [
+      "validateRequest(serviceValidation.updateServiceStatusValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/services/:serviceId/branches",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(serviceValidation.assignServiceBranchesValidationSchema)"
+    ],
+    "controller": "serviceController.assignServiceToBranches",
+    "source": "src/app/module/service/service.route.ts",
+    "requestContract": [
+      "validateRequest(serviceValidation.assignServiceBranchesValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/services/:branchId/services",
+    "middleware": [],
+    "controller": "serviceController.getBranchServices",
+    "source": "src/app/module/service/service.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/packages",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(packageValidation.createPackageValidationSchema)"
+    ],
+    "controller": "packageController.createPackage",
+    "source": "src/app/module/package/package.route.ts",
+    "requestContract": [
+      "validateRequest(packageValidation.createPackageValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/packages",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.CUSTOMER, Role.BRANCH_MANAGER, Role.STAFF)"
+    ],
+    "controller": "packageController.getPackages",
+    "source": "src/app/module/package/package.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/packages/:packageId",
+    "middleware": [],
+    "controller": "packageController.getPackageById",
+    "source": "src/app/module/package/package.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/packages/:packageId",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(packageValidation.updatePackageValidationSchema)"
+    ],
+    "controller": "packageController.updatePackage",
+    "source": "src/app/module/package/package.route.ts",
+    "requestContract": [
+      "validateRequest(packageValidation.updatePackageValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/packages/:packageId/status",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(packageValidation.updatePackageStatusValidationSchema)"
+    ],
+    "controller": "packageController.updatePackageStatus",
+    "source": "src/app/module/package/package.route.ts",
+    "requestContract": [
+      "validateRequest(packageValidation.updatePackageStatusValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/packages/:packageId/listing",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(packageValidation.updatePackageListingValidationSchema)"
+    ],
+    "controller": "packageController.updatePackageListing",
+    "source": "src/app/module/package/package.route.ts",
+    "requestContract": [
+      "validateRequest(packageValidation.updatePackageListingValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/packages/:packageId/branches",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(packageValidation.assignPackageBranchesValidationSchema)"
+    ],
+    "controller": "packageController.assignPackageToBranches",
+    "source": "src/app/module/package/package.route.ts",
+    "requestContract": [
+      "validateRequest(packageValidation.assignPackageBranchesValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/group-purchases",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(groupPurchaseValidation.createGroupPurchaseValidationSchema)"
+    ],
+    "controller": "groupPurchaseController.createGroupPurchase",
+    "source": "src/app/module/group-purchase/group-purchase.route.ts",
+    "requestContract": [
+      "validateRequest(groupPurchaseValidation.createGroupPurchaseValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/group-purchases/my",
+    "middleware": [
+      "auth(Role.CUSTOMER)"
+    ],
+    "controller": "groupPurchaseController.getMyGroupPurchases",
+    "source": "src/app/module/group-purchase/group-purchase.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/group-purchases/:purchaseId",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.BRANCH_MANAGER, Role.BRAND_OWNER)"
+    ],
+    "controller": "groupPurchaseController.getGroupPurchaseById",
+    "source": "src/app/module/group-purchase/group-purchase.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/group-purchases/:purchaseId/pay-with-wallet",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(walletValidation.payGroupPurchaseWithWalletValidationSchema)"
+    ],
+    "controller": "walletController.payGroupPurchaseWithWallet",
+    "source": "src/app/module/group-purchase/group-purchase.route.ts",
+    "requestContract": [
+      "validateRequest(walletValidation.payGroupPurchaseWithWalletValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/group-purchases/:purchaseId/book-appointment",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(\r\n    groupPurchaseValidation.createGroupPurchaseAppointmentValidationSchema,\r\n  )"
+    ],
+    "controller": "groupPurchaseController.createGroupPurchaseAppointment",
+    "source": "src/app/module/group-purchase/group-purchase.route.ts",
+    "requestContract": [
+      "validateRequest(\r\n    groupPurchaseValidation.createGroupPurchaseAppointmentValidationSchema,\r\n  )"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/group-purchases/:purchaseId/remaining-payment",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(\r\n    groupPurchaseValidation.recordGroupPurchaseRemainingPaymentValidationSchema,\r\n  )"
+    ],
+    "controller": "groupPurchaseController.recordGroupPurchaseRemainingPayment",
+    "source": "src/app/module/group-purchase/group-purchase.route.ts",
+    "requestContract": [
+      "validateRequest(\r\n    groupPurchaseValidation.recordGroupPurchaseRemainingPaymentValidationSchema,\r\n  )"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/staff",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(staffValidation.createStaffValidationSchema)"
+    ],
+    "controller": "staffController.createStaff",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.createStaffValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/staff",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)"
+    ],
+    "controller": "staffController.getStaff",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/staff/:staffId",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)"
+    ],
+    "controller": "staffController.getStaffById",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/staff/:staffId",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(staffValidation.updateStaffValidationSchema)"
+    ],
+    "controller": "staffController.updateStaff",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.updateStaffValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/staff/:staffId/status",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(staffValidation.updateStaffStatusValidationSchema)"
+    ],
+    "controller": "staffController.updateStaffStatus",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.updateStaffStatusValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/staff/:staffId/branches",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(staffValidation.assignStaffBranchesValidationSchema)"
+    ],
+    "controller": "staffController.assignStaffBranches",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.assignStaffBranchesValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/staff/:staffId/services",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(staffValidation.assignStaffServicesValidationSchema)"
+    ],
+    "controller": "staffController.assignStaffServices",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.assignStaffServicesValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/staff/:staffId/packages",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(staffValidation.assignStaffPackagesValidationSchema)"
+    ],
+    "controller": "staffController.assignStaffPackages",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.assignStaffPackagesValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/staff/:staffId/schedule",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(staffValidation.updateStaffScheduleValidationSchema)"
+    ],
+    "controller": "staffController.updateStaffSchedule",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.updateStaffScheduleValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/staff/me/appointments",
+    "middleware": [
+      "auth(Role.STAFF)",
+      "queryToBody",
+      "validateRequest(staffValidation.getMyAppointmentsValidationSchema)"
+    ],
+    "controller": "staffController.getMyAppointments",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.getMyAppointmentsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/staff/me/schedule",
+    "middleware": [
+      "auth(Role.STAFF)"
+    ],
+    "controller": "staffController.getMyStaffSchedule",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/staff/me/reviews",
+    "middleware": [
+      "auth(Role.STAFF)"
+    ],
+    "controller": "reviewController.getMyStaffReview",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/staff/:staffId/schedule",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER, Role.STAFF)"
+    ],
+    "controller": "staffController.getStaffSchedule",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/staff/:staffId/unavailability",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(staffValidation.createStaffUnavailabilityValidationSchema)"
+    ],
+    "controller": "staffController.createStaffUnavailability",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.createStaffUnavailabilityValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/staff/:staffId/unavailability",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER, Role.STAFF)"
+    ],
+    "controller": "staffController.getStaffUnavailability",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/staff/:staffId/unavailability/:id",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(staffValidation.updateStaffUnavailabilityValidationSchema)"
+    ],
+    "controller": "staffController.updateStaffUnavailability",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(staffValidation.updateStaffUnavailabilityValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/staff/:staffId/unavailability/:id",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)"
+    ],
+    "controller": "staffController.deleteStaffUnavailability",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/staff/:staffId/reviews",
+    "middleware": [
+      "queryToBody",
+      "validateRequest(reviewValidation.getReviewsValidationSchema)"
+    ],
+    "controller": "reviewController.getStaffReviews",
+    "source": "src/app/module/staff/staff.route.ts",
+    "requestContract": [
+      "validateRequest(reviewValidation.getReviewsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/availability",
+    "middleware": [
+      "queryToBody",
+      "validateRequest(availabilityValidation.getAvailabilityValidationSchema)"
+    ],
+    "controller": "AvailabilityController.getAvailability",
+    "source": "src/app/module/availability/availability.route.ts",
+    "requestContract": [
+      "validateRequest(availabilityValidation.getAvailabilityValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/pay-now",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(appointmentValidation.createPayNowValidationSchema)"
+    ],
+    "controller": "appointmentController.createPayNowAppointment",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.createPayNowValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/deposit",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(\r\n    appointmentValidation.createDepositAppointmentValidationSchema,\r\n  )"
+    ],
+    "controller": "appointmentController.createDepositAppointment",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(\r\n    appointmentValidation.createDepositAppointmentValidationSchema,\r\n  )"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/reserve",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(appointmentValidation.createReserveValidationSchema)"
+    ],
+    "controller": "appointmentController.createReserveAppointment",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.createReserveValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/appointments/my",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "queryToBody",
+      "validateRequest(appointmentValidation.getMyAppointmentsValidationSchema)"
+    ],
+    "controller": "appointmentController.getMyAppointments",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.getMyAppointmentsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/:appointmentId/remaining-payment",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER, Role.STAFF)",
+      "validateRequest(appointmentValidation.recordRemainingPaymentValidationSchema)"
+    ],
+    "controller": "appointmentController.recordRemainingPayment",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.recordRemainingPaymentValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/appointments/:appointmentId",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)"
+    ],
+    "controller": "appointmentController.getAppointmentById",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/:appointmentId/cancel",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.BRANCH_MANAGER, Role.BRAND_OWNER)",
+      "validateRequest(appointmentValidation.cancelAppointmentValidationSchema)"
+    ],
+    "controller": "appointmentController.cancelAppointment",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.cancelAppointmentValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/:appointmentId/reschedule",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(appointmentValidation.rescheduleAppointmentValidationSchema)"
+    ],
+    "controller": "appointmentController.rescheduleAppointment",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.rescheduleAppointmentValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/appointments/:appointmentId/qr",
+    "middleware": [
+      "auth(Role.CUSTOMER)"
+    ],
+    "controller": "appointmentController.getAppointmentQr",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/verify-qr",
+    "middleware": [
+      "auth(Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)",
+      "validateRequest(appointmentValidation.verifyQrValidationSchema)"
+    ],
+    "controller": "appointmentController.verifyQr",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.verifyQrValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/:appointmentId/complete",
+    "middleware": [
+      "auth(Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)",
+      "validateRequest(appointmentValidation.completeAppointmentValidationSchema)"
+    ],
+    "controller": "appointmentController.completeAppointment",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.completeAppointmentValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/:appointmentId/no-show",
+    "middleware": [
+      "auth(Role.BRANCH_MANAGER, Role.BRAND_OWNER)",
+      "validateRequest(appointmentValidation.markNoShowValidationSchema)"
+    ],
+    "controller": "appointmentController.markNoShow",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.markNoShowValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/appointments",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "queryToBody",
+      "validateRequest(appointmentValidation.getAllAppointmentsValidationSchema)"
+    ],
+    "controller": "appointmentController.getAllAppointments",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(appointmentValidation.getAllAppointmentsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/:appointmentId/pay-with-wallet",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(walletValidation.payAppointmentWithWalletValidationSchema)"
+    ],
+    "controller": "walletController.payAppointmentWithWallet",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(walletValidation.payAppointmentWithWalletValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/appointments/:appointmentId/reviews",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(reviewValidation.createReviewValidationSchema)"
+    ],
+    "controller": "reviewController.createReview",
+    "source": "src/app/module/appointment/appointment.route.ts",
+    "requestContract": [
+      "validateRequest(reviewValidation.createReviewValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/payments/stripe/create-intent",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(paymentValidation.createStripeIntentValidationSchema)"
+    ],
+    "controller": "paymentController.createStripeIntent",
+    "source": "src/app/module/payment/payment.route.ts",
+    "requestContract": [
+      "validateRequest(paymentValidation.createStripeIntentValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/payments/group-purchase/create-intent",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(\r\n    paymentValidation.createGroupPurchaseStripeIntentValidationSchema,\r\n  )"
+    ],
+    "controller": "paymentController.createGroupPurchaseStripeIntent",
+    "source": "src/app/module/payment/payment.route.ts",
+    "requestContract": [
+      "validateRequest(\r\n    paymentValidation.createGroupPurchaseStripeIntentValidationSchema,\r\n  )"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/payments/my",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "queryToBody",
+      "validateRequest(paymentValidation.getMyPaymentsValidationSchema)"
+    ],
+    "controller": "paymentController.getMyPayments",
+    "source": "src/app/module/payment/payment.route.ts",
+    "requestContract": [
+      "validateRequest(paymentValidation.getMyPaymentsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/payments/:paymentId",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.BRANCH_MANAGER, Role.BRAND_OWNER)"
+    ],
+    "controller": "paymentController.getPaymentById",
+    "source": "src/app/module/payment/payment.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/wallet",
+    "middleware": [
+      "auth(Role.CUSTOMER)"
+    ],
+    "controller": "walletController.getMyWallet",
+    "source": "src/app/module/wallet/wallet.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/wallet/:appointmentId/pay-with-wallet",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(walletValidation.payAppointmentWithWalletValidationSchema)"
+    ],
+    "controller": "walletController.payAppointmentWithWallet",
+    "source": "src/app/module/wallet/wallet.route.ts",
+    "requestContract": [
+      "validateRequest(walletValidation.payAppointmentWithWalletValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/wallet/transactions",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "queryToBody",
+      "validateRequest(walletValidation.getWalletTransactionsValidationSchema)"
+    ],
+    "controller": "walletController.getMyTransactions",
+    "source": "src/app/module/wallet/wallet.route.ts",
+    "requestContract": [
+      "validateRequest(walletValidation.getWalletTransactionsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/wallet/topups",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(walletValidation.createWalletTopupValidationSchema)"
+    ],
+    "controller": "walletController.createTopup",
+    "source": "src/app/module/wallet/wallet.route.ts",
+    "requestContract": [
+      "validateRequest(walletValidation.createWalletTopupValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/promotions",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(promotionValidation.createPromotionValidationSchema)"
+    ],
+    "controller": "promotionController.createPromotion",
+    "source": "src/app/module/promotion/promotion.route.ts",
+    "requestContract": [
+      "validateRequest(promotionValidation.createPromotionValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/promotions",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.BRAND_OWNER)"
+    ],
+    "controller": "promotionController.getPromotions",
+    "source": "src/app/module/promotion/promotion.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/promotions/:promotionId",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.BRAND_OWNER)"
+    ],
+    "controller": "promotionController.getPromotionById",
+    "source": "src/app/module/promotion/promotion.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/promotions/:promotionId",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(promotionValidation.updatePromotionValidationSchema)"
+    ],
+    "controller": "promotionController.updatePromotion",
+    "source": "src/app/module/promotion/promotion.route.ts",
+    "requestContract": [
+      "validateRequest(promotionValidation.updatePromotionValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/promotions/:promotionId/status",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(promotionValidation.updatePromotionStatusValidationSchema)"
+    ],
+    "controller": "promotionController.updatePromotionStatus",
+    "source": "src/app/module/promotion/promotion.route.ts",
+    "requestContract": [
+      "validateRequest(promotionValidation.updatePromotionStatusValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/reviews/my",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(reviewValidation.getReviewsValidationSchema)"
+    ],
+    "controller": "reviewController.getMyReviews",
+    "source": "src/app/module/review/review.route.ts",
+    "requestContract": [
+      "validateRequest(reviewValidation.getReviewsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/reviews/:reviewId/reply",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "validateRequest(reviewValidation.reviewReplyValidationSchema)"
+    ],
+    "controller": "reviewController.saveReviewReply",
+    "source": "src/app/module/review/review.route.ts",
+    "requestContract": [
+      "validateRequest(reviewValidation.reviewReplyValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/reviews/:reviewId/reply",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)"
+    ],
+    "controller": "reviewController.deleteReviewReply",
+    "source": "src/app/module/review/review.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/reviews/:reviewId/moderation",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(reviewValidation.moderateReviewValidationSchema)"
+    ],
+    "controller": "reviewController.moderateReview",
+    "source": "src/app/module/review/review.route.ts",
+    "requestContract": [
+      "validateRequest(reviewValidation.moderateReviewValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/reviews/:reviewId",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(reviewValidation.updateReviewValidationSchema)"
+    ],
+    "controller": "reviewController.updateReview",
+    "source": "src/app/module/review/review.route.ts",
+    "requestContract": [
+      "validateRequest(reviewValidation.updateReviewValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/reviews/:reviewId",
+    "middleware": [
+      "auth(Role.CUSTOMER)"
+    ],
+    "controller": "reviewController.deleteReview",
+    "source": "src/app/module/review/review.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/notifications",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)",
+      "queryToBody",
+      "validateRequest(notificationValidation.getNotificationsValidationSchema)"
+    ],
+    "controller": "notificationController.getNotifications",
+    "source": "src/app/module/notification/notification.route.ts",
+    "requestContract": [
+      "validateRequest(notificationValidation.getNotificationsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/notifications/read-all",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)"
+    ],
+    "controller": "notificationController.markAllAsRead",
+    "source": "src/app/module/notification/notification.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/notifications/:notificationId/read",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)"
+    ],
+    "controller": "notificationController.markAsRead",
+    "source": "src/app/module/notification/notification.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/branch-managers",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(branchManagerValidation.createBranchManagerValidationSchema)"
+    ],
+    "controller": "branchManagerController.createBranchManager",
+    "source": "src/app/module/branch-manager/branch-manager.route.ts",
+    "requestContract": [
+      "validateRequest(branchManagerValidation.createBranchManagerValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branch-managers",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)"
+    ],
+    "controller": "branchManagerController.getBranchManagers",
+    "source": "src/app/module/branch-manager/branch-manager.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/branch-managers/:managerId",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)"
+    ],
+    "controller": "branchManagerController.getBranchManagerById",
+    "source": "src/app/module/branch-manager/branch-manager.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/branch-managers/:managerId/branches",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(\r\n    branchManagerValidation.updateBranchManagerBranchesValidationSchema,\r\n  )"
+    ],
+    "controller": "branchManagerController.updateBranchManagerBranches",
+    "source": "src/app/module/branch-manager/branch-manager.route.ts",
+    "requestContract": [
+      "validateRequest(\r\n    branchManagerValidation.updateBranchManagerBranchesValidationSchema,\r\n  )"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/branch-managers/:managerId/status",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(\r\n    branchManagerValidation.updateBranchManagerStatusValidationSchema,\r\n  )"
+    ],
+    "controller": "branchManagerController.updateBranchManagerStatus",
+    "source": "src/app/module/branch-manager/branch-manager.route.ts",
+    "requestContract": [
+      "validateRequest(\r\n    branchManagerValidation.updateBranchManagerStatusValidationSchema,\r\n  )"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/admin/users",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "queryToBody",
+      "validateRequest(adminUserValidation.getAdminUsersValidationSchema)"
+    ],
+    "controller": "adminUserController.getAdminUsers",
+    "source": "src/app/module/admin/admin.route.ts",
+    "requestContract": [
+      "validateRequest(adminUserValidation.getAdminUsersValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/admin/users/:userId",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)"
+    ],
+    "controller": "adminUserController.getAdminUserById",
+    "source": "src/app/module/admin/admin.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/admin/users/:userId/status",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(adminUserValidation.updateAdminUserStatusValidationSchema)"
+    ],
+    "controller": "adminUserController.updateAdminUserStatus",
+    "source": "src/app/module/admin/admin.route.ts",
+    "requestContract": [
+      "validateRequest(adminUserValidation.updateAdminUserStatusValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/dashboard",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "queryToBody",
+      "validateRequest(dashboardValidation.getDashboardValidationSchema)"
+    ],
+    "controller": "dashboardController.getBrandDashboard",
+    "source": "src/app/module/dashboard/dashboard.route.ts",
+    "requestContract": [
+      "validateRequest(dashboardValidation.getDashboardValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/reports/branches",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "queryToBody",
+      "validateRequest(reportValidation.getBranchReportValidationSchema)"
+    ],
+    "controller": "reportController.getBranchReport",
+    "source": "src/app/module/report/report.route.ts",
+    "requestContract": [
+      "validateRequest(reportValidation.getBranchReportValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/reports/booking-conversion",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)",
+      "queryToBody",
+      "validateRequest(reportValidation.getBookingConversionReportValidationSchema)"
+    ],
+    "controller": "reportController.getBookingConversionReport",
+    "source": "src/app/module/report/report.route.ts",
+    "requestContract": [
+      "validateRequest(reportValidation.getBookingConversionReportValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/reports/services",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)"
+    ],
+    "controller": "reportController.getServiceReport",
+    "source": "src/app/module/report/report.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/reports/packages",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)"
+    ],
+    "controller": "reportController.getPackageReport",
+    "source": "src/app/module/report/report.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/reports/group-purchases",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)"
+    ],
+    "controller": "reportController.getGroupPurchaseReport",
+    "source": "src/app/module/report/report.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/reports/staff",
+    "middleware": [
+      "auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)"
+    ],
+    "controller": "reportController.getStaffReport",
+    "source": "src/app/module/report/report.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/reports/payments",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)"
+    ],
+    "controller": "reportController.getPaymentReport",
+    "source": "src/app/module/report/report.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/reports/wallet",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)"
+    ],
+    "controller": "reportController.getWalletReport",
+    "source": "src/app/module/report/report.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/audit-logs",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "(req, _res, next) => {\r\n    req.body = req.query;\r\n    next();\r\n  }",
+      "validateRequest(auditLogValidation.getAuditLogsValidationSchema)"
+    ],
+    "controller": "auditLogController.getAuditLogs",
+    "source": "src/app/module/auditLog/auditLog.route.ts",
+    "requestContract": [
+      "validateRequest(auditLogValidation.getAuditLogsValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/uploads/images/presign",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)",
+      "validateRequest(uploadValidation.presignImageUploadValidationSchema)"
+    ],
+    "controller": "uploadController.presignImageUpload",
+    "source": "src/app/module/upload/upload.route.ts",
+    "requestContract": [
+      "validateRequest(uploadValidation.presignImageUploadValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/uploads/images/confirm",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)",
+      "validateRequest(uploadValidation.confirmImageUploadValidationSchema)"
+    ],
+    "controller": "uploadController.confirmImageUpload",
+    "source": "src/app/module/upload/upload.route.ts",
+    "requestContract": [
+      "validateRequest(uploadValidation.confirmImageUploadValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/uploads/images",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER)",
+      "validateRequest(uploadValidation.deleteImageValidationSchema)"
+    ],
+    "controller": "uploadController.deleteImage",
+    "source": "src/app/module/upload/upload.route.ts",
+    "requestContract": [
+      "validateRequest(uploadValidation.deleteImageValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/refund-requests",
+    "middleware": [
+      "auth(Role.CUSTOMER)",
+      "validateRequest(createRefundRequestValidationSchema)"
+    ],
+    "controller": "RefundRequestController.createRefundRequest",
+    "source": "src/app/module/refund-request/refund-request.route.ts",
+    "requestContract": [
+      "validateRequest(createRefundRequestValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/refund-requests/my",
+    "middleware": [
+      "auth(Role.CUSTOMER)"
+    ],
+    "controller": "RefundRequestController.getMyRefundRequests",
+    "source": "src/app/module/refund-request/refund-request.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/refund-requests",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)"
+    ],
+    "controller": "RefundRequestController.getRefundRequests",
+    "source": "src/app/module/refund-request/refund-request.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/refund-requests/:id/review",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(reviewRefundRequestValidationSchema)"
+    ],
+    "controller": "RefundRequestController.reviewRefundRequest",
+    "source": "src/app/module/refund-request/refund-request.route.ts",
+    "requestContract": [
+      "validateRequest(reviewRefundRequestValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/refund-requests/:id/process",
+    "middleware": [
+      "auth(Role.BRAND_OWNER)",
+      "validateRequest(processRefundRequestValidationSchema)"
+    ],
+    "controller": "RefundRequestController.processApprovedRefund",
+    "source": "src/app/module/refund-request/refund-request.route.ts",
+    "requestContract": [
+      "validateRequest(processRefundRequestValidationSchema)"
+    ],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/refund-requests/:id",
+    "middleware": [
+      "auth(Role.CUSTOMER, Role.BRAND_OWNER, Role.BRANCH_MANAGER)"
+    ],
+    "controller": "RefundRequestController.getRefundRequestById",
+    "source": "src/app/module/refund-request/refund-request.route.ts",
+    "requestContract": [],
+    "responseContract": "Existing controller sendResponse envelope; controller/source retained as contract reference"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/payments/stripe/webhook",
+    "middleware": [
+      "express.raw({\n    type: \"application/json\",\n  })"
+    ],
+    "controller": "paymentController.stripeWebhook",
+    "source": "src/app.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/",
+    "middleware": [],
+    "controller": "async (req: Request, res: Response) => {\n  res.status(httpStatus.OK).json({\n    success: true,\n    message: \"Welcome hair salon booking System Backend\",\n  });\n}",
+    "source": "src/app.ts"
+  }
+]

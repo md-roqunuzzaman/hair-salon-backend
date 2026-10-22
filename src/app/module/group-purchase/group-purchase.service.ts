@@ -1,3 +1,4 @@
+import { capturePolicy, snapshotData, purchaseExpired } from '../cancellation-refund/policy.snapshot.js';
 import config from "../../config/index.js";
 import { notificationService } from "../notification/notification.service.js";
 import {
@@ -107,7 +108,6 @@ const createGroupPurchase = async (
     }
   } else if (
     payload.bookingMethod ||
-    payload.branchId ||
     payload.staffId ||
     payload.date ||
     payload.startTime
@@ -515,8 +515,22 @@ const createGroupPurchase = async (
           // 11. CREATE GROUP PURCHASE
           // =================================================
 
+          let purchaseSnapshot: Prisma.InputJsonObject | undefined;
+          let purchaseBranchId: string | null = payload.branchId ?? null;
+          if (!purchaseBranchId) {
+            const assignments = await tx.packageBranch.findMany({where:{packageId:packageData.id},select:{branchId:true}});
+            const configured = await tx.groupPurchaseRefundPolicy.findFirst({where:{branchId:{in:assignments.map(item=>item.branchId)},isEnabled:true}});
+            if (configured) throw new AppError('PURCHASE_BRANCH_REQUIRED',422);
+          } else {
+            if (!await tx.packageBranch.findUnique({where:{packageId_branchId:{packageId:packageData.id,branchId:purchaseBranchId}}})) throw new AppError('Package is not available at this branch',422);
+            const snapshot = await capturePolicy(tx,purchaseBranchId,'GROUP_REFUND');
+            snapshot.packageValidDays = packageData.validDays;
+            purchaseSnapshot = snapshot as unknown as Prisma.InputJsonObject;
+          }
           const groupPurchase = await tx.groupPurchase.create({
             data: {
+              purchaseBranchId,
+              ...(purchaseSnapshot && {refundPolicySnapshot:purchaseSnapshot,refundPolicyVersion:Number(purchaseSnapshot.version)}),
               customerId,
               packageId: packageData.id,
               purchaseFlow,
@@ -561,6 +575,7 @@ const createGroupPurchase = async (
 
             const appointment = await tx.appointment.create({
               data: {
+                ...await snapshotData(tx,payload.branchId!,'GROUP_CANCEL'),
                 customerId,
                 branchId: payload.branchId!,
                 staffId: selectedStaffId,
@@ -892,7 +907,7 @@ const getMyGroupPurchases = async (
 
     const redeemedQuantity = redemptionCountMap.get(purchase.id) ?? 0;
 
-    const remainingQuantity = Math.max(0, purchasedQuantity - redeemedQuantity);
+    const remainingQuantity = Math.max(0, purchasedQuantity - redeemedQuantity - purchase.forfeitedQuantity - purchase.refundedQuantity);
 
     const canBookAppointment =
       purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
@@ -1105,7 +1120,7 @@ const getGroupPurchaseById = async (
 
   const purchasedQuantity = purchase.quantity;
 
-  const remainingQuantity = Math.max(0, purchasedQuantity - redeemedQuantity);
+  const remainingQuantity = Math.max(0, purchasedQuantity - redeemedQuantity - purchase.forfeitedQuantity - purchase.refundedQuantity);
 
   const canBookAppointment =
     purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
@@ -1377,7 +1392,9 @@ const createGroupPurchaseAppointment = async (
             },
           });
 
-          if (allocatedCount >= currentPurchase.quantity) {
+          if (purchaseExpired(currentPurchase)) throw new AppError('GROUP_PURCHASE_EXPIRED',409);
+          if (await tx.refundRequest.findFirst({where:{payment:{groupPurchaseId:purchaseId},status:{in:['PENDING','APPROVED','PROCESSING']}}})) throw new AppError('GROUP_PURCHASE_REFUND_IN_PROGRESS',409);
+          if (allocatedCount + currentPurchase.forfeitedQuantity + currentPurchase.refundedQuantity >= currentPurchase.quantity) {
             throw new AppError("No remaining package quantity available", 409);
           }
 
@@ -1433,6 +1450,7 @@ const createGroupPurchaseAppointment = async (
 
           const appointment = await tx.appointment.create({
             data: {
+              ...await snapshotData(tx,branchId,'GROUP_CANCEL'),
               customerId,
               branchId,
               staffId: resolvedStaffId,

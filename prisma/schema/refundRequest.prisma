@@ -27,8 +27,28 @@ model RefundRequest {
   customer User  @relation("CustomerRefundRequests", fields: [customerId], references: [id], onDelete: Restrict)
   reviewer User? @relation("ReviewedRefundRequests", fields: [reviewedBy], references: [id], onDelete: SetNull)
 
-  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  refund  Refund? @relation(fields: [refundId], references: [id], onDelete: SetNull)
+  payment     Payment           @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund      Refund?           @relation(fields: [refundId], references: [id], onDelete: SetNull)
+  // Type of refund/cancellation request
+  requestType RefundRequestType @default(APPOINTMENT_CANCELLATION)
+
+  // Original policy used to calculate eligibility
+  policySnapshot Json?
+  policyVersion  Int?
+
+  // Refund calculation details
+  eligiblePaidAmount Decimal? @db.Decimal(10, 2)
+  refundPercentage   Decimal? @db.Decimal(5, 2)
+  refundDeduction    Decimal? @db.Decimal(10, 2)
+
+  // Cancellation-only request (0% refund)
+  isCancellationOnly Boolean @default(false)
+
+  // Policy evaluation timestamp
+  policyEvaluatedAt DateTime?
+
+  // Idempotency for duplicate request prevention
+  idempotencyKey String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

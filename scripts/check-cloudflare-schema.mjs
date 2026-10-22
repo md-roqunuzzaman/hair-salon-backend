@@ -27,6 +27,10 @@ try {
   await apply(actual, await readFile('cloudflare/migrations/0007_branch_coordinates.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0008_rename_direct_book.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0009_policy_schema.sql', 'utf8'));
+  // Trigger bodies contain semicolons; the structural fingerprint excludes triggers.
+  await apply(actual, (await readFile('cloudflare/migrations/0010_refund_request_entitlements.sql', 'utf8')).split('CREATE TRIGGER')[0]);
+  await apply(actual, await readFile('cloudflare/migrations/0011_branch_group_purchase_policies.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0012_merchant_policy_execution.sql', 'utf8'));
   const fingerprint = async db => {
     const tables = (await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all()).results;
     const result = {};

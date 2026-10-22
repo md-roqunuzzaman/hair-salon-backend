@@ -1,4 +1,4 @@
-import { bookNowFixture, providerEvent } from './book-now-fixture.mjs';
+import { bookNowFixture, providerEvent, policyTestControl } from './book-now-fixture.mjs';
 // Bundled only by build-cloudflare --test. Never included in the deployed entry.
 import { runGroupSafety } from './group-safety-fixture.mjs';
 import worker, { SalonDatabase } from '../worker.mjs';
@@ -18,6 +18,7 @@ export class SalonTestDatabase extends SalonDatabase {
     const url = new URL(request.url);
     if (url.pathname === '/__book-now-fixture') return this.enqueue(async () => Response.json(await bookNowFixture(this.db, (await request.json()).customerId)));
     if (url.pathname === '/__book-now-provider') return this.enqueue(async () => Response.json(await providerEvent(this.db, await request.json())));
+    if(url.pathname==='/__policy-test')return this.enqueue(async()=>Response.json(await policyTestControl(this.db,await request.json())));
     if (url.pathname === '/__book-now-policy') return this.enqueue(async () => {
       const { branchId, data } = await request.json();
       await this.db.branchBookingPolicy.update({ where: { branchId }, data });

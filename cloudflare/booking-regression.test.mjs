@@ -43,7 +43,7 @@ function fixture(t) {
   t.mock.method(console, 'warn', () => {});
   const data = {
     branch: { id: branchId, status: 'ACTIVE', bookingPolicy: {
-      maximumAdvanceBookingDays: 30, minimumBookingNoticeMinutes: 0, slotIntervalMinutes: 30,
+      maximumAdvanceBookingDays: 30, minimumBookingNoticeMinutes: 0, slotIntervalMinutes: 30, cancellationCutoffHours: 12,
       allowedBookingMethods: ['PAY_NOW', 'DEPOSIT', 'RESERVE_NOW'], depositPercentage: 30,
     } },
     service: { name: 'Haircut', translations: { en: { name: 'Haircut' } }, price: new Prisma.Decimal('125.55'), status: 'ACTIVE', durationMinutes: 60, branches: [{ branchId }] },
@@ -79,6 +79,7 @@ function transactionFixture(t) {
     $queryRaw: async () => [{ value: 1 }],
     branch: { findUnique: async () => data.branch },
     branchBookingPolicy: { findUnique: async () => data.branch.bookingPolicy },
+    branchCancellationPolicy: { findUnique: async () => null },
     branchBusinessHour: { findFirst: async () => data.hours },
     staff: { findMany: async () => data.eligible },
     staffSchedule: { findMany: async () => data.schedules },

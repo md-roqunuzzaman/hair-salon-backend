@@ -1,0 +1,1456 @@
+{
+  "info": {
+    "name": "ABC Salon — Merchant Cancellation and Refund Acceptance",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "STAGING TEST DATA ONLY. Run selected steps manually; configure IDs and free slots first. Refunds require admin approval. This collection does not fake Stripe webhooks, call a production account, or automatically deploy. See CANCELLATION_REFUND_POLICY_API.md."
+  },
+  "item": [
+    {
+      "name": "1. Merchant policy configuration (changes future bookings)",
+      "item": [
+        {
+          "name": "Read service-cancellation",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/policy-management/branches/{{branchId}}/service-cancellation"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('serviceVersion', data.version); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Save service-cancellation",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/policy-management/branches/{{branchId}}/service-cancellation",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isEnabled\": true,\n  \"cancellationAllowed\": true,\n  \"refundAllowed\": true,\n  \"minimumCancellationHours\": 6,\n  \"nonRefundable\": false,\n  \"deductionTiers\": [\n    {\n      \"minimumHoursBeforeAppointment\": 48,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 0\n    },\n    {\n      \"minimumHoursBeforeAppointment\": 24,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 20\n    },\n    {\n      \"minimumHoursBeforeAppointment\": 12,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 50\n    },\n    {\n      \"minimumHoursBeforeAppointment\": 6,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 100\n    }\n  ],\n  \"expectedVersion\": {{serviceVersion}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('serviceVersion', data.version); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read group-purchase-refunds",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/policy-management/branches/{{branchId}}/group-purchase-refunds"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('groupRefundVersion', data.version); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Save group-purchase-refunds",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/policy-management/branches/{{branchId}}/group-purchase-refunds",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isEnabled\": true,\n  \"refundAllowed\": true,\n  \"allowPartiallyUsedRefund\": true,\n  \"allowExpiredRefund\": false,\n  \"requireNoActiveAppointments\": true,\n  \"refundTiers\": [\n    {\n      \"minimumHoursAfterPurchase\": 0,\n      \"refundPercentage\": 100\n    },\n    {\n      \"minimumHoursAfterPurchase\": 24,\n      \"refundPercentage\": 80\n    },\n    {\n      \"minimumHoursAfterPurchase\": 72,\n      \"refundPercentage\": 0\n    }\n  ],\n  \"expectedVersion\": {{groupRefundVersion}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('groupRefundVersion', data.version); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read group-purchase-cancellations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/policy-management/branches/{{branchId}}/group-purchase-cancellations"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('groupCancelVersion', data.version); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Save group-purchase-cancellations",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/policy-management/branches/{{branchId}}/group-purchase-cancellations",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isEnabled\": true,\n  \"cancellationAllowed\": true,\n  \"minimumCancellationHours\": 2,\n  \"restorationMinimumHours\": 24,\n  \"lateCancellationOutcome\": \"FORFEITED\",\n  \"expectedVersion\": {{groupCancelVersion}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('groupCancelVersion', data.version); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Customer policy discovery",
+      "item": [
+        {
+          "name": "Service terms",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/branches/{{branchId}}/service-policy"
+          }
+        },
+        {
+          "name": "Group refund terms",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/branches/{{branchId}}/group-purchase-refund-policy"
+          }
+        },
+        {
+          "name": "Group cancellation terms",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/branches/{{branchId}}/group-purchase-cancellation-policy"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Ordinary booking — choose ONE method and ONE payment provider",
+      "item": [
+        {
+          "name": "Create pay-now",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/appointments/pay-now",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"branchId\": \"{{branchId}}\",\n  \"serviceId\": \"{{serviceId}}\",\n  \"date\": \"{{bookingDate}}\",\n  \"startTime\": \"{{startTime}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('appointmentId', data.appointmentId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create deposit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/appointments/deposit",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"branchId\": \"{{branchId}}\",\n  \"serviceId\": \"{{serviceId}}\",\n  \"date\": \"{{bookingDate}}\",\n  \"startTime\": \"{{startTime}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('appointmentId', data.appointmentId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create reserve",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/appointments/reserve",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"branchId\": \"{{branchId}}\",\n  \"serviceId\": \"{{serviceId}}\",\n  \"date\": \"{{bookingDate}}\",\n  \"startTime\": \"{{startTime}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('appointmentId', data.appointmentId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pay full price with Wallet (existing ordinary behavior)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/appointments/{{appointmentId}}/pay-with-wallet",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"useBonus\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create Stripe intent; complete through test checkout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/payments/stripe/create-intent",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"appointmentId\": \"{{appointmentId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('paymentId', data.paymentId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Ordinary cancellation and approval",
+      "item": [
+        {
+          "name": "Preview service cancellation (read only)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/appointments/{{appointmentId}}/preview"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) { const data = pm.response.json().data; pm.environment.set('previewToken', data.previewToken); pm.test('Review eligibility before confirming', () => pm.expect(data.canCancel ?? data.canRequestRefund).to.eql(true)); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm service cancellation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/appointments/{{appointmentId}}/cancel",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Customer requests cancellation\",\n  \"idempotencyKey\": \"{{cancellationKey}}\",\n  \"previewToken\": \"{{previewToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('refundRequestId', data.refundRequestId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My refund requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/refund-requests/my"
+          }
+        },
+        {
+          "name": "Approve positive refund (owner)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/refund-requests/{{refundRequestId}}/review",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"APPROVE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Process approved refund (owner)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/refund-requests/{{refundRequestId}}/process",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Group checkout — choose ONE purchase mode/method",
+      "item": [
+        {
+          "name": "Buy Later with explicit policy branch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/group-purchases/checkout",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"packageId\": \"{{packageId}}\",\n  \"quantity\": 2,\n  \"branchId\": \"{{branchId}}\",\n  \"purchaseFlow\": \"BUY_NOW_BOOK_LATER\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('purchaseId', data.purchaseId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Direct Book PAY_NOW",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/group-purchases/checkout",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"packageId\": \"{{packageId}}\",\n  \"quantity\": 2,\n  \"branchId\": \"{{branchId}}\",\n  \"purchaseFlow\": \"DIRECT_BOOK\",\n  \"bookingMethod\": \"PAY_NOW\",\n  \"date\": \"{{bookingDate}}\",\n  \"startTime\": \"{{startTime}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('purchaseId', data.purchaseId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Direct Book DEPOSIT",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/group-purchases/checkout",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"packageId\": \"{{packageId}}\",\n  \"quantity\": 2,\n  \"branchId\": \"{{branchId}}\",\n  \"purchaseFlow\": \"DIRECT_BOOK\",\n  \"bookingMethod\": \"DEPOSIT\",\n  \"date\": \"{{bookingDate}}\",\n  \"startTime\": \"{{startTime}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('purchaseId', data.purchaseId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Direct Book RESERVE_NOW",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/group-purchases/checkout",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"packageId\": \"{{packageId}}\",\n  \"quantity\": 2,\n  \"branchId\": \"{{branchId}}\",\n  \"purchaseFlow\": \"DIRECT_BOOK\",\n  \"bookingMethod\": \"RESERVE_NOW\",\n  \"date\": \"{{bookingDate}}\",\n  \"startTime\": \"{{startTime}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('purchaseId', data.purchaseId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pay group Wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/group-purchases/{{purchaseId}}/pay-with-wallet",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"useBonus\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create group Stripe intent",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/payments/group-purchase/create-intent",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"purchaseId\": \"{{purchaseId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('paymentId', data.paymentId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Group detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/group-purchases/{{purchaseId}}"
+          }
+        },
+        {
+          "name": "Redeem one entitlement (fresh available slot)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/group-purchases/{{purchaseId}}/book-appointment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"branchId\": \"{{branchId}}\",\n  \"date\": \"{{bookingDate}}\",\n  \"startTime\": \"{{startTime}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('groupAppointmentId', data.appointmentId); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5b. Optional QR/salon collection — DEPOSIT or RESERVE_NOW only, before cancellation",
+      "item": [
+        {
+          "name": "Read ordinary appointment QR",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/appointments/{{appointmentId}}/qr"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('serviceQrValue', data.qrValue); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify ordinary QR (owner)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/appointments/verify-qr",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"qrToken\": \"{{serviceQrValue}}\",\n  \"branchId\": \"{{branchId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Collect ordinary remainder (owner)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/appointments/{{appointmentId}}/remaining-payment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethod\": \"CASH\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Read initial group appointment QR",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/appointments/{{initialAppointmentId}}/qr"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('groupQrValue', data.qrValue); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify group QR (owner)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/appointments/verify-qr",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"qrToken\": \"{{groupQrValue}}\",\n  \"branchId\": \"{{branchId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Collect group remainder/full Reserve Now amount (owner)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/group-purchases/{{purchaseId}}/remaining-payment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethod\": \"CASH\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Cancel a group redemption — no immediate money refund",
+      "item": [
+        {
+          "name": "Preview entitlement cancellation",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/appointments/{{groupAppointmentId}}/preview"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) { const data = pm.response.json().data; pm.environment.set('groupPreviewToken', data.previewToken); pm.test('Review eligibility before confirming', () => pm.expect(data.canCancel ?? data.canRequestRefund).to.eql(true)); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm entitlement cancellation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/group-purchase-appointments/{{groupAppointmentId}}/cancel",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Customer requests cancellation\",\n  \"idempotencyKey\": \"{{cancellationKey}}\",\n  \"previewToken\": \"{{groupPreviewToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Verify quantity after cancellation",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/group-purchases/{{purchaseId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Refund unused group quantity after resolving active appointments",
+      "item": [
+        {
+          "name": "Preview group refund (read only)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/group-purchases/{{purchaseId}}/refund-preview"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) { const data = pm.response.json().data; pm.environment.set('groupRefundPreviewToken', data.previewToken); pm.test('Review eligibility before confirming', () => pm.expect(data.canCancel ?? data.canRequestRefund).to.eql(true)); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Request group refund",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/cancellation-refund/group-purchases/{{purchaseId}}/refund-request",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Refund unused package quantity\",\n  \"idempotencyKey\": \"{{groupRefundKey}}\",\n  \"previewToken\": \"{{groupRefundPreviewToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { const data = pm.response.json().data; pm.environment.set('refundRequestId', data.id); if (data.firstAppointment?.appointmentId) pm.environment.set('initialAppointmentId', data.firstAppointment.appointmentId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve group refund",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/refund-requests/{{refundRequestId}}/review",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"APPROVE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Process group refund",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/refund-requests/{{refundRequestId}}/process",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

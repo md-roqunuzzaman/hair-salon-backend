@@ -1,12 +1,14 @@
 model GroupPurchaseRefundPolicy {
   id String @id @default(uuid())
 
-  packageId String  @unique
-  package   Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  branchId String @unique
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   isEnabled Boolean @default(true)
 
   refundAllowed Boolean @default(true)
+  policyFormat  String  @default("REFUND_TIERS_V1")
+  boundaryMode  String  @default("MINIMUM_INCLUSIVE")
 
   // Refund rules based on hours since purchase
   refundTiers Json
@@ -27,23 +29,38 @@ model GroupPurchaseRefundPolicy {
 model GroupPurchaseCancellationPolicy {
   id String @id @default(uuid())
 
-  packageId String  @unique
-  package   Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  branchId String @unique
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  // =====================================================
+  // POLICY SETTINGS
+  // =====================================================
 
   isEnabled Boolean @default(true)
 
   cancellationAllowed Boolean @default(true)
 
-  // Minimum notice required to cancel an appointment
+  // Minimum hours before appointment start
+  // Cancellation is blocked below this threshold
   minimumCancellationHours Int @default(2)
 
-  // Cancellation within this window restores entitlement
+  // Cancellation at or above this threshold
+  // restores the package entitlement
   restorationMinimumHours Int @default(24)
 
-  // Whether late cancellations forfeit entitlement
-  forfeitOnLateCancellation Boolean @default(true)
+  // Cancellation allowed below restorationMinimumHours
+  // but at or above minimumCancellationHours
+  lateCancellationOutcome EntitlementCancellationOutcome @default(FORFEITED)
+
+  // =====================================================
+  // VERSIONING
+  // =====================================================
 
   version Int @default(1)
+
+  // =====================================================
+  // TIMESTAMPS
+  // =====================================================
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

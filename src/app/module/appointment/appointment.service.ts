@@ -1,3 +1,6 @@
+import { snapshotData } from '../cancellation-refund/policy.snapshot.js';
+import { isSnapshot } from '../cancellation-refund/policy.calculation.js';
+import { cancelWithPolicy, previewAppointment } from '../cancellation-refund/cancellation-refund.service.js';
 import { logUnexpectedError } from "../../utils/normalize-error.js";
 import {
   AppointmentStatus,
@@ -1050,6 +1053,7 @@ const createPayNowAppointment = async (
 
           const appointment = await tx.appointment.create({
             data: {
+              ...await snapshotData(tx,branchId,'SERVICE'),
               customerId,
 
               branchId,
@@ -1466,6 +1470,7 @@ const createDepositAppointment = async (
 
           const appointment = await tx.appointment.create({
             data: {
+              ...await snapshotData(tx,branchId,'SERVICE'),
               customerId,
               branchId,
 
@@ -1880,6 +1885,7 @@ const createReserveAppointment = async (
 
           const appointment = await tx.appointment.create({
             data: {
+              ...await snapshotData(tx,branchId,'SERVICE'),
               customerId,
 
               branchId,
@@ -2873,6 +2879,11 @@ const cancelAppointment = async (
 
   if (role === Role.STAFF) {
     throw new AppError("You are not allowed to cancel this appointment", 403);
+  }
+
+  if (isSnapshot(appointment.cancellationPolicySnapshot) && !appointment.cancellationPolicySnapshot.legacy) {
+    const preview = await previewAppointment(appointmentId,userId,role);
+    return await cancelWithPolicy(appointmentId,userId,role,{reason:payload.reason,idempotencyKey:'existing-route-'+appointmentId,previewToken:preview.previewToken}) as unknown as ICancelAppointmentResponse;
   }
 
   // =====================================================

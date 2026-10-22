@@ -4,6 +4,7 @@ import {
   PackageStatus,
   PackageType,
   Prisma,
+  Role,
   ServiceStatus,
 } from "../../../../generated/prisma/client.js";
 
@@ -957,7 +958,9 @@ const getPackageById = async (
     id: packageData.id,
 
     type: packageData.type,
-    ...(packageData.type === PackageType.GROUP_PURCHASE_PACKAGE && { groupPurchaseOptions: groupPurchaseOptions() }),
+    ...(packageData.type === PackageType.GROUP_PURCHASE_PACKAGE && {
+      groupPurchaseOptions: groupPurchaseOptions(),
+    }),
 
     // ===============================================
     // MULTILINGUAL PACKAGE INFORMATION
@@ -1456,6 +1459,10 @@ const updatePackage = async (
     })),
   };
 };
+
+// =====================================================
+// UPDATE GROUP PURCHASE REFUND POLICY
+// =====================================================
 
 const updatePackageStatus = async (
   packageId: string,
@@ -1975,6 +1982,9 @@ const getBranchPackages = async (
     },
   };
 };
+// =====================================================
+// UPDATE GROUP PURCHASE CANCELLATION POLICY
+// =====================================================
 
 export const packageService = {
   createPackage,

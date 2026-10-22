@@ -1,3 +1,6 @@
+import { isSnapshot } from '../cancellation-refund/policy.calculation.js';
+import { validatePolicyRefund } from '../cancellation-refund/policy-refund.execution.js';
+import { cancelWithPolicy, previewAppointment, previewGroupRefund, requestGroupRefund } from '../cancellation-refund/cancellation-refund.service.js';
 import {
   PaymentProvider,
   PaymentPurpose,
@@ -72,6 +75,21 @@ const createRefundRequest = async (
 
   if (payment.customerId !== customerId) {
     throw new AppError("REFUND_NOT_ALLOWED", 403);
+  }
+
+  const snap = payment.appointment?.cancellationPolicySnapshot ?? payment.groupPurchase?.refundPolicySnapshot;
+  if (isSnapshot(snap) && !snap.legacy) {
+    let created;
+    if (payment.appointment && !payment.appointment.groupPurchaseId) {
+      const preview = await previewAppointment(payment.appointment.id,customerId);
+      if (preview.refund.refundAmount <= 0) throw new AppError('ZERO_REFUND_USE_CANCELLATION_ENDPOINT',422);
+      const result = await cancelWithPolicy(payment.appointment.id,customerId,Role.CUSTOMER,{reason:payload.reason,idempotencyKey:'existing-refund-'+payment.id,previewToken:preview.previewToken}) as {refundRequestId:string};
+      created = await prisma.refundRequest.findUniqueOrThrow({where:{id:result.refundRequestId}});
+    } else if (payment.groupPurchase) {
+      const preview = await previewGroupRefund(payment.groupPurchase.id,customerId);
+      created = await requestGroupRefund(payment.groupPurchase.id,customerId,{reason:payload.reason,idempotencyKey:'existing-refund-'+payment.id,previewToken:preview.previewToken});
+    } else throw new AppError('REFUND_NOT_ALLOWED',409);
+    return {id:created.id,paymentId:created.paymentId,amount:Number(created.amount),currency:payment.currency,status:'PENDING',createdAt:created.createdAt};
   }
 
   // =====================================================
@@ -552,6 +570,7 @@ const reviewRefundRequest = async (
       // =====================================================
 
       const payment = request.payment;
+      const policyExecution = await validatePolicyRefund(tx, request);
 
       const isStripe = payment.provider === PaymentProvider.STRIPE;
 
@@ -569,7 +588,7 @@ const reviewRefundRequest = async (
         .filter((refund) => refund.status === RefundStatus.SUCCEEDED)
         .reduce((sum, refund) => sum + Number(refund.amount), 0);
 
-      const eligibility = calculateRefundEligibility({
+      const eligibility = policyExecution ? {eligible:true,refundableAmount:Number(payment.amount)-alreadyRefunded} : calculateRefundEligibility({
         paymentStatus: payment.status,
         paymentProvider: payment.provider,
         paymentPurpose: payment.purpose,
@@ -599,7 +618,7 @@ const reviewRefundRequest = async (
       // 5. APPOINTMENT REFUND POLICY
       // =====================================================
 
-      if (payment.appointment) {
+      if (payment.appointment && !policyExecution) {
         const appointment = payment.appointment;
         const policy = appointment.branch.bookingPolicy;
 
@@ -645,7 +664,7 @@ const reviewRefundRequest = async (
       // 6. GROUP PURCHASE REFUND POLICY
       // =====================================================
 
-      if (payment.groupPurchase) {
+      if (payment.groupPurchase && !policyExecution) {
         const groupPurchase = payment.groupPurchase;
 
         const hasActiveOrUsedAppointment = groupPurchase.appointments.some(

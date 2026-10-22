@@ -333,7 +333,15 @@ const updatePackageValidationSchema = z.object({
 });
 
 // =====================================================
-// 6. UPDATE PACKAGE STATUS
+// GROUP PURCHASE REFUND POLICY - REFUND TIER VALIDATION
+// =====================================================
+
+// =====================================================
+// UPDATE GROUP PURCHASE REFUND POLICY VALIDATION
+// =====================================================
+
+// =====================================================
+// GROUP PURCHASE REFUND TIER VALIDATION
 // =====================================================
 
 const updatePackageStatusValidationSchema = z.object({
@@ -365,7 +373,7 @@ const assignPackageBranchesValidationSchema = z.object({
 });
 
 // =====================================================
-// 9. EXPORT
+// UPDATE GROUP PURCHASE CANCELLATION POLICY VALIDATION
 // =====================================================
 
 export const packageValidation = {

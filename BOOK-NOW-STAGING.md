@@ -1,8 +1,26 @@
 # Book Now staging testing
 
+## Current cancellation/refund implementation (v12)
+
+See [the merchant policy API and Postman guide](docs/CANCELLATION_REFUND_POLICY_API.md) for the latest rules and migration requirements. Configured Buy Later purchases now require an explicit policy branch, new bookings/purchases capture their terms, and positive refunds retain owner approval. Subsequent group redemption cancellation can restore or forfeit entitlements; initial Direct Booking cancellation remains protected. The historical sections below describe earlier milestones and do not override the v12 guide. No deployment or feature enablement was performed.
+
+## Branch policy conversion v11
+
+Group purchase policy management now uses branch endpoints and unique branch-owned policies. Package-wise policy URLs were removed. Migration v11 uses the explicit user-approved package-to-branch mapping and aborts atomically if any additional policy is unmapped or the target branch assignment is absent. Review [BRANCH-GROUP-POLICIES.md](BRANCH-GROUP-POLICIES.md) and run the read-only mapping audit before deployment. This conversion does not add new refund evaluation rules or a branch-selection rule for Buy Later purchases. No live migration or deployment was performed.
+
+## Latest schema upgrade v10
+
+Cloudflare migration `0010_refund_request_entitlements.sql` adds the new forfeited/refunded quantity counters, RefundRequest policy/calculation/idempotency fields and decimal precision triggers. It classifies historical group refund requests from Payment.purpose, preserves request amounts and maps the old cancellation boolean to RESTORED/FORFEITED before removing that column. Migrations v1-v9 remain unchanged. Do not reset the Durable Object or replace the singleton to apply it.
+
+The full 138-test regression run passed with v10, including schema parity, real adapter decimal/JSON/default roundtrips and migration preservation/constraints. The final expanded public API suite passed all 19 tests, including the new policy management GET/PUT routes, version increments, owner/customer restrictions and manager branch scope. No remote database was changed and no deployment was performed.
+
+Policy management endpoints now exist in the current source. Storage and management API compatibility are verified; this schema update does not implement new cancellation/refund tier evaluation or entitlement accounting rules in the booking/refund services. Existing behavior is preserved.
+
+PostgreSQL rollout is separate and unverified. The worktree contains a user-edited historical policy migration and an earlier-dated decimal precision migration referring to fields created later. Those PostgreSQL files were preserved and require migration-history review before a Node/PostgreSQL rollout. Cloudflare uses its independent SQLite chain through v10.
+
 The direct-booking API enum is now `DIRECT_BOOK`. Frontend requests must use `"purchaseFlow":"DIRECT_BOOK"`; the old name is no longer accepted. `BUY_NOW_BOOK_LATER` and the existing `ENABLE_BOOK_NOW_PURCHASE` flag are unchanged. PostgreSQL migrations `20261022120000_rename_direct_book` and `20261022121000_policy_schema` cover the rename and new policy schema. Cloudflare v8 renames stored values; v9 adds policy tables and nullable snapshots during normal Worker initialization. Historical migrations are unchanged.
 
-The new BranchCancellationPolicy, GroupPurchaseRefundPolicy and GroupPurchaseCancellationPolicy models are synchronized with the generated Cloudflare schema and runtime metadata. Existing purchases/appointments retain null policy snapshots; no historical policy is invented. These are storage additions only: configurable tier evaluation, policy management APIs and snapshot capture at checkout are not implemented by this schema alignment. Existing cancellation/refund behavior remains in force. PostgreSQL migration execution still requires rehearsal on a disposable restored database if that deployment is used.
+The new BranchCancellationPolicy, GroupPurchaseRefundPolicy and GroupPurchaseCancellationPolicy models are synchronized with the generated Cloudflare schema and runtime metadata. Existing purchases/appointments retain null policy snapshots; no historical policy is invented. The current branch cancellation/package refund policy management endpoints are tested on Cloudflare, but configurable tier evaluation and snapshot capture at checkout are not implemented by this schema alignment. Existing cancellation/refund behavior remains in force. PostgreSQL migration execution still requires rehearsal on a disposable restored database if that deployment is used.
 
 Book Now now has a shared environment-controlled opt-in. Its default is disabled in both Node and Cloudflare. No flag or deployed configuration was enabled by this change. Use Stripe test-mode credentials for staging acceptance.
 
@@ -22,7 +40,7 @@ No additional schema migration is introduced by this flag change. The previously
 
 After v9 schema alignment, the complete regression suite passed all 138 tests. This includes all 18 public API tests for signed Buy Later and Direct Booking webhooks, all five payment combinations, policy rejection, concurrent wallet/slot requests and manager branch access. TypeScript checking, schema parity, adapter policy JSON/default roundtrip and v9 migration preservation/constraints passed. PAY_NOW, DEPOSIT (configured strictly between 0 and 100 percent) and RESERVE_NOW are ready for an explicitly enabled public **staging test**. Real Stripe test-account delivery and frontend behaviour on the deployed Worker remain acceptance checks, not automatically certified production readiness.
 
-Production Cloudflare build and schema parity passed after v9 alignment. The current Wrangler staging dry-run stalled without validation output and was interrupted; this run is not certified as a successful deployment check. The earlier pre-v9 dry-run output does not validate the new bundle. Run `npx wrangler deploy --dry-run --env staging` successfully before staging deployment. No publish occurred.
+Production Cloudflare build and schema parity passed after v10 alignment. The current staging dry-run reported `Total Upload: 7144.58 KiB / gzip: 1986.46 KiB`, the expected Durable Object/environment bindings and `--dry-run: exiting now.` Bundle validation completed; the CLI remained open afterward, so a clean zero exit is not certified. No publish occurred.
 
 ## Postman environment
 
@@ -277,12 +295,12 @@ Poll `GET /group-purchases/{{purchaseId}}` until PAID; firstAppointment remains 
 - Buy Later deposit/no-payment options remain unsupported. Supporting them needs a separate product decision about entitlement/payment eligibility.
 - Direct Booking DEPOSIT supports a configured percentage strictly between 0 and 100. The existing regular policy editor accepts 100, but group checkout requires a positive salon remainder. Such a configuration is excluded from groupPurchaseBookingMethods and rejected explicitly; use PAY_NOW for full upfront payment. Changing the meaning of 100% DEPOSIT across both systems needs a product decision.
 - Existing Reserve Now group purchases have no five-minute payment deadline; pending-payment cron does not expire them. This work does not add appointment-time cancellation, no-show inventory release or another reservation lifecycle. Any new release policy requires a separate decision.
-- Existing full-unused group refund and initial Direct Booking cancellation restrictions remain. No merchant cancellation tiers or fee policy were added. Existing refund-request creation/approval eligibility inconsistency remains documented in UNIFIED-GROUP-PURCHASE-AUDIT.md.
+- Initial Direct Booking cancellation restrictions remain. Merchant cancellation tiers, partial group refunds and entitlement restoration/forfeiture are documented in [Cancellation and refund API guide](docs/CANCELLATION_REFUND_POLICY_API.md). Snapshot-backed transactions use that shared policy workflow; historical records retain legacy eligibility and provider restrictions.
 - A repeated **create purchase** request is a new purchase attempt, not a checkout idempotency key. Disable repeated submit in the UI and retain the returned purchaseId for payment retries. Slot/stock/quantity protection remains server-side.
 - Offline tests use real Express, Worker SQLite and HMAC-signed webhook verification with simulated Stripe responses. Real Stripe network delivery, deployed secrets, browser flows and multi-process PostgreSQL behavior still require staging acceptance.
 
 ## Cloudflare staging rollout
 
-Run `npm run test:regression`, `npm run typecheck`, then `npm run cloudflare:build` and `npx wrangler deploy --dry-run --env staging`. Keep the existing database singleton and immutable migrations. Deploy the complete chain through v9; v8 migrates the enum value and v9 adds the new policy storage. Do not reset the database or edit v1-v8 to bypass a checksum failure.
+Run `npm run test:regression`, `npm run typecheck`, then `npm run cloudflare:check:staging`. Keep the existing database singleton and immutable migrations. Deploy the complete chain through v12; v8 migrates the enum value, v9 adds policy storage, v10 upgrades refund requests and entitlement/outcome fields, v11 maps legacy package policies to branches, and v12 adds merchant policy execution. Review the mapping and rollout gates in [Cloudflare policy deployment](docs/CLOUDFLARE_POLICY_DEPLOYMENT.md). Do not reset the database or edit historical migrations to bypass a checksum failure.
 
 When authorized to enable staging, set `ENABLE_BOOK_NOW_PURCHASE` to exact string `true` using `npx wrangler secret put ENABLE_BOOK_NOW_PURCHASE --env staging`, then run `npm run cloudflare:deploy:staging`. No flag was enabled and no deployment was performed by this task. Complete all three Direct Booking method checklists above plus the Buy Later sequence. Use Stripe test keys and the correct test webhook signing secret; do not manually forge webhook JSON in Postman.

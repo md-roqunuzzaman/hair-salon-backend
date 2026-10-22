@@ -438,6 +438,98 @@ const getNearbyBranchesValidationSchema = z.object({
   }),
 });
 
+// =====================================================
+// UPDATE BRANCH CANCELLATION POLICY VALIDATION
+// =====================================================
+
+// =====================================================
+// BRANCH CANCELLATION POLICY - REFUND TIER VALIDATION
+// =====================================================
+
+const refundTierValidationSchema = z
+  .object({
+    minimumHoursBefore: z.number().int().min(0),
+
+    calculationType: z.enum(["PERCENTAGE", "FIXED"]),
+
+    value: z.number().finite().nonnegative(),
+  })
+  .strict()
+  .superRefine((tier, ctx) => {
+    if (tier.calculationType === "PERCENTAGE" && tier.value > 100) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["value"],
+        message: "Refund percentage cannot exceed 100",
+      });
+    }
+
+    if (
+      tier.calculationType === "FIXED" &&
+      Math.round(tier.value * 100) / 100 !== tier.value
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["value"],
+        message: "Fixed refund amount supports at most two decimal places",
+      });
+    }
+  });
+
+// =====================================================
+// UPDATE BRANCH CANCELLATION POLICY VALIDATION
+// =====================================================
+
+const updateCancellationPolicyValidationSchema = z.object({
+  body: z
+    .object({
+      isEnabled: z.boolean(),
+
+      cancellationAllowed: z.boolean(),
+
+      minimumCancellationHours: z.number().int().min(0),
+
+      nonRefundable: z.boolean(),
+
+      refundTiers: z.array(refundTierValidationSchema).min(1),
+    })
+    .strict()
+    .superRefine((policy, ctx) => {
+      const hours = new Set<number>();
+
+      for (const [index, tier] of policy.refundTiers.entries()) {
+        // Duplicate tier check
+        if (hours.has(tier.minimumHoursBefore)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["refundTiers", index, "minimumHoursBefore"],
+            message: "Duplicate refund tier minimum hours",
+          });
+        }
+
+        hours.add(tier.minimumHoursBefore);
+
+        // Tier must not be below minimum cancellation notice
+        if (tier.minimumHoursBefore < policy.minimumCancellationHours) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["refundTiers", index, "minimumHoursBefore"],
+            message: "Refund tier cannot be below minimum cancellation hours",
+          });
+        }
+      }
+
+      // Ensure cancellation window has a matching refund tier
+      if (!hours.has(policy.minimumCancellationHours)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["refundTiers"],
+          message: "Refund tiers must cover the minimum cancellation notice",
+        });
+      }
+    }),
+});
+
 export const branchValidation = {
   createBranchValidationSchema,
   updateBranchValidationSchema,
@@ -450,4 +542,5 @@ export const branchValidation = {
   getBranchDailySeriesValidationSchema,
   getBranchStaffOutputValidationSchema,
   getNearbyBranchesValidationSchema,
+  updateCancellationPolicyValidationSchema,
 };

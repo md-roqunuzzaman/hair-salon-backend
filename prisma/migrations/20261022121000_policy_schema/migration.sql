@@ -1,24 +1,67 @@
--- CreateEnum
+-- =====================================================
+-- 1. CREATE ENUMS
+-- =====================================================
+
 CREATE TYPE "RefundCalculationType" AS ENUM ('PERCENTAGE', 'FIXED');
 
--- CreateEnum
-CREATE TYPE "RefundRequestType" AS ENUM ('APPOINTMENT_CANCELLATION', 'GROUP_PURCHASE_REFUND');
+CREATE TYPE "RefundRequestType" AS ENUM (
+    'APPOINTMENT_CANCELLATION',
+    'GROUP_PURCHASE_REFUND'
+);
 
--- CreateEnum
-CREATE TYPE "EntitlementCancellationOutcome" AS ENUM ('RESTORED', 'FORFEITED');
+CREATE TYPE "EntitlementCancellationOutcome" AS ENUM (
+    'RESTORED',
+    'FORFEITED'
+);
 
--- AlterTable
-ALTER TABLE "Appointment" ADD COLUMN     "cancellationPolicySnapshot" JSONB,
-ADD COLUMN     "cancellationPolicyVersion" INTEGER,
-ADD COLUMN     "entitlementCancellationOutcome" "EntitlementCancellationOutcome";
 
--- AlterTable
-ALTER TABLE "GroupPurchase" ADD COLUMN     "cancellationPolicySnapshot" JSONB,
-ADD COLUMN     "cancellationPolicyVersion" INTEGER,
-ADD COLUMN     "refundPolicySnapshot" JSONB,
-ADD COLUMN     "refundPolicyVersion" INTEGER;
+-- =====================================================
+-- 2. APPOINTMENT POLICY SNAPSHOT
+-- =====================================================
 
--- CreateTable
+ALTER TABLE "Appointment"
+ADD COLUMN "cancellationPolicySnapshot" JSONB,
+ADD COLUMN "cancellationPolicyVersion" INTEGER,
+ADD COLUMN "entitlementCancellationOutcome" "EntitlementCancellationOutcome";
+
+
+-- =====================================================
+-- 3. GROUP PURCHASE POLICY & ENTITLEMENT
+-- =====================================================
+
+ALTER TABLE "GroupPurchase"
+ADD COLUMN "cancellationPolicySnapshot" JSONB,
+ADD COLUMN "cancellationPolicyVersion" INTEGER,
+ADD COLUMN "refundPolicySnapshot" JSONB,
+ADD COLUMN "refundPolicyVersion" INTEGER,
+ADD COLUMN "forfeitedQuantity" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN "refundedQuantity" INTEGER NOT NULL DEFAULT 0;
+
+
+-- =====================================================
+-- 4. REFUND REQUEST EXTENSION
+-- =====================================================
+
+ALTER TABLE "RefundRequest"
+ADD COLUMN "requestType" "RefundRequestType"
+    NOT NULL DEFAULT 'APPOINTMENT_CANCELLATION',
+ADD COLUMN "policySnapshot" JSONB,
+ADD COLUMN "policyVersion" INTEGER,
+ADD COLUMN "eligiblePaidAmount" DECIMAL(12,2),
+ADD COLUMN "refundPercentage" DECIMAL(5,2),
+ADD COLUMN "refundDeduction" DECIMAL(12,2),
+ADD COLUMN "isCancellationOnly" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN "policyEvaluatedAt" TIMESTAMP(3),
+ADD COLUMN "idempotencyKey" TEXT;
+
+CREATE UNIQUE INDEX "RefundRequest_idempotencyKey_key"
+ON "RefundRequest"("idempotencyKey");
+
+
+-- =====================================================
+-- 5. BRANCH CANCELLATION POLICY
+-- =====================================================
+
 CREATE TABLE "BranchCancellationPolicy" (
     "id" TEXT NOT NULL,
     "branchId" TEXT NOT NULL,
@@ -34,7 +77,11 @@ CREATE TABLE "BranchCancellationPolicy" (
     CONSTRAINT "BranchCancellationPolicy_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
+
+-- =====================================================
+-- 6. GROUP PURCHASE REFUND POLICY
+-- =====================================================
+
 CREATE TABLE "GroupPurchaseRefundPolicy" (
     "id" TEXT NOT NULL,
     "packageId" TEXT NOT NULL,
@@ -51,7 +98,11 @@ CREATE TABLE "GroupPurchaseRefundPolicy" (
     CONSTRAINT "GroupPurchaseRefundPolicy_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
+
+-- =====================================================
+-- 7. GROUP PURCHASE CANCELLATION POLICY
+-- =====================================================
+
 CREATE TABLE "GroupPurchaseCancellationPolicy" (
     "id" TEXT NOT NULL,
     "packageId" TEXT NOT NULL,
@@ -59,7 +110,8 @@ CREATE TABLE "GroupPurchaseCancellationPolicy" (
     "cancellationAllowed" BOOLEAN NOT NULL DEFAULT true,
     "minimumCancellationHours" INTEGER NOT NULL DEFAULT 2,
     "restorationMinimumHours" INTEGER NOT NULL DEFAULT 24,
-    "forfeitOnLateCancellation" BOOLEAN NOT NULL DEFAULT true,
+    "lateCancellationOutcome" "EntitlementCancellationOutcome"
+        NOT NULL DEFAULT 'FORFEITED',
     "version" INTEGER NOT NULL DEFAULT 1,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -67,20 +119,43 @@ CREATE TABLE "GroupPurchaseCancellationPolicy" (
     CONSTRAINT "GroupPurchaseCancellationPolicy_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE UNIQUE INDEX "BranchCancellationPolicy_branchId_key" ON "BranchCancellationPolicy"("branchId");
 
--- CreateIndex
-CREATE UNIQUE INDEX "GroupPurchaseRefundPolicy_packageId_key" ON "GroupPurchaseRefundPolicy"("packageId");
+-- =====================================================
+-- 8. UNIQUE INDEXES
+-- =====================================================
 
--- CreateIndex
-CREATE UNIQUE INDEX "GroupPurchaseCancellationPolicy_packageId_key" ON "GroupPurchaseCancellationPolicy"("packageId");
+CREATE UNIQUE INDEX "BranchCancellationPolicy_branchId_key"
+ON "BranchCancellationPolicy"("branchId");
 
--- AddForeignKey
-ALTER TABLE "BranchCancellationPolicy" ADD CONSTRAINT "BranchCancellationPolicy_branchId_fkey" FOREIGN KEY ("branchId") REFERENCES "Branch"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+CREATE UNIQUE INDEX "GroupPurchaseRefundPolicy_packageId_key"
+ON "GroupPurchaseRefundPolicy"("packageId");
 
--- AddForeignKey
-ALTER TABLE "GroupPurchaseRefundPolicy" ADD CONSTRAINT "GroupPurchaseRefundPolicy_packageId_fkey" FOREIGN KEY ("packageId") REFERENCES "Package"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+CREATE UNIQUE INDEX "GroupPurchaseCancellationPolicy_packageId_key"
+ON "GroupPurchaseCancellationPolicy"("packageId");
 
--- AddForeignKey
-ALTER TABLE "GroupPurchaseCancellationPolicy" ADD CONSTRAINT "GroupPurchaseCancellationPolicy_packageId_fkey" FOREIGN KEY ("packageId") REFERENCES "Package"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- =====================================================
+-- 9. FOREIGN KEYS
+-- =====================================================
+
+ALTER TABLE "BranchCancellationPolicy"
+ADD CONSTRAINT "BranchCancellationPolicy_branchId_fkey"
+FOREIGN KEY ("branchId")
+REFERENCES "Branch"("id")
+ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE "GroupPurchaseRefundPolicy"
+ADD CONSTRAINT "GroupPurchaseRefundPolicy_packageId_fkey"
+FOREIGN KEY ("packageId")
+REFERENCES "Package"("id")
+ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE "GroupPurchaseCancellationPolicy"
+ADD CONSTRAINT "GroupPurchaseCancellationPolicy_packageId_fkey"
+FOREIGN KEY ("packageId")
+REFERENCES "Package"("id")
+ON DELETE CASCADE ON UPDATE CASCADE;
+
+UPDATE "RefundRequest"
+SET "requestType" = 'GROUP_PURCHASE_REFUND'
+WHERE "id" = '1cfcf2bc-9d2b-4fb2-847c-aa3bfa02e025';
