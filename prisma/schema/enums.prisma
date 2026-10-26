@@ -170,3 +170,19 @@ enum EntitlementCancellationOutcome {
   RESTORED
   FORFEITED
 }
+
+enum BannerStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+}
+
+enum BannerScope {
+  BRAND_WIDE
+  SELECTED_BRANCHES
+}
+
+enum BannerMediaType {
+  IMAGE
+  VIDEO
+}

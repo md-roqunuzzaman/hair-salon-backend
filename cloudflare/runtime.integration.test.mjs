@@ -127,6 +127,23 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
     cookie = '';
     const signedIn = await api('/api/v1/auth/login', { method: 'POST', body: { email, password } });
     cookie = `accessToken=${signedIn.data.data.accessToken}`;
+    if (email === 'owner@example.com' || email === 'manager@example.com') {
+      const selected = (await api('/api/v1/banners', { method: 'POST', status: 201,
+        body: { title: 'Branch launch', branchIds: [booking.branchId] } })).data.data;
+      assert.equal(selected.status, 'DRAFT');
+      assert.equal(selected.scope, 'SELECTED_BRANCHES');
+      assert.deepEqual(selected.branchIds, [booking.branchId]);
+      assert.deepEqual(selected.media, []);
+      await api(`/api/v1/banners/${selected.id}/media`, { method: 'POST', status: 400,
+        body: { objectKey: `banners/${crypto.randomUUID()}/${crypto.randomUUID()}.jpg`, mediaType: 'IMAGE' } });
+      const missingBannerId = crypto.randomUUID();
+      const missingBanner = await api(`/api/v1/banners/${missingBannerId}/media`, { method: 'POST', status: 404,
+        body: { objectKey: `banners/${missingBannerId}/${crypto.randomUUID()}.jpg`, mediaType: 'IMAGE' } });
+      assert.equal(missingBanner.data.message, 'BANNER_NOT_FOUND');
+      const brandWide = await api('/api/v1/banners', { method: 'POST', status: email === 'owner@example.com' ? 201 : 403,
+        body: { title: 'Brand launch', scope: 'BRAND_WIDE' } });
+      if (email === 'owner@example.com') assert.equal(brandWide.data.data.scope, 'BRAND_WIDE');
+    }
     const list = (await api('/api/v1/notifications')).data.data;
     const isStaff = email === 'stylist@example.com';
     const expectedTotal = isStaff ? 2 : 4;

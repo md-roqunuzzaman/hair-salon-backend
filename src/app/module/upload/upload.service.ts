@@ -69,6 +69,9 @@ const getPurposeFolder = (purpose: ImagePurpose): string => {
     case "PROMOTION_IMAGE":
       return "promotions";
 
+    case "BANNER_MEDIA":
+      return "banners";
+
     default:
       throw new AppError("UPLOAD_NOT_ALLOWED", 403);
   }
@@ -104,6 +107,9 @@ const getPurposeFromFolder = (folder: string): ImagePurpose => {
     case "promotions":
       return "PROMOTION_IMAGE";
 
+    case "banners":
+      return "BANNER_MEDIA";
+
     default:
       throw new AppError("UPLOAD_NOT_ALLOWED", 403);
   }
@@ -126,7 +132,24 @@ const getExpectedObjectPrefix = (
 // CONTENT TYPE -> EXTENSION
 // =====================================================
 
-const getFileExtension = (contentType: string): string => {
+const getFileExtension = (
+  contentType: string,
+  purpose: ImagePurpose,
+): string => {
+  if (purpose === "BANNER_MEDIA") {
+    switch (contentType) {
+      case "image/jpeg":
+        return "jpg";
+
+      case "video/mp4":
+        return "mp4";
+
+      default:
+        throw new AppError("INVALID_BANNER_MEDIA_TYPE", 400);
+    }
+  }
+
+  // Preserve existing image upload behavior.
   switch (contentType) {
     case "image/jpeg":
       return "jpg";
@@ -181,12 +204,32 @@ const validateImageUploadAccess = async (
     userId: string;
     role: Role;
   },
-) => {
+): Promise<void> => {
+  if (purpose === "BANNER_MEDIA") {
+    console.log("========== BANNER UPLOAD DEBUG ==========");
+    console.log("Purpose:", purpose);
+    console.log("Entity ID:", entityId);
+    console.log("Requester ID:", requester.userId);
+    console.log("Requester Role:", requester.role);
+
+    const banner = await prisma.banner.findUnique({
+      where: { id: entityId },
+      select: {
+        id: true,
+        brandId: true,
+        scope: true,
+        branches: {
+          select: { branchId: true },
+        },
+      },
+    });
+
+    console.log("Banner Found:", banner);
+    console.log("=========================================");
+  }
   // ===================================================
   // USER_AVATAR
-  // Any authenticated user can manage own avatar.
   // ===================================================
-
   if (purpose === "USER_AVATAR") {
     if (entityId !== requester.userId) {
       throw new AppError("UPLOAD_NOT_ALLOWED", 403);
@@ -197,9 +240,7 @@ const validateImageUploadAccess = async (
 
   // ===================================================
   // BRAND_LOGO
-  // BRAND_OWNER only
   // ===================================================
-
   if (purpose === "BRAND_LOGO") {
     if (requester.role !== Role.BRAND_OWNER) {
       throw new AppError("UPLOAD_NOT_ALLOWED", 403);
@@ -209,7 +250,6 @@ const validateImageUploadAccess = async (
       where: {
         id: entityId,
       },
-
       select: {
         id: true,
       },
@@ -224,15 +264,12 @@ const validateImageUploadAccess = async (
 
   // ===================================================
   // BRANCH_IMAGE
-  // BRAND_OWNER or assigned BRANCH_MANAGER
   // ===================================================
-
   if (purpose === "BRANCH_IMAGE") {
     const branch = await prisma.branch.findUnique({
       where: {
         id: entityId,
       },
-
       select: {
         id: true,
       },
@@ -251,11 +288,9 @@ const validateImageUploadAccess = async (
         where: {
           userId_branchId: {
             userId: requester.userId,
-
             branchId: entityId,
           },
         },
-
         select: {
           userId: true,
         },
@@ -271,9 +306,7 @@ const validateImageUploadAccess = async (
 
   // ===================================================
   // SERVICE_IMAGE
-  // BRAND_OWNER only
   // ===================================================
-
   if (purpose === "SERVICE_IMAGE") {
     if (requester.role !== Role.BRAND_OWNER) {
       throw new AppError("UPLOAD_NOT_ALLOWED", 403);
@@ -283,7 +316,6 @@ const validateImageUploadAccess = async (
       where: {
         id: entityId,
       },
-
       select: {
         id: true,
       },
@@ -298,9 +330,7 @@ const validateImageUploadAccess = async (
 
   // ===================================================
   // PACKAGE_IMAGE
-  // BRAND_OWNER only
   // ===================================================
-
   if (purpose === "PACKAGE_IMAGE") {
     if (requester.role !== Role.BRAND_OWNER) {
       throw new AppError("UPLOAD_NOT_ALLOWED", 403);
@@ -310,7 +340,6 @@ const validateImageUploadAccess = async (
       where: {
         id: entityId,
       },
-
       select: {
         id: true,
       },
@@ -325,18 +354,14 @@ const validateImageUploadAccess = async (
 
   // ===================================================
   // STAFF_IMAGE
-  // BRAND_OWNER or manager of staff branch
   // ===================================================
-
   if (purpose === "STAFF_IMAGE") {
     const staff = await prisma.staff.findUnique({
       where: {
         id: entityId,
       },
-
       select: {
         id: true,
-
         branches: {
           select: {
             branchId: true,
@@ -358,7 +383,6 @@ const validateImageUploadAccess = async (
         where: {
           userId: requester.userId,
         },
-
         select: {
           branchId: true,
         },
@@ -382,10 +406,7 @@ const validateImageUploadAccess = async (
 
   // ===================================================
   // REVIEW_IMAGE
-  // CUSTOMER can manage only own review images.
-  // entityId = customer userId
   // ===================================================
-
   if (purpose === "REVIEW_IMAGE") {
     if (requester.role !== Role.CUSTOMER || entityId !== requester.userId) {
       throw new AppError("UPLOAD_NOT_ALLOWED", 403);
@@ -396,9 +417,7 @@ const validateImageUploadAccess = async (
 
   // ===================================================
   // PROMOTION_IMAGE
-  // BRAND_OWNER only
   // ===================================================
-
   if (purpose === "PROMOTION_IMAGE") {
     if (requester.role !== Role.BRAND_OWNER) {
       throw new AppError("UPLOAD_NOT_ALLOWED", 403);
@@ -408,7 +427,6 @@ const validateImageUploadAccess = async (
       where: {
         id: entityId,
       },
-
       select: {
         id: true,
       },
@@ -421,9 +439,94 @@ const validateImageUploadAccess = async (
     return;
   }
 
+  // ===================================================
+  // BANNER_MEDIA
+  // entityId = bannerId
+  // ===================================================
+  if (purpose === "BANNER_MEDIA") {
+    if (
+      requester.role !== Role.BRAND_OWNER &&
+      requester.role !== Role.BRANCH_MANAGER
+    ) {
+      throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+    }
+
+    const banner = await prisma.banner.findUnique({
+      where: {
+        id: entityId,
+      },
+      select: {
+        id: true,
+        brandId: true,
+        scope: true,
+        branches: {
+          select: {
+            branchId: true,
+          },
+        },
+      },
+    });
+
+    if (!banner) {
+      throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+    }
+
+    // BRAND_OWNER
+    // Existing single-brand, global BRAND_OWNER model.
+    if (requester.role === Role.BRAND_OWNER) {
+      const brand = await prisma.brand.findUnique({
+        where: {
+          id: banner.brandId,
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (!brand) {
+        throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+      }
+
+      return;
+    }
+
+    // BRANCH_MANAGER
+    // Cannot manage brand-wide banners.
+    if (banner.scope !== "SELECTED_BRANCHES") {
+      throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+    }
+
+    const managerBranches = await prisma.branchManagerBranch.findMany({
+      where: {
+        userId: requester.userId,
+      },
+      select: {
+        branchId: true,
+      },
+    });
+
+    const allowedBranchIds = new Set(
+      managerBranches.map((item) => item.branchId),
+    );
+
+    // Manager must be assigned to every branch
+    // associated with this banner.
+    const hasAccess =
+      banner.branches.length > 0 &&
+      banner.branches.every((item) => allowedBranchIds.has(item.branchId));
+
+    if (!hasAccess) {
+      throw new AppError("UPLOAD_NOT_ALLOWED", 403);
+    }
+
+    return;
+  }
+
+  // ===================================================
+  // DEFAULT DENY
+  // ===================================================
   throw new AppError("UPLOAD_NOT_ALLOWED", 403);
 };
-
 // =====================================================
 // CHECK IF IMAGE IS STILL REFERENCED BY DATABASE
 //
@@ -444,82 +547,111 @@ const isImageReferenced = async (objectKey: string): Promise<boolean> => {
     serviceImage,
     packageImage,
     reviewImage,
+    bannerMedia,
   ] = await Promise.all([
+    // ===================================================
+    // USER AVATAR
+    // ===================================================
     prisma.user.findFirst({
       where: {
         avatarObjectKey: objectKey,
       },
-
       select: {
         id: true,
       },
     }),
 
+    // ===================================================
+    // BRAND LOGO
+    // ===================================================
     prisma.brand.findFirst({
       where: {
         logoObjectKey: objectKey,
       },
-
       select: {
         id: true,
       },
     }),
 
+    // ===================================================
+    // BRANCH IMAGE
+    // ===================================================
     prisma.branch.findFirst({
       where: {
         imageObjectKey: objectKey,
       },
-
       select: {
         id: true,
       },
     }),
 
+    // ===================================================
+    // STAFF AVATAR
+    // ===================================================
     prisma.staff.findFirst({
       where: {
         avatarObjectKey: objectKey,
       },
-
       select: {
         id: true,
       },
     }),
 
+    // ===================================================
+    // PROMOTION IMAGE
+    // ===================================================
     prisma.promotion.findFirst({
       where: {
         imageObjectKey: objectKey,
       },
-
       select: {
         id: true,
       },
     }),
 
+    // ===================================================
+    // SERVICE IMAGE
+    // ===================================================
     prisma.serviceImage.findFirst({
       where: {
         objectKey,
       },
-
       select: {
         id: true,
       },
     }),
 
+    // ===================================================
+    // PACKAGE IMAGE
+    // ===================================================
     prisma.packageImage.findFirst({
       where: {
         objectKey,
       },
-
       select: {
         id: true,
       },
     }),
 
+    // ===================================================
+    // REVIEW IMAGE
+    // ===================================================
     prisma.reviewImage.findFirst({
       where: {
         objectKey,
       },
+      select: {
+        id: true,
+      },
+    }),
 
+    // ===================================================
+    // BANNER IMAGE / VIDEO (NEW)
+    // ===================================================
+    prisma.bannerMedia.findFirst({
+      where: {
+        objectKey,
+      },
       select: {
         id: true,
       },
@@ -534,10 +666,10 @@ const isImageReferenced = async (objectKey: string): Promise<boolean> => {
     promotion ||
     serviceImage ||
     packageImage ||
-    reviewImage,
+    reviewImage ||
+    bannerMedia,
   );
 };
-
 // =====================================================
 // PRESIGN IMAGE UPLOAD
 // =====================================================
@@ -556,26 +688,47 @@ const presignImageUpload = async (
   await validateImageUploadAccess(payload.purpose, payload.entityId, requester);
 
   // ===================================================
-  // 2. DEFENSE-IN-DEPTH SIZE CHECK
-  //
-  // Zod already performs this check.
-  // Service keeps it too in case called elsewhere.
+  // 2. VALIDATE CONTENT TYPE & EXTENSION
   // ===================================================
 
-  if (payload.fileSize <= 0 || payload.fileSize > MAX_IMAGE_SIZE_BYTES) {
-    throw new AppError("IMAGE_TOO_LARGE", 400);
+  const extension = getFileExtension(payload.contentType, payload.purpose);
+
+  // ===================================================
+  // 3. DETERMINE MAXIMUM FILE SIZE
+  // ===================================================
+
+  const MAX_BANNER_VIDEO_SIZE_BYTES = 50 * 1024 * 1024;
+
+  const isBannerVideo =
+    payload.purpose === "BANNER_MEDIA" && payload.contentType === "video/mp4";
+
+  const maxFileSize = isBannerVideo
+    ? MAX_BANNER_VIDEO_SIZE_BYTES
+    : MAX_IMAGE_SIZE_BYTES;
+
+  // ===================================================
+  // 4. VALIDATE FILE SIZE
+  // ===================================================
+
+  if (!Number.isSafeInteger(payload.fileSize) || payload.fileSize <= 0) {
+    throw new AppError("INVALID_IMAGE_SIZE", 400);
+  }
+
+  if (payload.fileSize > maxFileSize) {
+    throw new AppError(
+      isBannerVideo ? "BANNER_VIDEO_TOO_LARGE" : "IMAGE_TOO_LARGE",
+      400,
+    );
   }
 
   // ===================================================
-  // 3. DETERMINE FOLDER / EXTENSION
+  // 5. DETERMINE STORAGE FOLDER
   // ===================================================
 
   const folder = getPurposeFolder(payload.purpose);
 
-  const extension = getFileExtension(payload.contentType);
-
   // ===================================================
-  // 4. GENERATE RANDOM OBJECT KEY
+  // 6. GENERATE UNIQUE OBJECT KEY
   // ===================================================
 
   const fileId = crypto.randomUUID();
@@ -583,80 +736,171 @@ const presignImageUpload = async (
   const objectKey = `${folder}/${payload.entityId}/${fileId}.${extension}`;
 
   // ===================================================
-  // 5. CREATE PUT COMMAND
+  // 7. CREATE R2 PUT COMMAND
   // ===================================================
 
   const command = new PutObjectCommand({
     Bucket: config.r2.bucketName,
-
     Key: objectKey,
-
     ContentType: payload.contentType,
   });
 
   // ===================================================
-  // 6. SIGN PUT URL
+  // 8. GENERATE PRESIGNED UPLOAD URL
   // ===================================================
 
   const uploadUrl = await getSignedUrl(r2Client, command, {
     expiresIn: PRESIGNED_UPLOAD_EXPIRY_SECONDS,
   });
 
+  // ===================================================
+  // 9. RETURN UPLOAD INFORMATION
+  // ===================================================
+
   return {
     uploadUrl,
     objectKey,
-
     expiresInSeconds: PRESIGNED_UPLOAD_EXPIRY_SECONDS,
   };
 };
-
 // =====================================================
 // VERIFY IMAGE EXISTS
 // =====================================================
 
 const verifyImageExists = async (objectKey: string): Promise<void> => {
   try {
+    // ===================================================
+    // 1. IDENTIFY UPLOAD PURPOSE FROM OBJECT KEY
+    // ===================================================
+
+    const { folder } = parseObjectKey(objectKey);
+
+    const purpose = getPurposeFromFolder(folder);
+
+    const isBannerMedia = purpose === "BANNER_MEDIA";
+
+    // ===================================================
+    // 2. GET OBJECT METADATA FROM R2
+    // ===================================================
+
     const command = new HeadObjectCommand({
       Bucket: config.r2.bucketName,
-
       Key: objectKey,
     });
 
     const object = await r2Client.send(command);
 
-    // =================================================
-    // 1. CONTENT TYPE
-    // =================================================
+    // ===================================================
+    // 3. VALIDATE CONTENT TYPE
+    // ===================================================
 
-    if (
-      !object.ContentType ||
-      !ALLOWED_IMAGE_CONTENT_TYPES.includes(object.ContentType)
-    ) {
+    const contentType = object.ContentType;
+
+    if (!contentType) {
       throw new AppError("INVALID_IMAGE_TYPE", 400);
     }
 
-    // =================================================
-    // 2. ACTUAL FILE SIZE
-    // =================================================
+    if (isBannerMedia) {
+      const allowedBannerTypes = ["image/jpeg", "video/mp4"];
 
-    if (typeof object.ContentLength !== "number" || object.ContentLength <= 0) {
+      if (!allowedBannerTypes.includes(contentType)) {
+        throw new AppError("INVALID_BANNER_MEDIA_TYPE", 400);
+      }
+    } else {
+      if (!ALLOWED_IMAGE_CONTENT_TYPES.includes(contentType)) {
+        throw new AppError("INVALID_IMAGE_TYPE", 400);
+      }
+    }
+
+    // ===================================================
+    // 4. VALIDATE ACTUAL FILE SIZE
+    // ===================================================
+
+    const actualFileSize = object.ContentLength;
+
+    if (
+      typeof actualFileSize !== "number" ||
+      !Number.isSafeInteger(actualFileSize) ||
+      actualFileSize <= 0
+    ) {
       throw new AppError("INVALID_IMAGE_SIZE", 400);
     }
 
-    if (object.ContentLength > MAX_IMAGE_SIZE_BYTES) {
-      throw new AppError("IMAGE_TOO_LARGE", 400);
+    // ===================================================
+    // 5. DETERMINE MAXIMUM ALLOWED SIZE
+    // ===================================================
+
+    const MAX_BANNER_VIDEO_SIZE_BYTES = 50 * 1024 * 1024;
+
+    const isBannerVideo = isBannerMedia && contentType === "video/mp4";
+
+    const maxFileSize = isBannerVideo
+      ? MAX_BANNER_VIDEO_SIZE_BYTES
+      : MAX_IMAGE_SIZE_BYTES;
+
+    // ===================================================
+    // 6. ENFORCE ACTUAL FILE SIZE LIMIT
+    // ===================================================
+
+    if (actualFileSize > maxFileSize) {
+      throw new AppError(
+        isBannerVideo ? "BANNER_VIDEO_TOO_LARGE" : "IMAGE_TOO_LARGE",
+        400,
+      );
+    }
+
+    // ===================================================
+    // 7. VERIFY FILE EXTENSION MATCHES CONTENT TYPE
+    // ===================================================
+
+    if (isBannerMedia) {
+      const expectedExtension = getFileExtension(contentType, purpose);
+
+      const { fileName } = parseObjectKey(objectKey);
+
+      if (!fileName.toLowerCase().endsWith(`.${expectedExtension}`)) {
+        throw new AppError("INVALID_BANNER_MEDIA_TYPE", 400);
+      }
     }
   } catch (error) {
+    // ===================================================
+    // 8. PRESERVE APPLICATION ERRORS
+    // ===================================================
+
     if (error instanceof AppError) {
       throw error;
     }
 
-    const storageError = error as { name?: string; $metadata?: { httpStatusCode?: number } };
-    if (storageError?.$metadata?.httpStatusCode === 404 || ["NotFound", "NoSuchKey"].includes(storageError?.name ?? "")) {
+    // ===================================================
+    // 9. HANDLE R2 OBJECT NOT FOUND
+    // ===================================================
+
+    const storageError = error as {
+      name?: string;
+      $metadata?: {
+        httpStatusCode?: number;
+      };
+    };
+
+    if (
+      storageError?.$metadata?.httpStatusCode === 404 ||
+      ["NotFound", "NoSuchKey"].includes(storageError?.name ?? "")
+    ) {
       throw new AppError("UPLOADED_IMAGE_NOT_FOUND", 404);
     }
-    logUnexpectedError(error, { source: "r2-image-verification" });
-    throw new AppError("Image storage is temporarily unavailable. Please try again later", 502);
+
+    // ===================================================
+    // 10. HANDLE STORAGE ERRORS
+    // ===================================================
+
+    logUnexpectedError(error, {
+      source: "r2-image-verification",
+    });
+
+    throw new AppError(
+      "Image storage is temporarily unavailable. Please try again later",
+      502,
+    );
   }
 };
 

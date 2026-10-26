@@ -198,6 +198,65 @@ model AuditLog {
   @@index([createdAt])
 }
 
+model Banner {
+  id          String       @id @default(uuid())
+  brandId     String
+  title       String
+  description String?
+  status      BannerStatus @default(DRAFT)
+  scope       BannerScope  @default(SELECTED_BRANCHES)
+
+  startAt DateTime?
+  endAt   DateTime?
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  brand    Brand          @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  branches BannerBranch[]
+  media    BannerMedia[]
+
+  // Indexes
+  @@index([brandId, status])
+  @@index([brandId, scope])
+  @@index([startAt, endAt])
+  @@index([sortOrder])
+}
+
+model BannerBranch {
+  bannerId String
+  branchId String
+
+  // Relations
+  banner Banner @relation(fields: [bannerId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([bannerId, branchId])
+  @@index([branchId])
+}
+
+model BannerMedia {
+  id        String          @id @default(uuid())
+  bannerId  String
+  mediaType BannerMediaType
+
+  // Cloudflare R2 object key
+  objectKey String
+
+  // Display order within the banner
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  banner Banner @relation(fields: [bannerId], references: [id], onDelete: Cascade)
+
+  @@index([bannerId, sortOrder])
+}
+
 model Branch {
   id                              String                           @id @default(uuid())
   name                            String
@@ -220,6 +279,7 @@ model Branch {
   appointments                    Appointment[]
   promotions                      PromotionBranch[]
   reviews                         Review[]
+  bannerAssignments               BannerBranch[]
   cancellationPolicy              BranchCancellationPolicy?
   groupPurchaseRefundPolicy       GroupPurchaseRefundPolicy?
   groupPurchaseCancellationPolicy GroupPurchaseCancellationPolicy?
@@ -297,13 +357,14 @@ model BranchHourlyCapacity {
 }
 
 model Brand {
-  id            String  @id @default(uuid())
+  id            String   @id @default(uuid())
   name          String
   description   String?
   phone         String?
   email         String?
   logoObjectKey String?
   translations  Json?
+  banners       Banner[]
 
   primaryColor    String @default("#0F766E")
   secondaryColor  String @default("#B45309")
@@ -489,6 +550,22 @@ enum RefundRequestType {
 enum EntitlementCancellationOutcome {
   RESTORED
   FORFEITED
+}
+
+enum BannerStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+}
+
+enum BannerScope {
+  BRAND_WIDE
+  SELECTED_BRANCHES
+}
+
+enum BannerMediaType {
+  IMAGE
+  VIDEO
 }
 
 model GroupPurchase {

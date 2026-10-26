@@ -1,11 +1,12 @@
 model Brand {
-  id            String  @id @default(uuid())
+  id            String   @id @default(uuid())
   name          String
   description   String?
   phone         String?
   email         String?
   logoObjectKey String?
   translations  Json?
+  banners       Banner[]
 
   primaryColor    String @default("#0F766E")
   secondaryColor  String @default("#B45309")

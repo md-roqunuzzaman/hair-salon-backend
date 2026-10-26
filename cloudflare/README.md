@@ -80,6 +80,21 @@ Setup requires a secret of at least 32 characters, accepts POST only and permane
 
 ## Production cutover
 
+### Banner schema upgrade (v13)
+
+`0013_banner_management.sql` adds `Banner`, `BannerBranch` and `BannerMedia`, including indexes and cascading foreign keys. The Cloudflare build generates the Prisma client and bundles this migration; each existing Durable Object applies it once on initialization, preserving existing records. PostgreSQL migrations under `prisma/migrations` are not used by this runtime.
+
+Before deploying this schema change, run:
+
+```powershell
+npm run typecheck
+npm run cloudflare:check
+npm run test:cloudflare:migrations
+npm run test:cloudflare:api
+```
+
+Deploy staging with `npm run cloudflare:deploy:staging`, then production with `npm run cloudflare:deploy`. Existing secrets and the `salon-v1` database identity must be retained. Banner JPEG/MP4 uploads use the existing R2 credentials and bucket CORS configuration.
+
 The default Worker is `hair-salon-backend`; staging has a separate Worker and Durable Object namespace. Prepare `.cloudflare-secrets.production.json` with production settings and separate R2 storage, then:
 
 ```powershell

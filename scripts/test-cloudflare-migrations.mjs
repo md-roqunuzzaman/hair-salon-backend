@@ -7,5 +7,5 @@ try {
   const response = await mf.dispatchFetch('https://test/');
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { preserved: true, repeatable: true, foreignKey: true, checksumProtected: true });
-  console.log('Existing databases upgrade to v12: explicit branch mapping preserves policy identity/settings/versions/timestamps; unmapped or unassigned policies roll back; historical tier semantics, null purchase ownership, money, idempotency, FK and checksum checks pass.');
+  console.log('Existing databases upgrade to v13: banner defaults, media persistence, foreign keys and cascade deletes pass; wallet data and policy settings remain intact; repeated initialization and checksum protection pass.');
 } finally { await mf.dispose(); }

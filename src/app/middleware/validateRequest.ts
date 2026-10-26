@@ -9,6 +9,8 @@ export const validateRequest = (zodSchema: z.ZodObject) => {
   return catchAsync(async (req: Request, res: Response, next: NextFunction) => {
     const result = zodSchema.safeParse({
       body: req.body ?? {},
+      params: req.params,
+      query: req.query,
     });
 
     if (!result.success) {

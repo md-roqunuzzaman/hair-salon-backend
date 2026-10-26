@@ -20,6 +20,7 @@ model Branch {
   appointments                    Appointment[]
   promotions                      PromotionBranch[]
   reviews                         Review[]
+  bannerAssignments               BannerBranch[]
   cancellationPolicy              BranchCancellationPolicy?
   groupPurchaseRefundPolicy       GroupPurchaseRefundPolicy?
   groupPurchaseCancellationPolicy GroupPurchaseCancellationPolicy?

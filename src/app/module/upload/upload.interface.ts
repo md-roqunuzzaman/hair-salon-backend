@@ -6,7 +6,8 @@ export type ImagePurpose =
   | "PACKAGE_IMAGE"
   | "STAFF_IMAGE"
   | "REVIEW_IMAGE"
-  | "PROMOTION_IMAGE";
+  | "PROMOTION_IMAGE"
+  | "BANNER_MEDIA";
 
 export interface IPresignImageUploadPayload {
   fileName: string;
@@ -30,12 +31,15 @@ export interface IPresignImageUploadResponse {
 
 export interface IConfirmImageUploadPayload {
   objectKey: string;
+
   purpose: ImagePurpose;
+
   entityId: string;
 }
 
 export interface IConfirmImageUploadResponse {
   objectKey: string;
+
   url: string;
 }
 

@@ -102,8 +102,26 @@ export class MigrationFixture {
     storage.sql.exec('INSERT INTO PackageBranch (packageId,branchId) VALUES (?,?),(?,?)', mappedPackage,mappedBranch,mappedPackage,'branch');
     const refundBefore = storage.sql.exec("SELECT * FROM GroupPurchaseRefundPolicy WHERE id='mapped-refund'").one();
     const cancelBefore = storage.sql.exec("SELECT * FROM GroupPurchaseCancellationPolicy WHERE id='mapped-cancel'").one();
+    // Upgrade a populated v12 database with the new banner tables.
+    applyMigrations(storage, migrations.slice(0, 12));
+    const walletBeforeBanners = JSON.stringify(storage.sql.exec("SELECT * FROM Wallet WHERE id='wallet'").one());
+    storage.sql.exec("INSERT INTO Brand (id,name,updatedAt) VALUES ('banner-brand','Banner brand',1)");
     applyMigrations(storage, migrations);
+    storage.sql.exec("INSERT INTO Banner (id,brandId,title,updatedAt) VALUES ('banner','banner-brand','Launch',1)");
+    storage.sql.exec("INSERT INTO BannerBranch (bannerId,branchId) VALUES ('banner','branch')");
+    storage.sql.exec("INSERT INTO BannerMedia (id,bannerId,mediaType,objectKey) VALUES ('image','banner','IMAGE','banners/banner/image.jpg'),('video','banner','VIDEO','banners/banner/video.mp4')");
     applyMigrations(storage, migrations);
+    const banner = storage.sql.exec("SELECT status,scope,sortOrder FROM Banner WHERE id='banner'").one();
+    if (banner.status !== 'DRAFT' || banner.scope !== 'SELECTED_BRANCHES' || banner.sortOrder !== 0) throw new Error('Banner defaults changed');
+    if (storage.sql.exec("SELECT COUNT(*) AS count FROM BannerMedia WHERE bannerId='banner'").one().count !== 2) throw new Error('Repeated initialization lost banner media');
+    let orphanBanner = false;
+    try { storage.sql.exec("INSERT INTO BannerBranch (bannerId,branchId) VALUES ('banner','missing')"); } catch { orphanBanner = true; }
+    if (!orphanBanner) throw new Error('Banner branch foreign key not enforced');
+    storage.sql.exec("DELETE FROM Brand WHERE id='banner-brand'");
+    for (const table of ['Banner', 'BannerBranch', 'BannerMedia']) {
+      if (storage.sql.exec(`SELECT COUNT(*) AS count FROM "${table}"`).one().count !== 0) throw new Error('Banner cascade delete failed');
+    }
+    if (JSON.stringify(storage.sql.exec("SELECT * FROM Wallet WHERE id='wallet'").one()) !== walletBeforeBanners) throw new Error('Banner migration changed wallet data');
     for (const [table,before] of [['GroupPurchaseRefundPolicy',refundBefore],['GroupPurchaseCancellationPolicy',cancelBefore]]) {
       const {packageId,...preserved} = before;
       const after = storage.sql.exec(`SELECT * FROM "${table}" WHERE id=?`,before.id).one();

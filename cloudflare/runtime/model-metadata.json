@@ -149,6 +149,55 @@
       "createdAt": "DateTime"
     }
   },
+  "Banner": {
+    "money": {},
+    "relations": {
+      "brand": "Brand",
+      "branches": "BannerBranch",
+      "media": "BannerMedia"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "brandId": "String",
+      "title": "String",
+      "description": "String",
+      "status": "BannerStatus",
+      "scope": "BannerScope",
+      "startAt": "DateTime",
+      "endAt": "DateTime",
+      "sortOrder": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "BannerBranch": {
+    "money": {},
+    "relations": {
+      "banner": "Banner",
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "bannerId": "String",
+      "branchId": "String"
+    }
+  },
+  "BannerMedia": {
+    "money": {},
+    "relations": {
+      "banner": "Banner"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "bannerId": "String",
+      "mediaType": "BannerMediaType",
+      "objectKey": "String",
+      "sortOrder": "Int",
+      "createdAt": "DateTime"
+    }
+  },
   "Branch": {
     "money": {},
     "relations": {
@@ -163,6 +212,7 @@
       "appointments": "Appointment",
       "promotions": "PromotionBranch",
       "reviews": "Review",
+      "bannerAssignments": "BannerBranch",
       "cancellationPolicy": "BranchCancellationPolicy",
       "groupPurchaseRefundPolicy": "GroupPurchaseRefundPolicy",
       "groupPurchaseCancellationPolicy": "GroupPurchaseCancellationPolicy",
@@ -261,7 +311,9 @@
   },
   "Brand": {
     "money": {},
-    "relations": {},
+    "relations": {
+      "banners": "Banner"
+    },
     "arrays": [],
     "scalars": {
       "id": "String",

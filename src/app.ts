@@ -30,8 +30,9 @@ import { UploadRoutes } from "./app/module/upload/upload.route.js";
 import { BranchHourlyCapacityRoutes } from "./app/module/branch-hourly-capacity/branch-hourly-capacity.route.js";
 import { languageMiddleware } from "./app/middleware/language.middleware.js";
 import { RefundRequestRoutes } from "./app/module/refund-request/refund-request.route.js";
-import { PolicyManagementRoutes } from './app/module/cancellation-refund/policy-management.route.js';
-import { CancellationRefundRoutes } from './app/module/cancellation-refund/cancellation-refund.route.js';
+import { PolicyManagementRoutes } from "./app/module/cancellation-refund/policy-management.route.js";
+import { CancellationRefundRoutes } from "./app/module/cancellation-refund/cancellation-refund.route.js";
+import { BannerRoutes } from "./app/module/banner/banner.router.js";
 
 const app: Application = express();
 
@@ -88,9 +89,10 @@ app.use("/api/v1/dashboard", DashboardRoutes);
 app.use("/api/v1/reports", ReportRoutes);
 app.use("/api/v1/audit-logs", AuditLogRoutes);
 app.use("/api/v1/uploads", UploadRoutes);
+app.use("/api/v1/banners", BannerRoutes);
 app.use("/api/v1/refund-requests", RefundRequestRoutes);
-app.use('/api/v1/policy-management',PolicyManagementRoutes);
-app.use('/api/v1/cancellation-refund',CancellationRefundRoutes);
+app.use("/api/v1/policy-management", PolicyManagementRoutes);
+app.use("/api/v1/cancellation-refund", CancellationRefundRoutes);
 // Basic route
 app.get("/", async (req: Request, res: Response) => {
   res.status(httpStatus.OK).json({
