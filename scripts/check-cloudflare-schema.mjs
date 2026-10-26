@@ -32,6 +32,7 @@ try {
   await apply(actual, await readFile('cloudflare/migrations/0011_branch_group_purchase_policies.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0012_merchant_policy_execution.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0013_banner_management.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0014_staff_portfolio.sql', 'utf8'));
   const fingerprint = async db => {
     const tables = (await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all()).results;
     const result = {};

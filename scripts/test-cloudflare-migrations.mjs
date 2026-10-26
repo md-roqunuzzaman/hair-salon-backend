@@ -7,5 +7,5 @@ try {
   const response = await mf.dispatchFetch('https://test/');
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { preserved: true, repeatable: true, foreignKey: true, checksumProtected: true });
-  console.log('Existing databases upgrade to v13: banner defaults, media persistence, foreign keys and cascade deletes pass; wallet data and policy settings remain intact; repeated initialization and checksum protection pass.');
+  console.log('Existing databases upgrade to v14: portfolio persistence, foreign keys, service SET NULL and staff/image cascade deletes pass; banner, wallet and policy data checks, repeated initialization and checksum protection pass.');
 } finally { await mf.dispose(); }

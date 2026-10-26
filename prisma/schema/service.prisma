@@ -7,16 +7,16 @@ model Service {
   status          ServiceStatus @default(ACTIVE)
 
   // Service display information
-  isPopular    Boolean  @default(false)
-  processSteps String[] @default([])
-  bookingNotes String[] @default([])
-
-  images       ServiceImage[]
-  branches     ServiceBranch[]
-  packages     PackageService[]
-  staff        StaffService[]
-  appointments Appointment[]
-  promotions   PromotionService[]
+  isPopular           Boolean              @default(false)
+  processSteps        String[]             @default([])
+  bookingNotes        String[]             @default([])
+  staffPortfolioCases StaffPortfolioCase[]
+  images              ServiceImage[]
+  branches            ServiceBranch[]
+  packages            PackageService[]
+  staff               StaffService[]
+  appointments        Appointment[]
+  promotions          PromotionService[]
 
   // Multilingual support
   translations Json?

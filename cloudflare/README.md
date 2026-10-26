@@ -80,6 +80,12 @@ Setup requires a secret of at least 32 characters, accepts POST only and permane
 
 ## Production cutover
 
+### Staff portfolio schema upgrade (v14)
+
+`0014_staff_portfolio.sql` adds `StaffPortfolioCase` and `StaffPortfolioCaseImage` with their indexes. Portfolio tags use JSON arrays and status uses text in SQLite. Deleting a service retains its portfolio cases with a null service reference; deleting staff removes its cases and images. Existing migrations remain unchanged, and pending v14 applies once on Durable Object initialization after deployment.
+
+Validate with `npm run cloudflare:check`, `npm run typecheck`, `npm run test:cloudflare:migrations`, and `npm run test:cloudflare:database`. Then deploy staging with `npm run cloudflare:deploy:staging` and production with `npm run cloudflare:deploy`, retaining existing secrets and database identity.
+
 ### Banner schema upgrade (v13)
 
 `0013_banner_management.sql` adds `Banner`, `BannerBranch` and `BannerMedia`, including indexes and cascading foreign keys. The Cloudflare build generates the Prisma client and bundles this migration; each existing Durable Object applies it once on initialization, preserving existing records. PostgreSQL migrations under `prisma/migrations` are not used by this runtime.

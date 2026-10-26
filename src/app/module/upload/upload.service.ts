@@ -548,6 +548,7 @@ const isImageReferenced = async (objectKey: string): Promise<boolean> => {
     packageImage,
     reviewImage,
     bannerMedia,
+    staffPortfolioImage,
   ] = await Promise.all([
     // ===================================================
     // USER AVATAR
@@ -646,9 +647,21 @@ const isImageReferenced = async (objectKey: string): Promise<boolean> => {
     }),
 
     // ===================================================
-    // BANNER IMAGE / VIDEO (NEW)
+    // BANNER IMAGE / VIDEO
     // ===================================================
     prisma.bannerMedia.findFirst({
+      where: {
+        objectKey,
+      },
+      select: {
+        id: true,
+      },
+    }),
+
+    // ===================================================
+    // STAFF PORTFOLIO IMAGE (NEW)
+    // ===================================================
+    prisma.staffPortfolioCaseImage.findFirst({
       where: {
         objectKey,
       },
@@ -667,7 +680,8 @@ const isImageReferenced = async (objectKey: string): Promise<boolean> => {
     serviceImage ||
     packageImage ||
     reviewImage ||
-    bannerMedia,
+    bannerMedia ||
+    staffPortfolioImage,
   );
 };
 // =====================================================

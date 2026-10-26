@@ -5,6 +5,8 @@ import policySchema from '../migrations/0009_policy_schema.sql';
 import refundEntitlements from '../migrations/0010_refund_request_entitlements.sql';
 import branchPolicies from '../migrations/0011_branch_group_purchase_policies.sql';
 import policyExecution from '../migrations/0012_merchant_policy_execution.sql';
+import bannerManagement from '../migrations/0013_banner_management.sql';
+import staffPortfolio from '../migrations/0014_staff_portfolio.sql';
 import migration from '../migrations/0001_initial.sql';
 import upgrade from '../migrations/0002_wallet_topup_promotion.sql';
 import settlementIdentity from '../migrations/0006_group_settlement_identity.sql';
@@ -16,7 +18,7 @@ import { Sessions } from './sessions.mjs';
 export class DatabaseFixture {
   constructor(state) {
     this.state = state;
-    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema + refundEntitlements + branchPolicies + policyExecution));
+    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema + refundEntitlements + branchPolicies + policyExecution + bannerManagement + staffPortfolio));
     this.db = createDatabase(state.storage);
   }
   async fetch() {
@@ -32,6 +34,16 @@ export class DatabaseFixture {
       const cleared = await db.branch.update({ where: { id: locatedBranch.id }, data: { latitude: null, longitude: null } });
       if (cleared.latitude !== null || cleared.longitude !== null) throw new Error('Nullable coordinates failed');
       const user = await db.user.create({ data: { name: 'Test', email: 'test@example.com', passwordHash: 'hash', role: 'CUSTOMER' } });
+      const portfolioStaff = await db.staff.create({ data: { userId: user.id, name: 'Stylist', email: 'stylist@example.com', roleTitle: 'Stylist' } });
+      const portfolio = await db.staffPortfolioCase.create({ data: {
+        staffId: portfolioStaff.id, title: 'Portfolio', tags: ['cut', '染髮'], translations: { zh: { title: '作品' } },
+        images: { create: [{ objectKey: 'portfolio/cover.jpg', isCover: true }] },
+      }, include: { images: true, staff: true } });
+      if (JSON.stringify(portfolio.tags) !== JSON.stringify(['cut', '染髮']) || portfolio.translations.zh.title !== '作品' || portfolio.status !== 'DRAFT' || portfolio.images.length !== 1 || !portfolio.images[0].isCover || portfolio.staff.id !== portfolioStaff.id) throw new Error('Portfolio JSON, defaults or nested relations failed');
+      const emptyPortfolio = await db.staffPortfolioCase.create({ data: { staffId: portfolioStaff.id, title: 'Empty tags' } });
+      if (!Array.isArray(emptyPortfolio.tags) || emptyPortfolio.tags.length !== 0) throw new Error('Portfolio empty tags default failed');
+      const published = await db.staffPortfolioCase.update({ where: { id: portfolio.id }, data: { status: 'PUBLISHED', tags: { set: ['cut', '染髮', 'color'] } } });
+      if (published.status !== 'PUBLISHED' || published.tags.at(-1) !== 'color') throw new Error('Portfolio enum or tags update failed');
       const payment = await db.payment.create({ data: { customerId: user.id, purpose: 'APPOINTMENT', amount: '123.45' } });
       const request = await db.refundRequest.create({ data: { customerId: user.id, paymentId: payment.id, amount: '123.45', reason: 'Schema roundtrip', eligiblePaidAmount: '123.45', refundPercentage: '12.50', refundDeduction: '0.12', policySnapshot: { version: 2 }, idempotencyKey: 'adapter-refund' } });
       if (request.eligiblePaidAmount.toString() !== '123.45' || request.refundPercentage.toString() !== '12.5' || request.refundDeduction.toString() !== '0.12' || request.policySnapshot.version !== 2 || request.requestType !== 'APPOINTMENT_CANCELLATION' || request.isCancellationOnly !== false) throw new Error('Refund request precision/default/JSON roundtrip failed');

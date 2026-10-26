@@ -58,7 +58,8 @@ const refundEntitlements = await readFile('cloudflare/migrations/0010_refund_req
 const branchPolicies = await readFile('cloudflare/migrations/0011_branch_group_purchase_policies.sql', 'utf8');
 const policyExecution = await readFile('cloudflare/migrations/0012_merchant_policy_execution.sql', 'utf8');
 const bannerManagement = await readFile('cloudflare/migrations/0013_banner_management.sql', 'utf8');
-const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+const staffPortfolio = await readFile('cloudflare/migrations/0014_staff_portfolio.sql', 'utf8');
+const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);

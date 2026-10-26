@@ -106,7 +106,24 @@ export class MigrationFixture {
     applyMigrations(storage, migrations.slice(0, 12));
     const walletBeforeBanners = JSON.stringify(storage.sql.exec("SELECT * FROM Wallet WHERE id='wallet'").one());
     storage.sql.exec("INSERT INTO Brand (id,name,updatedAt) VALUES ('banner-brand','Banner brand',1)");
+    applyMigrations(storage, migrations.slice(0, 13));
+    storage.sql.exec("INSERT INTO Staff (id,userId,name,email,roleTitle,updatedAt) VALUES ('portfolio-staff','customer','Stylist','stylist@example.com','Stylist',1)");
+    storage.sql.exec("INSERT INTO Service (id,name,price,durationMinutes,updatedAt) VALUES ('portfolio-service','Cut',10000,30,1)");
     applyMigrations(storage, migrations);
+    storage.sql.exec("INSERT INTO StaffPortfolioCase (id,staffId,serviceId,title,tags,updatedAt) VALUES ('portfolio','portfolio-staff','portfolio-service','Cut result','[]',1)");
+    storage.sql.exec("INSERT INTO StaffPortfolioCaseImage (id,caseId,objectKey,updatedAt) VALUES ('portfolio-image','portfolio','portfolio/image.jpg',1)");
+    applyMigrations(storage, migrations);
+    const portfolio = storage.sql.exec("SELECT status,sortOrder,tags FROM StaffPortfolioCase WHERE id='portfolio'").one();
+    if (portfolio.status !== 'DRAFT' || portfolio.sortOrder !== 0 || portfolio.tags !== '[]') throw new Error('Portfolio defaults or persistence failed');
+    let orphanPortfolio = false;
+    try { storage.sql.exec("INSERT INTO StaffPortfolioCaseImage (id,caseId,objectKey,updatedAt) VALUES ('orphan','missing','orphan.jpg',1)"); } catch { orphanPortfolio = true; }
+    if (!orphanPortfolio) throw new Error('Portfolio image foreign key not enforced');
+    storage.sql.exec("DELETE FROM Service WHERE id='portfolio-service'");
+    if (storage.sql.exec("SELECT serviceId FROM StaffPortfolioCase WHERE id='portfolio'").one().serviceId !== null) throw new Error('Service deletion did not retain portfolio with null service');
+    storage.sql.exec("DELETE FROM Staff WHERE id='portfolio-staff'");
+    for (const table of ['StaffPortfolioCase', 'StaffPortfolioCaseImage']) {
+      if (storage.sql.exec(`SELECT COUNT(*) AS count FROM "${table}"`).one().count !== 0) throw new Error('Portfolio staff cascade delete failed');
+    }
     storage.sql.exec("INSERT INTO Banner (id,brandId,title,updatedAt) VALUES ('banner','banner-brand','Launch',1)");
     storage.sql.exec("INSERT INTO BannerBranch (bannerId,branchId) VALUES ('banner','branch')");
     storage.sql.exec("INSERT INTO BannerMedia (id,bannerId,mediaType,objectKey) VALUES ('image','banner','IMAGE','banners/banner/image.jpg'),('video','banner','VIDEO','banners/banner/video.mp4')");

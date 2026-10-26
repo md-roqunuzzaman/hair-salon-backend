@@ -15,13 +15,14 @@ model Staff {
 
   user User @relation(fields: [userId], references: [id], onDelete: Restrict)
 
-  branches       StaffBranch[]
-  services       StaffService[]
-  packages       StaffPackage[]
-  schedule       StaffSchedule[]
-  unavailability StaffUnavailability[]
-  appointments   Appointment[]
-  reviews        Review[]
+  branches            StaffBranch[]
+  services            StaffService[]
+  packages            StaffPackage[]
+  schedule            StaffSchedule[]
+  unavailability      StaffUnavailability[]
+  appointments        Appointment[]
+  reviews             Review[]
+  staffPortfolioCases StaffPortfolioCase[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

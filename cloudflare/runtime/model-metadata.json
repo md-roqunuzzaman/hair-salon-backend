@@ -746,6 +746,7 @@
       }
     },
     "relations": {
+      "staffPortfolioCases": "StaffPortfolioCase",
       "images": "ServiceImage",
       "branches": "ServiceBranch",
       "packages": "PackageService",
@@ -811,7 +812,8 @@
       "schedule": "StaffSchedule",
       "unavailability": "StaffUnavailability",
       "appointments": "Appointment",
-      "reviews": "Review"
+      "reviews": "Review",
+      "staffPortfolioCases": "StaffPortfolioCase"
     },
     "arrays": [],
     "scalars": {
@@ -901,6 +903,46 @@
       "startTime": "String",
       "endTime": "String",
       "reason": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "StaffPortfolioCase": {
+    "money": {},
+    "relations": {
+      "staff": "Staff",
+      "service": "Service",
+      "images": "StaffPortfolioCaseImage"
+    },
+    "arrays": [
+      "tags"
+    ],
+    "scalars": {
+      "id": "String",
+      "staffId": "String",
+      "serviceId": "String",
+      "title": "String",
+      "description": "String",
+      "tags": "String",
+      "translations": "Json",
+      "status": "StaffPortfolioStatus",
+      "sortOrder": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "StaffPortfolioCaseImage": {
+    "money": {},
+    "relations": {
+      "portfolioCase": "StaffPortfolioCase"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "caseId": "String",
+      "objectKey": "String",
+      "isCover": "Boolean",
+      "sortOrder": "Int",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }

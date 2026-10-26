@@ -33,6 +33,7 @@ import { RefundRequestRoutes } from "./app/module/refund-request/refund-request.
 import { PolicyManagementRoutes } from "./app/module/cancellation-refund/policy-management.route.js";
 import { CancellationRefundRoutes } from "./app/module/cancellation-refund/cancellation-refund.route.js";
 import { BannerRoutes } from "./app/module/banner/banner.router.js";
+import { staffPortfolioRoutes } from "./app/module/staff-portfolio/staff-portfolio.route.js";
 
 const app: Application = express();
 
@@ -90,6 +91,7 @@ app.use("/api/v1/reports", ReportRoutes);
 app.use("/api/v1/audit-logs", AuditLogRoutes);
 app.use("/api/v1/uploads", UploadRoutes);
 app.use("/api/v1/banners", BannerRoutes);
+app.use("/api/v1/staff", staffPortfolioRoutes);
 app.use("/api/v1/refund-requests", RefundRequestRoutes);
 app.use("/api/v1/policy-management", PolicyManagementRoutes);
 app.use("/api/v1/cancellation-refund", CancellationRefundRoutes);

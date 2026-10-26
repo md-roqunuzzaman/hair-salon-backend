@@ -186,3 +186,9 @@ enum BannerMediaType {
   IMAGE
   VIDEO
 }
+
+enum StaffPortfolioStatus {
+  DRAFT
+  PUBLISHED
+  HIDDEN
+}
