@@ -1,6 +1,9 @@
-import { snapshotData } from '../cancellation-refund/policy.snapshot.js';
-import { isSnapshot } from '../cancellation-refund/policy.calculation.js';
-import { cancelWithPolicy, previewAppointment } from '../cancellation-refund/cancellation-refund.service.js';
+import { snapshotData } from "../cancellation-refund/policy.snapshot.js";
+import { isSnapshot } from "../cancellation-refund/policy.calculation.js";
+import {
+  cancelWithPolicy,
+  previewAppointment,
+} from "../cancellation-refund/cancellation-refund.service.js";
 import { logUnexpectedError } from "../../utils/normalize-error.js";
 import {
   AppointmentStatus,
@@ -53,6 +56,7 @@ import { auditLogService } from "../auditLog/auditLog.service.js";
 import { getLocalizedContent } from "../../utils/localization.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
+import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
 
 const PAY_NOW_HOLD_MINUTES = 5;
 const MAX_TRANSACTION_RETRIES = 3;
@@ -788,6 +792,8 @@ const createPayNowAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
+    const orderNumber = generateOrderNumber();
+
     try {
       console.log(`[PAY_NOW] Transaction attempt: ${attempt}`);
 
@@ -1053,8 +1059,9 @@ const createPayNowAppointment = async (
 
           const appointment = await tx.appointment.create({
             data: {
-              ...await snapshotData(tx,branchId,'SERVICE'),
+              ...(await snapshotData(tx, branchId, "SERVICE")),
               customerId,
+              orderNumber,
 
               branchId,
 
@@ -1100,7 +1107,7 @@ const createPayNowAppointment = async (
 
             select: {
               id: true,
-
+              orderNumber: true,
               staffId: true,
 
               bookingMethod: true,
@@ -1168,7 +1175,7 @@ const createPayNowAppointment = async (
 
       return {
         appointmentId: result.id,
-
+        orderNumber: result.orderNumber!,
         bookingMethod: "PAY_NOW",
 
         appointmentStatus: "PENDING_PAYMENT",
@@ -1185,9 +1192,43 @@ const createPayNowAppointment = async (
           "src/app/module/appointment/appointment.service.ts:createPayNowAppointment",
       });
 
+      // ============================================
+      // 1. SERIALIZABLE TRANSACTION CONFLICT
+      // ============================================
+
       const isSerializableConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2034";
+
+      // ============================================
+      // 2. ORDER NUMBER UNIQUE COLLISION
+      // ============================================
+
+      const isOrderNumberCollision =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002" &&
+        Array.isArray(error.meta?.target) &&
+        error.meta.target.includes("orderNumber");
+
+      // ============================================
+      // 3. RETRY ORDER NUMBER COLLISION
+      // ============================================
+
+      if (isOrderNumberCollision && attempt < MAX_TRANSACTION_RETRIES) {
+        console.warn("[PAY_NOW] Order number collision. Retrying...");
+        continue;
+      }
+
+      if (isOrderNumberCollision) {
+        throw new AppError(
+          "Could not generate a unique order number. Please try again.",
+          503,
+        );
+      }
+
+      // ============================================
+      // 4. EXISTING SERIALIZABLE RETRY
+      // ============================================
 
       if (isSerializableConflict && attempt < MAX_TRANSACTION_RETRIES) {
         console.warn(
@@ -1203,6 +1244,10 @@ const createPayNowAppointment = async (
           409,
         );
       }
+
+      // ============================================
+      // 5. OTHER ERRORS
+      // ============================================
 
       throw error;
     }
@@ -1249,6 +1294,7 @@ const createDepositAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
+    const orderNumber = generateOrderNumber();
     try {
       const result = await prisma.$transaction(
         async (tx) => {
@@ -1470,8 +1516,9 @@ const createDepositAppointment = async (
 
           const appointment = await tx.appointment.create({
             data: {
-              ...await snapshotData(tx,branchId,'SERVICE'),
+              ...(await snapshotData(tx, branchId, "SERVICE")),
               customerId,
+              orderNumber,
               branchId,
 
               staffId: resolvedStaffId,
@@ -1511,6 +1558,7 @@ const createDepositAppointment = async (
             },
             select: {
               id: true,
+              orderNumber: true,
               staffId: true,
               bookingMethod: true,
               appointmentStatus: true,
@@ -1555,6 +1603,7 @@ const createDepositAppointment = async (
 
       return {
         appointmentId: result.id,
+        orderNumber: result.orderNumber!,
 
         bookingMethod: "DEPOSIT",
 
@@ -1580,9 +1629,43 @@ const createDepositAppointment = async (
           "src/app/module/appointment/appointment.service.ts:createDepositAppointment",
       });
 
+      // ============================================
+      // SERIALIZABLE TRANSACTION CONFLICT
+      // ============================================
+
       const isSerializableConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2034";
+
+      // ============================================
+      // ORDER NUMBER UNIQUE COLLISION
+      // ============================================
+
+      const isOrderNumberCollision =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002" &&
+        Array.isArray(error.meta?.target) &&
+        error.meta.target.includes("orderNumber");
+
+      // ============================================
+      // RETRY ORDER NUMBER COLLISION
+      // ============================================
+
+      if (isOrderNumberCollision && attempt < MAX_TRANSACTION_RETRIES) {
+        console.warn("[DEPOSIT] Order number collision. Retrying...");
+        continue;
+      }
+
+      if (isOrderNumberCollision) {
+        throw new AppError(
+          "Could not generate a unique order number. Please try again.",
+          503,
+        );
+      }
+
+      // ============================================
+      // EXISTING SERIALIZABLE RETRY
+      // ============================================
 
       if (isSerializableConflict && attempt < MAX_TRANSACTION_RETRIES) {
         console.warn(
@@ -1653,6 +1736,7 @@ const createReserveAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
+    const orderNumber = generateOrderNumber();
     try {
       console.log(`[RESERVE_NOW] Transaction attempt: ${attempt}`);
 
@@ -1885,8 +1969,9 @@ const createReserveAppointment = async (
 
           const appointment = await tx.appointment.create({
             data: {
-              ...await snapshotData(tx,branchId,'SERVICE'),
+              ...(await snapshotData(tx, branchId, "SERVICE")),
               customerId,
+              orderNumber,
 
               branchId,
 
@@ -1932,7 +2017,7 @@ const createReserveAppointment = async (
             },
             select: {
               id: true,
-
+              orderNumber: true,
               staffId: true,
 
               qrToken: true,
@@ -2000,6 +2085,7 @@ const createReserveAppointment = async (
 
       return {
         appointmentId: result.id,
+        orderNumber: result.orderNumber!,
 
         bookingMethod: "RESERVE_NOW",
 
@@ -2019,9 +2105,43 @@ const createReserveAppointment = async (
           "src/app/module/appointment/appointment.service.ts:createReserveAppointment",
       });
 
+      // ============================================
+      // SERIALIZABLE TRANSACTION CONFLICT
+      // ============================================
+
       const isSerializableConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2034";
+
+      // ============================================
+      // ORDER NUMBER UNIQUE COLLISION
+      // ============================================
+
+      const isOrderNumberCollision =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002" &&
+        Array.isArray(error.meta?.target) &&
+        error.meta.target.includes("orderNumber");
+
+      // ============================================
+      // RETRY ORDER NUMBER COLLISION
+      // ============================================
+
+      if (isOrderNumberCollision && attempt < MAX_TRANSACTION_RETRIES) {
+        console.warn("[RESERVE_NOW] Order number collision. Retrying...");
+        continue;
+      }
+
+      if (isOrderNumberCollision) {
+        throw new AppError(
+          "Could not generate a unique order number. Please try again.",
+          503,
+        );
+      }
+
+      // ============================================
+      // EXISTING SERIALIZABLE RETRY
+      // ============================================
 
       if (isSerializableConflict && attempt < MAX_TRANSACTION_RETRIES) {
         console.warn(
@@ -2117,6 +2237,7 @@ const getMyAppointments = async (
 
       select: {
         id: true,
+        orderNumber: true,
 
         bookingMethod: true,
         appointmentStatus: true,
@@ -2347,7 +2468,7 @@ const getMyAppointments = async (
 
     return {
       id: appointment.id,
-
+      orderNumber: appointment.orderNumber,
       bookingMethod: appointment.bookingMethod,
       appointmentStatus: appointment.appointmentStatus,
       paymentStatus: appointment.paymentStatus,
@@ -2744,6 +2865,7 @@ const getAppointmentById = async (
 
   return {
     id: appointment.id,
+    orderNumber: appointment.orderNumber,
 
     bookingMethod: appointment.bookingMethod,
 
@@ -2881,9 +3003,16 @@ const cancelAppointment = async (
     throw new AppError("You are not allowed to cancel this appointment", 403);
   }
 
-  if (isSnapshot(appointment.cancellationPolicySnapshot) && !appointment.cancellationPolicySnapshot.legacy) {
-    const preview = await previewAppointment(appointmentId,userId,role);
-    return await cancelWithPolicy(appointmentId,userId,role,{reason:payload.reason,idempotencyKey:'existing-route-'+appointmentId,previewToken:preview.previewToken}) as unknown as ICancelAppointmentResponse;
+  if (
+    isSnapshot(appointment.cancellationPolicySnapshot) &&
+    !appointment.cancellationPolicySnapshot.legacy
+  ) {
+    const preview = await previewAppointment(appointmentId, userId, role);
+    return (await cancelWithPolicy(appointmentId, userId, role, {
+      reason: payload.reason,
+      idempotencyKey: "existing-route-" + appointmentId,
+      previewToken: preview.previewToken,
+    })) as unknown as ICancelAppointmentResponse;
   }
 
   // =====================================================
@@ -5599,7 +5728,10 @@ const recordRemainingPayment = async (
   }
 
   if (appointment.groupPurchaseId) {
-    throw new AppError("Use the group purchase remaining-payment endpoint for this appointment", 409);
+    throw new AppError(
+      "Use the group purchase remaining-payment endpoint for this appointment",
+      409,
+    );
   }
 
   // =====================================================

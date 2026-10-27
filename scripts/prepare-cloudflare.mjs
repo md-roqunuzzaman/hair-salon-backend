@@ -28,6 +28,8 @@ let schema = source.replace(/generator client\s*\{[\s\S]*?\}/, `generator client
 }`).replace('provider = "postgresql"', 'provider = "sqlite"');
 schema = schema.replace(/^(\s*\w+\s+)Decimal(\??)(.*)$/gm, (_, prefix, optional, tail) =>
   `${prefix}BigInt${optional}${tail.replace(/@db\.Decimal\([^)]*\)/g, '')}`);
+// SQLite stores PostgreSQL varchar fields as text; retain nullable/unique attributes.
+schema = schema.replace(/@db\.VarChar\(\d+\)/g, '');
 schema = schema.replace(/^(\s*\w+\s+)(\w+)\[\](.*)$/gm, (line, prefix, type, tail) => {
   if (modelNames.includes(type)) return line;
   if (type !== 'String' && !enumNames.includes(type)) throw new Error(`Unsupported scalar array: ${type}`);

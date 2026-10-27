@@ -33,6 +33,17 @@ try {
   await apply(actual, await readFile('cloudflare/migrations/0012_merchant_policy_execution.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0013_banner_management.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0014_staff_portfolio.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0015_appointment_order_number.sql', 'utf8'));
+  const [backfill, ...requiredTriggers] = (await readFile('cloudflare/migrations/0016_require_appointment_order_number.sql', 'utf8')).split(/(?=CREATE TRIGGER)/);
+  await apply(actual, backfill);
+  for (const trigger of requiredTriggers) await actual.prepare(trigger).run();
+  // v16 enforces this required field with triggers to retain the referenced table.
+  // Verify both exact definitions before treating their enforcement as NOT NULL.
+  for (const trigger of requiredTriggers) {
+    const name = trigger.match(/CREATE TRIGGER "([^"]+)"/)[1];
+    const stored = await actual.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").bind(name).first();
+    assert.equal(stored.sql.replace(/;\s*$/, '').trim(), trigger.replace(/;\s*$/, '').trim());
+  }
   const fingerprint = async db => {
     const tables = (await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all()).results;
     const result = {};
@@ -40,6 +51,9 @@ try {
     for (const { name } of tables) {
       const quoted = '"' + name.replaceAll('"', '""') + '"';
       const columns = (await db.prepare(`PRAGMA table_info(${quoted})`).all()).results.map(({ cid, ...row }) => row);
+      if (db === actual && name === 'Appointment') {
+        columns.find(column => column.name === 'orderNumber').notnull = 1;
+      }
       const foreignKeys = (await db.prepare(`PRAGMA foreign_key_list(${quoted})`).all()).results.map(({ id, ...row }) => row);
       const indexes = (await db.prepare(`PRAGMA index_list(${quoted})`).all()).results;
       const indexDefinitions = [];

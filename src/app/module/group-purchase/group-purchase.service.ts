@@ -1,4 +1,8 @@
-import { capturePolicy, snapshotData, purchaseExpired } from '../cancellation-refund/policy.snapshot.js';
+import {
+  capturePolicy,
+  snapshotData,
+  purchaseExpired,
+} from "../cancellation-refund/policy.snapshot.js";
 import config from "../../config/index.js";
 import { notificationService } from "../notification/notification.service.js";
 import {
@@ -36,13 +40,30 @@ import { ICreateGroupPurchasePayload } from "./group-purchase.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { presentGroupPurchase } from "./group-purchase.presentation.js";
+import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
 
 const initialAppointmentSelect = {
-  id: true, bookingMethod: true, appointmentStatus: true, paymentStatus: true,
-  branchId: true, staffId: true, date: true, startTime: true, endTime: true, qrVerifiedAt: true,
+  id: true,
+  orderNumber: true,
+  bookingMethod: true,
+  appointmentStatus: true,
+  paymentStatus: true,
+  branchId: true,
+  staffId: true,
+  date: true,
+  startTime: true,
+  endTime: true,
+  qrVerifiedAt: true,
 } as const;
-const presentInitialAppointment = <T extends { id: string; bookingMethod: BookingMethod }>(appointments: T[], method: BookingMethod | null) => {
-  const appointment = appointments.find(item => item.bookingMethod === method);
+const presentInitialAppointment = <
+  T extends { id: string; bookingMethod: BookingMethod },
+>(
+  appointments: T[],
+  method: BookingMethod | null,
+) => {
+  const appointment = appointments.find(
+    (item) => item.bookingMethod === method,
+  );
   return appointment ? { ...appointment, appointmentId: appointment.id } : null;
 };
 
@@ -53,7 +74,6 @@ const createGroupPurchase = async (
   payload: ICreateGroupPurchasePayload,
 ) => {
   const maxRetries = 3;
-
 
   const purchaseFlow =
     payload.purchaseFlow ?? GroupPurchaseFlow.BUY_NOW_BOOK_LATER;
@@ -144,6 +164,8 @@ const createGroupPurchase = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const orderNumber = isBookNow ? generateOrderNumber() : null;
+
     try {
       return await prisma.$transaction(
         async (tx) => {
@@ -518,19 +540,47 @@ const createGroupPurchase = async (
           let purchaseSnapshot: Prisma.InputJsonObject | undefined;
           let purchaseBranchId: string | null = payload.branchId ?? null;
           if (!purchaseBranchId) {
-            const assignments = await tx.packageBranch.findMany({where:{packageId:packageData.id},select:{branchId:true}});
-            const configured = await tx.groupPurchaseRefundPolicy.findFirst({where:{branchId:{in:assignments.map(item=>item.branchId)},isEnabled:true}});
-            if (configured) throw new AppError('PURCHASE_BRANCH_REQUIRED',422);
+            const assignments = await tx.packageBranch.findMany({
+              where: { packageId: packageData.id },
+              select: { branchId: true },
+            });
+            const configured = await tx.groupPurchaseRefundPolicy.findFirst({
+              where: {
+                branchId: { in: assignments.map((item) => item.branchId) },
+                isEnabled: true,
+              },
+            });
+            if (configured) throw new AppError("PURCHASE_BRANCH_REQUIRED", 422);
           } else {
-            if (!await tx.packageBranch.findUnique({where:{packageId_branchId:{packageId:packageData.id,branchId:purchaseBranchId}}})) throw new AppError('Package is not available at this branch',422);
-            const snapshot = await capturePolicy(tx,purchaseBranchId,'GROUP_REFUND');
+            if (
+              !(await tx.packageBranch.findUnique({
+                where: {
+                  packageId_branchId: {
+                    packageId: packageData.id,
+                    branchId: purchaseBranchId,
+                  },
+                },
+              }))
+            )
+              throw new AppError(
+                "Package is not available at this branch",
+                422,
+              );
+            const snapshot = await capturePolicy(
+              tx,
+              purchaseBranchId,
+              "GROUP_REFUND",
+            );
             snapshot.packageValidDays = packageData.validDays;
             purchaseSnapshot = snapshot as unknown as Prisma.InputJsonObject;
           }
           const groupPurchase = await tx.groupPurchase.create({
             data: {
               purchaseBranchId,
-              ...(purchaseSnapshot && {refundPolicySnapshot:purchaseSnapshot,refundPolicyVersion:Number(purchaseSnapshot.version)}),
+              ...(purchaseSnapshot && {
+                refundPolicySnapshot: purchaseSnapshot,
+                refundPolicyVersion: Number(purchaseSnapshot.version),
+              }),
               customerId,
               packageId: packageData.id,
               purchaseFlow,
@@ -575,8 +625,9 @@ const createGroupPurchase = async (
 
             const appointment = await tx.appointment.create({
               data: {
-                ...await snapshotData(tx,payload.branchId!,'GROUP_CANCEL'),
+                ...(await snapshotData(tx, payload.branchId!, "GROUP_CANCEL")),
                 customerId,
+                orderNumber: orderNumber!,
                 branchId: payload.branchId!,
                 staffId: selectedStaffId,
                 packageId: packageData.id,
@@ -606,6 +657,7 @@ const createGroupPurchase = async (
               appointmentStatus: appointment.appointmentStatus,
               paymentStatus: appointment.paymentStatus,
               branchId: appointment.branchId,
+              orderNumber: appointment.orderNumber,
               staffId: appointment.staffId,
               date: appointment.date,
               startTime: appointment.startTime,
@@ -657,10 +709,35 @@ const createGroupPurchase = async (
         },
       );
     } catch (error) {
+      // 1. Existing transaction conflict
       const isConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2034";
 
+      // 2. Appointment order number collision
+      const isOrderNumberCollision =
+        isBookNow &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002" &&
+        ((Array.isArray(error.meta?.target) &&
+          error.meta.target.includes("orderNumber")) ||
+          (typeof error.meta?.target === "string" &&
+            error.meta.target.includes("orderNumber")));
+
+      // 3. Retry with a newly generated order number
+      if (isOrderNumberCollision && attempt < maxRetries) {
+        console.warn("[GROUP_PURCHASE] Order number collision. Retrying...");
+        continue;
+      }
+
+      if (isOrderNumberCollision) {
+        throw new AppError(
+          "Could not generate a unique order number. Please try again.",
+          503,
+        );
+      }
+
+      // 4. Preserve existing transaction retry
       if (isConflict && attempt < maxRetries) {
         continue;
       }
@@ -907,7 +984,13 @@ const getMyGroupPurchases = async (
 
     const redeemedQuantity = redemptionCountMap.get(purchase.id) ?? 0;
 
-    const remainingQuantity = Math.max(0, purchasedQuantity - redeemedQuantity - purchase.forfeitedQuantity - purchase.refundedQuantity);
+    const remainingQuantity = Math.max(
+      0,
+      purchasedQuantity -
+        redeemedQuantity -
+        purchase.forfeitedQuantity -
+        purchase.refundedQuantity,
+    );
 
     const canBookAppointment =
       purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
@@ -927,8 +1010,18 @@ const getMyGroupPurchases = async (
     // ===================================================
 
     return {
-      ...presentGroupPurchase(purchase, purchase.appointments.some(item => item.bookingMethod === purchase.bookingMethod && item.qrVerifiedAt !== null)),
-      firstAppointment: presentInitialAppointment(purchase.appointments, purchase.bookingMethod),
+      ...presentGroupPurchase(
+        purchase,
+        purchase.appointments.some(
+          (item) =>
+            item.bookingMethod === purchase.bookingMethod &&
+            item.qrVerifiedAt !== null,
+        ),
+      ),
+      firstAppointment: presentInitialAppointment(
+        purchase.appointments,
+        purchase.bookingMethod,
+      ),
       id: purchase.id,
 
       package: {
@@ -1081,9 +1174,19 @@ const getGroupPurchaseById = async (
     );
   }
   if (role === Role.BRANCH_MANAGER) {
-    const branches = await prisma.branchManagerBranch.findMany({ where: { userId }, select: { branchId: true } });
-    if (!purchase.appointments.some(item => branches.some(branch => branch.branchId === item.branchId))) {
-      throw new AppError("You are not allowed to access this group purchase", 403);
+    const branches = await prisma.branchManagerBranch.findMany({
+      where: { userId },
+      select: { branchId: true },
+    });
+    if (
+      !purchase.appointments.some((item) =>
+        branches.some((branch) => branch.branchId === item.branchId),
+      )
+    ) {
+      throw new AppError(
+        "You are not allowed to access this group purchase",
+        403,
+      );
     }
   }
 
@@ -1120,7 +1223,13 @@ const getGroupPurchaseById = async (
 
   const purchasedQuantity = purchase.quantity;
 
-  const remainingQuantity = Math.max(0, purchasedQuantity - redeemedQuantity - purchase.forfeitedQuantity - purchase.refundedQuantity);
+  const remainingQuantity = Math.max(
+    0,
+    purchasedQuantity -
+      redeemedQuantity -
+      purchase.forfeitedQuantity -
+      purchase.refundedQuantity,
+  );
 
   const canBookAppointment =
     purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
@@ -1130,8 +1239,18 @@ const getGroupPurchaseById = async (
   // =====================================================
 
   return {
-    ...presentGroupPurchase(purchase, purchase.appointments.some(item => item.bookingMethod === purchase.bookingMethod && item.qrVerifiedAt !== null)),
-    firstAppointment: presentInitialAppointment(purchase.appointments, purchase.bookingMethod),
+    ...presentGroupPurchase(
+      purchase,
+      purchase.appointments.some(
+        (item) =>
+          item.bookingMethod === purchase.bookingMethod &&
+          item.qrVerifiedAt !== null,
+      ),
+    ),
+    firstAppointment: presentInitialAppointment(
+      purchase.appointments,
+      purchase.bookingMethod,
+    ),
     id: purchase.id,
 
     package: {
@@ -1309,6 +1428,7 @@ const createGroupPurchaseAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= 3; attempt++) {
+    const orderNumber = generateOrderNumber();
     try {
       return await prisma.$transaction(
         async (tx) => {
@@ -1392,9 +1512,23 @@ const createGroupPurchaseAppointment = async (
             },
           });
 
-          if (purchaseExpired(currentPurchase)) throw new AppError('GROUP_PURCHASE_EXPIRED',409);
-          if (await tx.refundRequest.findFirst({where:{payment:{groupPurchaseId:purchaseId},status:{in:['PENDING','APPROVED','PROCESSING']}}})) throw new AppError('GROUP_PURCHASE_REFUND_IN_PROGRESS',409);
-          if (allocatedCount + currentPurchase.forfeitedQuantity + currentPurchase.refundedQuantity >= currentPurchase.quantity) {
+          if (purchaseExpired(currentPurchase))
+            throw new AppError("GROUP_PURCHASE_EXPIRED", 409);
+          if (
+            await tx.refundRequest.findFirst({
+              where: {
+                payment: { groupPurchaseId: purchaseId },
+                status: { in: ["PENDING", "APPROVED", "PROCESSING"] },
+              },
+            })
+          )
+            throw new AppError("GROUP_PURCHASE_REFUND_IN_PROGRESS", 409);
+          if (
+            allocatedCount +
+              currentPurchase.forfeitedQuantity +
+              currentPurchase.refundedQuantity >=
+            currentPurchase.quantity
+          ) {
             throw new AppError("No remaining package quantity available", 409);
           }
 
@@ -1450,9 +1584,10 @@ const createGroupPurchaseAppointment = async (
 
           const appointment = await tx.appointment.create({
             data: {
-              ...await snapshotData(tx,branchId,'GROUP_CANCEL'),
+              ...(await snapshotData(tx, branchId, "GROUP_CANCEL")),
               customerId,
               branchId,
+              orderNumber,
               staffId: resolvedStaffId,
 
               serviceId: null,
@@ -1492,6 +1627,7 @@ const createGroupPurchaseAppointment = async (
 
             select: {
               id: true,
+              orderNumber: true,
               bookingMethod: true,
               appointmentStatus: true,
               paymentStatus: true,
@@ -1519,6 +1655,7 @@ const createGroupPurchaseAppointment = async (
           return {
             appointmentId: appointment.id,
             bookingMethod: appointment.bookingMethod,
+            orderNumber: appointment.orderNumber!,
             appointmentStatus: appointment.appointmentStatus,
             paymentStatus: appointment.paymentStatus,
             staffId: appointment.staffId,
@@ -1536,6 +1673,28 @@ const createGroupPurchaseAppointment = async (
       const isConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2034";
+
+      const isOrderNumberCollision =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002" &&
+        ((Array.isArray(error.meta?.target) &&
+          error.meta.target.includes("orderNumber")) ||
+          (typeof error.meta?.target === "string" &&
+            error.meta.target.includes("orderNumber")));
+
+      if (isOrderNumberCollision && attempt < 3) {
+        console.warn(
+          "[GROUP_PURCHASE_APPOINTMENT] Order number collision. Retrying...",
+        );
+        continue;
+      }
+
+      if (isOrderNumberCollision) {
+        throw new AppError(
+          "Could not generate a unique order number. Please try again.",
+          503,
+        );
+      }
 
       if (isConflict && attempt < 3) {
         continue;
@@ -1655,8 +1814,11 @@ export const recordGroupPurchaseRemainingPayment = async (
           // 6. VALIDATE FIRST APPOINTMENT
           // =============================================
 
-          const initialAppointments = purchase.appointments.filter(item => item.bookingMethod === purchase.bookingMethod);
-          const appointment = initialAppointments.length === 1 ? initialAppointments[0] : null;
+          const initialAppointments = purchase.appointments.filter(
+            (item) => item.bookingMethod === purchase.bookingMethod,
+          );
+          const appointment =
+            initialAppointments.length === 1 ? initialAppointments[0] : null;
 
           if (!appointment) {
             throw new AppError("Group purchase appointment not found", 409);

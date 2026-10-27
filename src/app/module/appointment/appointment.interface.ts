@@ -40,6 +40,7 @@ export interface ICreatePayNowAppointmentPayload {
 
 export interface IPayNowAppointmentResponse {
   appointmentId: string;
+  orderNumber: string;
   bookingMethod: "PAY_NOW";
   appointmentStatus: "PENDING_PAYMENT";
   paymentStatus: "PENDING";
@@ -63,6 +64,7 @@ export interface ICreateReserveAppointmentPayload {
 
 export interface IReserveAppointmentResponse {
   appointmentId: string;
+  orderNumber: string;
   bookingMethod: "RESERVE_NOW";
   appointmentStatus: "RESERVED";
   paymentStatus: "UNPAID";
@@ -143,7 +145,7 @@ export interface IMyAppointmentsResult {
 
 export interface IAppointmentDetails {
   id: string;
-
+  orderNumber: string | null;
   bookingMethod: BookingMethodType;
   appointmentStatus: AppointmentStatusType;
   paymentStatus: PaymentStatusType;
@@ -417,7 +419,7 @@ export interface ICreateDepositAppointmentPayload {
 
 export interface IDepositAppointmentResponse {
   appointmentId: string;
-
+  orderNumber: string;
   bookingMethod: "DEPOSIT";
 
   appointmentStatus: "PENDING_PAYMENT";

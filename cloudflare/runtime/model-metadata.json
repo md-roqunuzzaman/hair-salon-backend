@@ -94,6 +94,7 @@
     "arrays": [],
     "scalars": {
       "id": "String",
+      "orderNumber": "String",
       "customerId": "String",
       "branchId": "String",
       "staffId": "String",

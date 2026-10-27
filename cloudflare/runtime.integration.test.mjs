@@ -97,6 +97,9 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
   assert.ok(availability.data.data.slots.length > 0);
   const created = await api('/api/v1/appointments/pay-now', { method: 'POST', body: { ...booking, startTime: '10:00' }, status: 201 });
   const id = created.data.data.appointmentId;
+  assert.match(created.data.data.orderNumber, /^[A-HJ-NP-Z2-9]{6}$/);
+  const myAppointments = (await api('/api/v1/appointments/my?type=UPCOMING')).data.data;
+  assert.equal(myAppointments.items.find(item => item.id === id)?.orderNumber, created.data.data.orderNumber);
   const conflict = await mf.dispatchFetch('https://test/api/v1/appointments/reserve', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ ...booking, startTime: '10:00' }) });
   assert.ok(conflict.status >= 400 && conflict.status < 500, await conflict.text());
   await api(`/api/v1/wallet/${id}/pay-with-wallet`, { method: 'POST', body: { useBonus: true } });

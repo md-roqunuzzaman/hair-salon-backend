@@ -1,9 +1,9 @@
 model Appointment {
-  id String @id @default(uuid())
-
-  customerId String
-  branchId   String
-  staffId    String
+  id          String @id @default(uuid())
+  orderNumber String @unique @db.VarChar(6)
+  customerId  String
+  branchId    String
+  staffId     String
 
   serviceId       String?
   packageId       String?

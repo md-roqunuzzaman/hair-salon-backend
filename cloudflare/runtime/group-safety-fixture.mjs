@@ -6,6 +6,7 @@ import { groupPurchaseExpiryService } from '../../src/app/module/group-purchase/
 import { appointmentService } from '../../src/app/module/appointment/appointment.service.ts';
 import { RefundRequestProcessingService } from '../../src/app/module/refund-request/refund-request.processing.ts';
 import { stripe } from '../../src/app/lib/stripe.ts';
+import { generateOrderNumber } from '../../src/app/utils/generateOrderNumber.ts';
 
 export async function runGroupSafety(db) {
   const passed = [];
@@ -36,7 +37,7 @@ export async function runGroupSafety(db) {
     const reserve = method === 'RESERVE_NOW';
     const purchase = await db.groupPurchase.create({ data: { customerId: customer.id, packageId: item.id, quantity: 2, unitPrice: '100.25', amount: '200.50', purchaseFlow: flow, bookingMethod: method, paymentStatus: reserve ? 'UNPAID' : 'PENDING', reservationExpiresAt: reserve ? null : new Date(Date.now() + 300000), depositAmount: method === 'DEPOSIT' ? '60.15' : null, remainingAmount: method === 'DEPOSIT' ? '140.35' : null } });
     await db.package.update({ where: { id: item.id }, data: reserve ? { soldQuantity: 2 } : { reservedQuantity: 2 } });
-    if (flow === 'DIRECT_BOOK') await db.appointment.create({ data: { customerId: customer.id, branchId: branch.id, staffId: staff.id, packageId: item.id, groupPurchaseId: purchase.id, bookingMethod: method, appointmentStatus: reserve ? 'RESERVED' : 'PENDING_PAYMENT', paymentStatus: reserve ? 'UNPAID' : 'PENDING', date: new Date(date), startTime: time, endTime: `${time.slice(0, 2)}:30`, price: '100.25', durationMinutes: 30, itemName: 'Group package', holdExpiresAt: reserve ? null : purchase.reservationExpiresAt, qrToken: reserve ? crypto.randomUUID() : null } });
+    if (flow === 'DIRECT_BOOK') await db.appointment.create({ data: { orderNumber: generateOrderNumber(), customerId: customer.id, branchId: branch.id, staffId: staff.id, packageId: item.id, groupPurchaseId: purchase.id, bookingMethod: method, appointmentStatus: reserve ? 'RESERVED' : 'PENDING_PAYMENT', paymentStatus: reserve ? 'UNPAID' : 'PENDING', date: new Date(date), startTime: time, endTime: `${time.slice(0, 2)}:30`, price: '100.25', durationMinutes: 30, itemName: 'Group package', holdExpiresAt: reserve ? null : purchase.reservationExpiresAt, qrToken: reserve ? crypto.randomUUID() : null } });
     return purchase;
   };
   const stripePayment = async purchase => {

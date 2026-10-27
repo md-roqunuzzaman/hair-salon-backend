@@ -7,6 +7,8 @@ import branchPolicies from '../migrations/0011_branch_group_purchase_policies.sq
 import policyExecution from '../migrations/0012_merchant_policy_execution.sql';
 import bannerManagement from '../migrations/0013_banner_management.sql';
 import staffPortfolio from '../migrations/0014_staff_portfolio.sql';
+import appointmentOrderNumber from '../migrations/0015_appointment_order_number.sql';
+import requiredOrderNumber from '../migrations/0016_require_appointment_order_number.sql';
 import migration from '../migrations/0001_initial.sql';
 import upgrade from '../migrations/0002_wallet_topup_promotion.sql';
 import settlementIdentity from '../migrations/0006_group_settlement_identity.sql';
@@ -18,7 +20,7 @@ import { Sessions } from './sessions.mjs';
 export class DatabaseFixture {
   constructor(state) {
     this.state = state;
-    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema + refundEntitlements + branchPolicies + policyExecution + bannerManagement + staffPortfolio));
+    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema + refundEntitlements + branchPolicies + policyExecution + bannerManagement + staffPortfolio + appointmentOrderNumber + requiredOrderNumber));
     this.db = createDatabase(state.storage);
   }
   async fetch() {

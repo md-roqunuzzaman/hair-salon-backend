@@ -59,7 +59,9 @@ const branchPolicies = await readFile('cloudflare/migrations/0011_branch_group_p
 const policyExecution = await readFile('cloudflare/migrations/0012_merchant_policy_execution.sql', 'utf8');
 const bannerManagement = await readFile('cloudflare/migrations/0013_banner_management.sql', 'utf8');
 const staffPortfolio = await readFile('cloudflare/migrations/0014_staff_portfolio.sql', 'utf8');
-const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+const appointmentOrderNumber = await readFile('cloudflare/migrations/0015_appointment_order_number.sql', 'utf8');
+const requiredOrderNumber = await readFile('cloudflare/migrations/0016_require_appointment_order_number.sql', 'utf8');
+const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);

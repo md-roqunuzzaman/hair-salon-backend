@@ -80,6 +80,20 @@ Setup requires a secret of at least 32 characters, accepts POST only and permane
 
 ## Production cutover
 
+### Required appointment order number upgrade (v16)
+
+`0016_require_appointment_order_number.sql` backfills only NULL order numbers with distinct six-character codes, skipping codes already in use. It then rejects NULL inserts and updates using database triggers. This preserves the referenced Appointment table, payment/refund relationships, money triggers and existing indexes. SQLite's column metadata remains nullable; the schema checker verifies both trigger definitions before accepting their equivalent required-field enforcement. Prisma exposes the field as required.
+
+Backfill and enforcement run atomically once on Durable Object initialization. No separate PostgreSQL backfill command is needed for Cloudflare. Existing non-null codes and other appointment fields remain unchanged. Do not run the Node/PostgreSQL backfill script against Cloudflare.
+
+Verify with `npm run cloudflare:check`, `npm run typecheck`, `npm run test:cloudflare:migrations`, `npm run test:cloudflare:database`, `npm run test:cloudflare:api` and `npm run test:book-now`. Then use `npm run cloudflare:deploy:staging` followed by `npm run cloudflare:deploy`, retaining existing secrets and database identity.
+
+### Appointment order number schema upgrade (v15)
+
+`0015_appointment_order_number.sql` adds nullable `Appointment.orderNumber` with a unique index. Historical appointments retain null order numbers; new bookings generate six-character codes. PostgreSQL `@db.VarChar(6)` becomes SQLite text during Cloudflare schema generation. Existing migrations remain unchanged and v15 applies once on Durable Object initialization after deployment.
+
+Run `npm run cloudflare:check`, `npm run typecheck`, `npm run test:cloudflare:migrations` and `npm run test:cloudflare:api` before deployment. Deploy staging with `npm run cloudflare:deploy:staging` and production with `npm run cloudflare:deploy`, retaining existing secrets and database identity.
+
 ### Staff portfolio schema upgrade (v14)
 
 `0014_staff_portfolio.sql` adds `StaffPortfolioCase` and `StaffPortfolioCaseImage` with their indexes. Portfolio tags use JSON arrays and status uses text in SQLite. Deleting a service retains its portfolio cases with a null service reference; deleting staff removes its cases and images. Existing migrations remain unchanged, and pending v14 applies once on Durable Object initialization after deployment.

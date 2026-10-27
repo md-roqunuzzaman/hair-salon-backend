@@ -109,7 +109,39 @@ export class MigrationFixture {
     applyMigrations(storage, migrations.slice(0, 13));
     storage.sql.exec("INSERT INTO Staff (id,userId,name,email,roleTitle,updatedAt) VALUES ('portfolio-staff','customer','Stylist','stylist@example.com','Stylist',1)");
     storage.sql.exec("INSERT INTO Service (id,name,price,durationMinutes,updatedAt) VALUES ('portfolio-service','Cut',10000,30,1)");
+    applyMigrations(storage, migrations.slice(0, 14));
+    for (const id of ['old-appointment-one', 'old-appointment-two', 'old-appointment-three', 'old-appointment-four']) {
+      storage.sql.exec("INSERT INTO Appointment (id,customerId,branchId,staffId,bookingMethod,appointmentStatus,paymentStatus,date,startTime,endTime,price,durationMinutes,itemName,updatedAt) VALUES (?,'customer','branch','portfolio-staff','PAY_NOW','COMPLETED','PAID',1,'10:00','10:30',10000,30,'Cut',1)", id);
+    }
+    const oldAppointment = storage.sql.exec("SELECT * FROM Appointment WHERE id='old-appointment-one'").one();
+    applyMigrations(storage, migrations.slice(0, 15));
+    const { orderNumber, ...preservedAppointment } = storage.sql.exec("SELECT * FROM Appointment WHERE id='old-appointment-one'").one();
+    if (orderNumber !== null || JSON.stringify(preservedAppointment) !== JSON.stringify(oldAppointment)) throw new Error('Order number upgrade changed historical appointment data');
+    if (storage.sql.exec('SELECT COUNT(*) AS count FROM Appointment WHERE orderNumber IS NULL').one().count !== 4) throw new Error('Multiple legacy NULL order numbers not retained');
+    storage.sql.exec("UPDATE Appointment SET orderNumber='ABC234' WHERE id='old-appointment-one'");
+    let duplicateOrderNumber = false;
+    try { storage.sql.exec("UPDATE Appointment SET orderNumber='ABC234' WHERE id='old-appointment-two'"); } catch { duplicateOrderNumber = true; }
+    if (!duplicateOrderNumber) throw new Error('Appointment order number uniqueness missing');
+    storage.sql.exec("UPDATE Appointment SET orderNumber='AAAAAA' WHERE id='old-appointment-three'");
+    storage.sql.exec("UPDATE Payment SET appointmentId='old-appointment-two' WHERE id='legacy-payment'");
+    const paymentsBeforeRequired = JSON.stringify(storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray());
+    const refundsBeforeRequired = JSON.stringify(storage.sql.exec('SELECT * FROM Refund ORDER BY id').toArray());
     applyMigrations(storage, migrations);
+    if (storage.sql.exec("SELECT orderNumber FROM Appointment WHERE id='old-appointment-one'").one().orderNumber !== 'ABC234') throw new Error('Repeated initialization reset order number');
+    const backfilled = storage.sql.exec('SELECT id,orderNumber FROM Appointment ORDER BY id').toArray();
+    if (backfilled.some(row => !/^[A-HJ-NP-Z2-9]{6}$/.test(row.orderNumber)) || new Set(backfilled.map(row => row.orderNumber)).size !== 4) throw new Error('Required order number backfill missing, invalid or duplicated');
+    if (backfilled.find(row => row.id === 'old-appointment-three').orderNumber !== 'AAAAAA') throw new Error('Backfill overwrote an existing code');
+    if (paymentsBeforeRequired !== JSON.stringify(storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray()) || refundsBeforeRequired !== JSON.stringify(storage.sql.exec('SELECT * FROM Refund ORDER BY id').toArray())) throw new Error('Backfill changed payment/refund records');
+    let nullUpdateRejected = false;
+    try { storage.sql.exec("UPDATE Appointment SET orderNumber=NULL WHERE id='old-appointment-two'"); } catch { nullUpdateRejected = true; }
+    let nullInsertRejected = false;
+    try { storage.sql.exec("INSERT INTO Appointment (id,customerId,branchId,staffId,bookingMethod,appointmentStatus,paymentStatus,date,startTime,endTime,price,durationMinutes,itemName,updatedAt,orderNumber) SELECT 'null-insert',customerId,branchId,staffId,bookingMethod,appointmentStatus,paymentStatus,date,startTime,endTime,price,durationMinutes,itemName,updatedAt,NULL FROM Appointment WHERE id='old-appointment-two'"); } catch (error) { nullInsertRejected = error.message.includes('NOT NULL constraint failed: Appointment.orderNumber'); }
+    if (!nullUpdateRejected || !nullInsertRejected) throw new Error('Required order number NULL enforcement missing');
+    applyMigrations(storage, migrations);
+    if (JSON.stringify(storage.sql.exec('SELECT id,orderNumber FROM Appointment ORDER BY id').toArray()) !== JSON.stringify(backfilled)) throw new Error('Repeated initialization changed backfilled codes');
+    if (storage.sql.exec('PRAGMA foreign_key_check').toArray().length) throw new Error('Required order migration broke foreign keys');
+    storage.sql.exec("UPDATE Payment SET appointmentId=NULL WHERE id='legacy-payment'");
+    storage.sql.exec("DELETE FROM Appointment WHERE id LIKE 'old-appointment-%'");
     storage.sql.exec("INSERT INTO StaffPortfolioCase (id,staffId,serviceId,title,tags,updatedAt) VALUES ('portfolio','portfolio-staff','portfolio-service','Cut result','[]',1)");
     storage.sql.exec("INSERT INTO StaffPortfolioCaseImage (id,caseId,objectKey,updatedAt) VALUES ('portfolio-image','portfolio','portfolio/image.jpg',1)");
     applyMigrations(storage, migrations);
