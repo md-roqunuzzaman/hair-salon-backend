@@ -393,7 +393,7 @@ const createDepositAppointmentValidationSchema = z.object({
 
 const recordRemainingPaymentValidationSchema = z.object({
   body: z.object({
-    paymentMethod: z.enum(["CASH", "CARD", "FPS", "OTHER"]),
+    paymentMethod: z.enum(SalonPaymentMethod),
   }),
 });
 

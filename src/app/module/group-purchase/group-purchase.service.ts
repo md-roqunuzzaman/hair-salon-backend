@@ -41,6 +41,7 @@ import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { presentGroupPurchase } from "./group-purchase.presentation.js";
 import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
+import { getPaymentDisplayStatus } from "../../utils/getPaymentDisplayStatus.js";
 
 const initialAppointmentSelect = {
   id: true,
@@ -807,7 +808,6 @@ const getMyGroupPurchases = async (
       },
       {
         paymentStatus: PaymentStatus.PENDING,
-
         reservationExpiresAt: {
           lte: now,
         },
@@ -852,6 +852,7 @@ const getMyGroupPurchases = async (
 
       include: {
         appointments: { select: initialAppointmentSelect },
+
         package: {
           select: {
             id: true,
@@ -977,7 +978,24 @@ const getMyGroupPurchases = async (
         : purchase.paymentStatus;
 
     // ===================================================
-    // 8.3 REDEMPTION SUMMARY
+    // 8.3 PAYMENT DISPLAY STATUS
+    // ===================================================
+
+    const displayBookingMethod =
+      purchase.bookingMethod ?? BookingMethod.GROUP_PURCHASE;
+
+    const depositPaid =
+      displayBookingMethod === BookingMethod.DEPOSIT &&
+      effectivePaymentStatus === PaymentStatus.PARTIALLY_PAID;
+
+    const paymentDisplayStatus = getPaymentDisplayStatus(
+      effectivePaymentStatus,
+      displayBookingMethod,
+      depositPaid,
+    );
+
+    // ===================================================
+    // 8.4 REDEMPTION SUMMARY
     // ===================================================
 
     const purchasedQuantity = purchase.quantity;
@@ -996,7 +1014,7 @@ const getMyGroupPurchases = async (
       purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
 
     // ===================================================
-    // 8.4 PRIMARY IMAGE
+    // 8.5 PRIMARY IMAGE
     // ===================================================
 
     const primaryImageObjectKey = purchase.package.images[0]?.objectKey ?? null;
@@ -1006,7 +1024,7 @@ const getMyGroupPurchases = async (
       : null;
 
     // ===================================================
-    // 8.5 FINAL PURCHASE RESPONSE
+    // 8.6 FINAL PURCHASE RESPONSE
     // ===================================================
 
     return {
@@ -1018,10 +1036,12 @@ const getMyGroupPurchases = async (
             item.qrVerifiedAt !== null,
         ),
       ),
+
       firstAppointment: presentInitialAppointment(
         purchase.appointments,
         purchase.bookingMethod,
       ),
+
       id: purchase.id,
 
       package: {
@@ -1047,6 +1067,9 @@ const getMyGroupPurchases = async (
 
       // Frontend-friendly calculated status.
       effectivePaymentStatus,
+
+      // NEW: Shared payment display status.
+      paymentDisplayStatus,
 
       // G5: payment reservation expiry indicator.
       paymentExpired,
@@ -1109,6 +1132,7 @@ const getGroupPurchaseById = async (
 
     include: {
       appointments: { select: initialAppointmentSelect },
+
       package: {
         select: {
           id: true,
@@ -1123,6 +1147,7 @@ const getGroupPurchaseById = async (
             orderBy: {
               sortOrder: "asc",
             },
+
             select: {
               objectKey: true,
               isPrimary: true,
@@ -1173,11 +1198,13 @@ const getGroupPurchaseById = async (
       403,
     );
   }
+
   if (role === Role.BRANCH_MANAGER) {
     const branches = await prisma.branchManagerBranch.findMany({
       where: { userId },
       select: { branchId: true },
     });
+
     if (
       !purchase.appointments.some((item) =>
         branches.some((branch) => branch.branchId === item.branchId),
@@ -1215,6 +1242,7 @@ const getGroupPurchaseById = async (
   const redeemedQuantity = await prisma.appointment.count({
     where: {
       groupPurchaseId: purchase.id,
+
       appointmentStatus: {
         not: AppointmentStatus.CANCELLED,
       },
@@ -1235,7 +1263,40 @@ const getGroupPurchaseById = async (
     purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
 
   // =====================================================
-  // 5. RESPONSE WITH MULTILINGUAL CONTENT
+  // 5. PAYMENT DISPLAY STATUS
+  // =====================================================
+
+  const now = new Date();
+
+  const deadlinePassed =
+    purchase.reservationExpiresAt !== null &&
+    purchase.reservationExpiresAt <= now;
+
+  const paymentExpired =
+    purchase.paymentStatus === PaymentStatus.FAILED ||
+    (purchase.paymentStatus === PaymentStatus.PENDING && deadlinePassed);
+
+  // Preserve actual database status.
+  const effectivePaymentStatus =
+    paymentExpired && purchase.paymentStatus === PaymentStatus.PENDING
+      ? PaymentStatus.FAILED
+      : purchase.paymentStatus;
+
+  const displayBookingMethod =
+    purchase.bookingMethod ?? BookingMethod.GROUP_PURCHASE;
+
+  const depositPaid =
+    displayBookingMethod === BookingMethod.DEPOSIT &&
+    effectivePaymentStatus === PaymentStatus.PARTIALLY_PAID;
+
+  const paymentDisplayStatus = getPaymentDisplayStatus(
+    effectivePaymentStatus,
+    displayBookingMethod,
+    depositPaid,
+  );
+
+  // =====================================================
+  // 6. RESPONSE WITH MULTILINGUAL CONTENT
   // =====================================================
 
   return {
@@ -1247,10 +1308,12 @@ const getGroupPurchaseById = async (
           item.qrVerifiedAt !== null,
       ),
     ),
+
     firstAppointment: presentInitialAppointment(
       purchase.appointments,
       purchase.bookingMethod,
     ),
+
     id: purchase.id,
 
     package: {
@@ -1323,7 +1386,17 @@ const getGroupPurchaseById = async (
 
     amount: Number(purchase.amount),
 
+    // Actual database payment status.
     paymentStatus: purchase.paymentStatus,
+
+    // Calculated payment status.
+    effectivePaymentStatus,
+
+    // NEW: Frontend payment display status.
+    paymentDisplayStatus,
+
+    // Payment expiry indicator.
+    paymentExpired,
 
     reservationExpiresAt: purchase.reservationExpiresAt,
 
@@ -1332,7 +1405,7 @@ const getGroupPurchaseById = async (
     createdAt: purchase.createdAt,
 
     // =====================================================
-    // 6. CUSTOMER-FACING REDEMPTION INFORMATION
+    // 7. CUSTOMER-FACING REDEMPTION INFORMATION
     // =====================================================
 
     redemption: {

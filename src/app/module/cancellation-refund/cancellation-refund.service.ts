@@ -93,23 +93,43 @@ async function appointmentEvaluation(
 ) {
   const appointment = await tx.appointment.findUnique({
     where: { id },
-    include: { payments: { include: { refunds: true } }, groupPurchase: true },
+    include: {
+      payments: {
+        include: {
+          refunds: true,
+        },
+      },
+      groupPurchase: true,
+    },
   });
-  if (!appointment) throw new AppError("Appointment not found", 404);
+
+  if (!appointment) {
+    throw new AppError("Appointment not found", 404);
+  }
+
   await access(tx, appointment, userId, role);
+
   const snapshot = appointment.cancellationPolicySnapshot;
-  if (!isSnapshot(snapshot))
+
+  if (!isSnapshot(snapshot)) {
     throw new AppError("LEGACY_POLICY_REVIEW_REQUIRED", 409);
+  }
+
   const group = appointment.groupPurchaseId !== null;
+
   if (
     (group && snapshot.module !== "GROUP_CANCEL") ||
     (!group && snapshot.module !== "SERVICE")
-  )
+  ) {
     throw new AppError("POLICY_SNAPSHOT_MISMATCH", 409);
+  }
+
   const evaluatedAt = new Date();
+
   const ms =
     appointmentTime(appointment.date, appointment.startTime).getTime() -
     evaluatedAt.getTime();
+
   const { payment, pending } = await funding(
     tx,
     group
@@ -120,16 +140,35 @@ async function appointmentEvaluation(
           ),
         ),
   );
+
   const eligible = payment ? remaining(payment) : 0;
+
   const calculation = evaluatePolicy(snapshot, eligible, ms);
+
   let reason = calculation.reason;
-  if (!["RESERVED", "CONFIRMED"].includes(appointment.appointmentStatus))
+
+  // Existing appointment status validation
+  if (!["RESERVED", "CONFIRMED"].includes(appointment.appointmentStatus)) {
     reason = "APPOINTMENT_NOT_CANCELLABLE";
-  if (pending) reason = "REFUND_REQUEST_ALREADY_EXISTS";
-  // The initial Direct Booking is also the QR/salon settlement anchor. Cancelling
-  // it needs a separate whole-purchase transition; retain the existing guard.
-  if (group && appointment.bookingMethod !== "GROUP_PURCHASE")
+  }
+
+  // NEW: Prevent cancellation after QR check-in
+  if (appointment.qrVerifiedAt !== null) {
+    reason = "APPOINTMENT_ALREADY_CHECKED_IN";
+  }
+
+  // Existing refund request validation
+  if (pending) {
+    reason = "REFUND_REQUEST_ALREADY_EXISTS";
+  }
+
+  // Initial Direct Booking is the QR/salon settlement anchor.
+  // Cancelling it requires separate whole-purchase processing.
+  if (group && appointment.bookingMethod !== "GROUP_PURCHASE") {
     reason = "INITIAL_BOOKING_REQUIRES_PURCHASE_REVIEW";
+  }
+
+  // Existing group purchase validation
   if (
     group &&
     (!appointment.groupPurchase ||
@@ -137,21 +176,33 @@ async function appointmentEvaluation(
       !["PAID", "PARTIALLY_PAID", "UNPAID"].includes(
         appointment.groupPurchase.paymentStatus,
       ))
-  )
+  ) {
     reason = "GROUP_PURCHASE_NOT_CANCELLABLE";
+  }
+
   const refund = {
     eligiblePaidAmount: money(eligible),
+
     deductionType: calculation.tier?.calculationType ?? null,
+
     deductionValue:
       calculation.tier?.deductionValue ?? calculation.tier?.value ?? null,
+
     deductionAmount: money(calculation.deductionCents),
+
     refundAmount: reason ? 0 : money(calculation.refundCents),
+
     currency: "HKD",
+
     destination: payment?.provider ?? null,
+
     paymentId: payment?.id ?? null,
+
     approvalRequired: !!payment && calculation.refundCents > 0,
   };
+
   const outcome = reason ? null : calculation.entitlementOutcome;
+
   const token = signature({
     userId,
     id,
@@ -163,21 +214,32 @@ async function appointmentEvaluation(
     refund,
     outcome,
   });
+
   const view = {
     appointmentId: id,
+
     bookingMethod: appointment.bookingMethod,
+
     canCancel: reason === null,
+
     reason,
+
     hoursBeforeAppointment: ms / 3600000,
+
     policyVersion: snapshot.version,
+
     cancellationDeadline: new Date(
       appointmentTime(appointment.date, appointment.startTime).getTime() -
         snapshot.config.minimumCancellationHours * 3600000,
     ),
+
     entitlementOutcome: outcome,
+
     refund,
+
     previewToken: token,
   };
+
   return {
     view,
     appointment,
@@ -372,32 +434,74 @@ export async function cancelWithPolicy(
   role: string,
   body: Confirmation,
 ) {
-  const input = confirmationBody.parse(body),
-    key = `cancel:${userId}:${input.idempotencyKey}`;
+  const input = confirmationBody.parse(body);
+  const key = `cancel:${userId}:${input.idempotencyKey}`;
+
   return prisma.$transaction(
     async (tx) => {
       const initial = await tx.appointment.findUnique({
         where: { id },
         select: { groupPurchaseId: true },
       });
-      if (initial?.groupPurchaseId)
-        await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id"=${initial.groupPurchaseId} FOR UPDATE`;
-      await tx.$queryRaw`SELECT "id" FROM "Appointment" WHERE "id"=${id} FOR UPDATE`;
-      const old = await tx.appointment.findUnique({ where: { id } });
-      if (!old) throw new AppError("Appointment not found", 404);
+
+      if (initial?.groupPurchaseId) {
+        await tx.$queryRaw`
+          SELECT "id"
+          FROM "GroupPurchase"
+          WHERE "id" = ${initial.groupPurchaseId}
+          FOR UPDATE
+        `;
+      }
+
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "Appointment"
+        WHERE "id" = ${id}
+        FOR UPDATE
+      `;
+
+      const old = await tx.appointment.findUnique({
+        where: { id },
+      });
+
+      if (!old) {
+        throw new AppError("Appointment not found", 404);
+      }
+
       await access(tx, old, userId, role);
+
+      // Already completed requests retain their idempotent response.
       if (old.cancellationIdempotencyKey === key && old.cancellationResult) {
-        if (old.cancellationReason !== input.reason)
+        if (old.cancellationReason !== input.reason) {
           throw new AppError("IDEMPOTENCY_KEY_CONFLICT", 409);
+        }
+
         return old.cancellationResult;
       }
+
+      // Block cancellation after customer check-in.
+      if (old.qrVerifiedAt !== null) {
+        throw new AppError(
+          "Appointment cannot be cancelled because the customer has already checked in",
+          409,
+        );
+      }
+
       const result = await appointmentEvaluation(tx, id, userId, role);
-      if (!result.view.canCancel) throw new AppError(result.view.reason!, 409);
-      if (input.previewToken !== result.view.previewToken)
+
+      if (!result.view.canCancel) {
+        throw new AppError(result.view.reason!, 409);
+      }
+
+      if (input.previewToken !== result.view.previewToken) {
         throw new AppError("POLICY_PREVIEW_STALE", 409);
+      }
+
       const { appointment, snapshot, payment, calculation } = result;
+
       let request = null;
-      if (payment && calculation.refundCents > 0)
+
+      if (payment && calculation.refundCents > 0) {
         request = await createRequest(
           tx,
           appointment.customerId,
@@ -418,19 +522,27 @@ export async function cancelWithPolicy(
             },
           },
         );
+      }
+
       if (
         appointment.groupPurchaseId &&
         calculation.entitlementOutcome === "FORFEITED"
-      )
+      ) {
         await tx.groupPurchase.update({
           where: { id: appointment.groupPurchaseId },
-          data: { forfeitedQuantity: { increment: 1 } },
+          data: {
+            forfeitedQuantity: { increment: 1 },
+          },
         });
+      }
+
       let groupPurchase;
+
       if (appointment.groupPurchaseId) {
         const purchase = await tx.groupPurchase.findUniqueOrThrow({
           where: { id: appointment.groupPurchaseId },
         });
+
         const allocations = await tx.appointment.count({
           where: {
             groupPurchaseId: purchase.id,
@@ -438,6 +550,7 @@ export async function cancelWithPolicy(
             appointmentStatus: { not: "CANCELLED" },
           },
         });
+
         groupPurchase = {
           purchaseId: purchase.id,
           purchasedQuantity: purchase.quantity,
@@ -451,6 +564,7 @@ export async function cancelWithPolicy(
           ),
         };
       }
+
       const response = {
         appointmentId: id,
         appointmentStatus: "CANCELLED",
@@ -460,8 +574,16 @@ export async function cancelWithPolicy(
         entitlementOutcome: calculation.entitlementOutcome,
         ...(groupPurchase && { groupPurchase }),
       };
+
+      // Atomic protection: checked-in appointments cannot be cancelled.
       const changed = await tx.appointment.updateMany({
-        where: { id, appointmentStatus: { in: ["RESERVED", "CONFIRMED"] } },
+        where: {
+          id,
+          appointmentStatus: {
+            in: ["RESERVED", "CONFIRMED"],
+          },
+          qrVerifiedAt: null,
+        },
         data: {
           appointmentStatus: "CANCELLED",
           cancelledAt: new Date(),
@@ -474,7 +596,11 @@ export async function cancelWithPolicy(
           }),
         },
       });
-      if (changed.count !== 1) throw new AppError("CANCELLATION_CONFLICT", 409);
+
+      if (changed.count !== 1) {
+        throw new AppError("CANCELLATION_CONFLICT", 409);
+      }
+
       await auditLogService.createAuditLog(
         {
           userId,
@@ -488,6 +614,7 @@ export async function cancelWithPolicy(
         },
         tx,
       );
+
       await notificationService.createNotification(
         {
           userId: appointment.customerId,
@@ -500,6 +627,7 @@ export async function cancelWithPolicy(
         },
         tx,
       );
+
       return response;
     },
     {
@@ -508,6 +636,7 @@ export async function cancelWithPolicy(
     },
   );
 }
+
 export async function requestGroupRefund(
   id: string,
   userId: string,

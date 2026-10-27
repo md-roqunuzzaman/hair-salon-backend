@@ -34,7 +34,7 @@ router.get(
 
 router.get(
   "/:staffId",
-  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER, Role.STAFF, Role.CUSTOMER),
   staffController.getStaffById,
 );
 

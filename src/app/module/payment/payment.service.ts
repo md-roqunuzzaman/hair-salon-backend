@@ -1992,9 +1992,7 @@ export const handleGroupPurchaseStripeEvent = async (
               ? PaymentStatus.PARTIALLY_PAID
               : PaymentStatus.PAID;
 
-            const qrToken = isDeposit
-              ? crypto.randomBytes(32).toString("hex")
-              : null;
+            const qrToken = crypto.randomBytes(32).toString("hex");
 
             const updatedAppointment = await tx.appointment.updateMany({
               where: {

@@ -3096,11 +3096,27 @@ const cancelAppointment = async (
     throw new AppError("You are not allowed to cancel this appointment", 403);
   }
 
+  // =====================================================
+  // 3. BLOCK CANCELLATION AFTER QR CHECK-IN
+  // =====================================================
+
+  if (appointment.qrVerifiedAt !== null) {
+    throw new AppError(
+      "Appointment cannot be cancelled because the customer has already checked in",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 4. NEW CANCELLATION POLICY FLOW
+  // =====================================================
+
   if (
     isSnapshot(appointment.cancellationPolicySnapshot) &&
     !appointment.cancellationPolicySnapshot.legacy
   ) {
     const preview = await previewAppointment(appointmentId, userId, role);
+
     return (await cancelWithPolicy(appointmentId, userId, role, {
       reason: payload.reason,
       idempotencyKey: "existing-route-" + appointmentId,
@@ -3109,7 +3125,7 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 3. STATUS VALIDATION
+  // 5. STATUS VALIDATION
   // =====================================================
 
   if (!cancellableStatuses.includes(appointment.appointmentStatus)) {
@@ -3120,7 +3136,7 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 4. CUSTOMER CANCELLATION POLICY
+  // 6. CUSTOMER CANCELLATION POLICY
   // =====================================================
 
   if (role === Role.CUSTOMER) {
@@ -3146,7 +3162,7 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 5. GROUP PURCHASE IDENTIFICATION
+  // 7. GROUP PURCHASE IDENTIFICATION
   // =====================================================
 
   const isGroupPurchaseRedemption =
@@ -3165,7 +3181,7 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 6. BLOCK INITIAL BOOK NOW CANCELLATION
+  // 8. BLOCK INITIAL BOOK NOW CANCELLATION
   // =====================================================
 
   if (isInitialBookNowAppointment) {
@@ -3176,7 +3192,7 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 7. PRESERVE PAID BOOKING RESTRICTION
+  // 9. PRESERVE PAID BOOKING RESTRICTION
   // =====================================================
 
   if (
@@ -3191,7 +3207,7 @@ const cancelAppointment = async (
   }
 
   // =====================================================
-  // 8. SERIALIZABLE TRANSACTION + RETRY
+  // 10. SERIALIZABLE TRANSACTION + RETRY
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
@@ -3199,7 +3215,7 @@ const cancelAppointment = async (
       const result = await prisma.$transaction(
         async (tx) => {
           // =============================================
-          // 8.1 RE-READ CURRENT APPOINTMENT
+          // 10.1 RE-READ CURRENT APPOINTMENT
           // =============================================
 
           const current = await tx.appointment.findUnique({
@@ -3214,6 +3230,7 @@ const cancelAppointment = async (
               groupPurchaseId: true,
               appointmentStatus: true,
               paymentStatus: true,
+              qrVerifiedAt: true,
               date: true,
               startTime: true,
               branch: {
@@ -3233,7 +3250,7 @@ const cancelAppointment = async (
           }
 
           // =============================================
-          // 8.2 RECHECK AUTHORIZATION
+          // 10.2 RECHECK AUTHORIZATION
           // =============================================
 
           if (role === Role.CUSTOMER && current.customerId !== userId) {
@@ -3262,7 +3279,18 @@ const cancelAppointment = async (
           }
 
           // =============================================
-          // 8.3 RECHECK APPOINTMENT STATUS
+          // 10.3 RECHECK QR VERIFICATION
+          // =============================================
+
+          if (current.qrVerifiedAt !== null) {
+            throw new AppError(
+              "Appointment cannot be cancelled because the customer has already checked in",
+              409,
+            );
+          }
+
+          // =============================================
+          // 10.4 RECHECK APPOINTMENT STATUS
           // =============================================
 
           if (!cancellableStatuses.includes(current.appointmentStatus)) {
@@ -3273,7 +3301,7 @@ const cancelAppointment = async (
           }
 
           // =============================================
-          // 8.4 RECHECK CUSTOMER CUTOFF
+          // 10.5 RECHECK CUSTOMER CUTOFF
           // =============================================
 
           if (role === Role.CUSTOMER) {
@@ -3301,7 +3329,7 @@ const cancelAppointment = async (
           }
 
           // =============================================
-          // 8.5 IDENTIFY GROUP PURCHASE TYPE
+          // 10.6 IDENTIFY GROUP PURCHASE TYPE
           // =============================================
 
           const isCurrentRedemption =
@@ -3320,7 +3348,7 @@ const cancelAppointment = async (
           }
 
           // =============================================
-          // 8.6 BLOCK INITIAL BOOK NOW CANCELLATION
+          // 10.7 BLOCK INITIAL BOOK NOW
           // =============================================
 
           if (isCurrentInitialBookNow) {
@@ -3331,7 +3359,7 @@ const cancelAppointment = async (
           }
 
           // =============================================
-          // 8.7 PRESERVE PAID BOOKING RESTRICTION
+          // 10.8 PRESERVE PAID BOOKING RESTRICTION
           // =============================================
 
           if (
@@ -3346,7 +3374,7 @@ const cancelAppointment = async (
           }
 
           // =============================================
-          // 8.8 VALIDATE GROUP PURCHASE
+          // 10.9 VALIDATE GROUP PURCHASE
           // =============================================
 
           let purchase: {
@@ -3383,7 +3411,7 @@ const cancelAppointment = async (
           }
 
           // =============================================
-          // 9. ATOMIC APPOINTMENT CANCELLATION
+          // 11. ATOMIC APPOINTMENT CANCELLATION
           // =============================================
 
           const updated = await tx.appointment.updateMany({
@@ -3393,27 +3421,32 @@ const cancelAppointment = async (
                 in: cancellableStatuses,
               },
 
-              // Prevent linked appointment type
-              // from changing between read/update.
+              // NEW: QR must remain unverified.
+              qrVerifiedAt: null,
+
+              // Preserve linked appointment type.
               bookingMethod: current.bookingMethod,
+
               groupPurchaseId: current.groupPurchaseId,
             },
             data: {
               appointmentStatus: AppointmentStatus.CANCELLED,
+
               cancelledAt: new Date(),
+
               cancellationReason: payload.reason.trim(),
             },
           });
 
           if (updated.count !== 1) {
             throw new AppError(
-              "Appointment cannot be cancelled in its current status",
+              "Appointment cancellation conflict or customer already checked in",
               409,
             );
           }
 
           // =============================================
-          // 10. CALCULATE PACKAGE QUANTITY
+          // 12. CALCULATE PACKAGE QUANTITY
           // =============================================
 
           let groupPurchaseSummary: ICancelAppointmentResponse["groupPurchase"] =
@@ -3423,6 +3456,7 @@ const cancelAppointment = async (
             const redeemedQuantity = await tx.appointment.count({
               where: {
                 groupPurchaseId: purchase.id,
+
                 appointmentStatus: {
                   not: AppointmentStatus.CANCELLED,
                 },
@@ -3443,7 +3477,7 @@ const cancelAppointment = async (
           }
 
           // =============================================
-          // 11. CUSTOMER NOTIFICATION
+          // 13. CUSTOMER NOTIFICATION
           // =============================================
 
           const translations = notificationTemplates.BOOKING_CANCELLED();
@@ -3453,8 +3487,11 @@ const cancelAppointment = async (
               appointmentId: current.id,
               userId: current.customerId,
               type: "BOOKING_CANCELLED",
+
               title: translations.en!.title!,
+
               message: translations.en!.message!,
+
               translations,
             },
             tx,
@@ -3471,13 +3508,14 @@ const cancelAppointment = async (
       );
 
       // =====================================================
-      // 12. FINAL RESPONSE
+      // 14. FINAL RESPONSE
       // =====================================================
 
       return {
         appointmentId: result.appointmentId,
         appointmentStatus: "CANCELLED",
         refundStatus: "NOT_REQUIRED",
+
         ...(result.groupPurchase && {
           groupPurchase: result.groupPurchase,
         }),

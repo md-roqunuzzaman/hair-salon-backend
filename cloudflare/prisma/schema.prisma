@@ -487,6 +487,8 @@ enum SalonPaymentMethod {
   CASH
   CARD
   FPS
+  WECHAT_PAY
+  ALIPAY
   OTHER
 }
 
