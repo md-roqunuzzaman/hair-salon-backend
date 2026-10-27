@@ -57,6 +57,7 @@ import { getLocalizedContent } from "../../utils/localization.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
+import { getPaymentDisplayStatus } from "../../utils/getPaymentDisplayStatus.js";
 
 const PAY_NOW_HOLD_MINUTES = 5;
 const MAX_TRANSACTION_RETRIES = 3;
@@ -2292,11 +2293,15 @@ const getMyAppointments = async (
         payments: {
           select: {
             amount: true,
+            purpose: true,
             status: true,
+            paidAt: true,
+
             refunds: {
               where: {
                 status: "SUCCEEDED",
               },
+
               select: {
                 amount: true,
               },
@@ -2337,18 +2342,21 @@ const getMyAppointments = async (
       : null;
 
     // =====================================================
-    // 5. QR STATE
+    // 5. QR STATE - ALL BOOKING METHODS
     // =====================================================
 
+    const qrEligibleStatuses: AppointmentStatus[] = [
+      AppointmentStatus.RESERVED,
+      AppointmentStatus.CONFIRMED,
+    ];
+
     const qrAvailable =
-      (appointment.bookingMethod === BookingMethod.RESERVE_NOW ||
-        appointment.bookingMethod === BookingMethod.DEPOSIT) &&
-      appointment.appointmentStatus === AppointmentStatus.RESERVED &&
+      qrEligibleStatuses.includes(appointment.appointmentStatus) &&
       Boolean(appointment.qrToken) &&
       !appointment.qrVerifiedAt;
 
     // =====================================================
-    // 6. G8 â€” PAYMENT SUMMARY
+    // 6. PAYMENT SUMMARY
     // =====================================================
 
     const price = Number(appointment.price);
@@ -2369,15 +2377,17 @@ const getMyAppointments = async (
       : price;
 
     // =====================================================
-    // 7. CALCULATE ACTUAL SUCCESSFUL PAYMENTS
+    // 7. ACTUAL SUCCESSFUL PAYMENTS
     // =====================================================
 
+    const successfulPaymentStatuses: PaymentStatus[] = [
+      PaymentStatus.PAID,
+      PaymentStatus.PARTIALLY_REFUNDED,
+      PaymentStatus.REFUNDED,
+    ];
+
     const grossPaid = appointment.payments.reduce((total, payment) => {
-      if (
-        payment.status === PaymentStatus.PAID ||
-        payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
-        payment.status === PaymentStatus.REFUNDED
-      ) {
+      if (successfulPaymentStatuses.includes(payment.status)) {
         return total + Number(payment.amount);
       }
 
@@ -2396,7 +2406,48 @@ const getMyAppointments = async (
     const netPaid = Math.max(0, Number((grossPaid - totalRefunded).toFixed(2)));
 
     // =====================================================
-    // 8. APPOINTMENT COLLECTION STATE
+    // 8. VERIFY ACTUAL DEPOSIT PAYMENT
+    // =====================================================
+
+    const depositPaid =
+      isDepositBooking &&
+      appointment.payments.some((payment) => {
+        if (payment.purpose !== "APPOINTMENT_DEPOSIT") {
+          return false;
+        }
+
+        if (!successfulPaymentStatuses.includes(payment.status)) {
+          return false;
+        }
+
+        if (!payment.paidAt) {
+          return false;
+        }
+
+        const refundedAmount = payment.refunds.reduce(
+          (sum, refund) => sum + Number(refund.amount),
+          0,
+        );
+
+        const depositNetPaid = Number(
+          (Number(payment.amount) - refundedAmount).toFixed(2),
+        );
+
+        return depositNetPaid > 0;
+      });
+
+    // =====================================================
+    // 9. PAYMENT DISPLAY STATUS
+    // =====================================================
+
+    const paymentDisplayStatus = getPaymentDisplayStatus(
+      appointment.paymentStatus,
+      appointment.bookingMethod,
+      depositPaid,
+    );
+
+    // =====================================================
+    // 10. APPOINTMENT COLLECTION STATE
     // =====================================================
 
     const closedStatuses: AppointmentStatus[] = [
@@ -2404,28 +2455,23 @@ const getMyAppointments = async (
       AppointmentStatus.EXPIRED,
       AppointmentStatus.NO_SHOW,
     ];
+
     const isClosedWithoutCollection = closedStatuses.includes(
       appointment.appointmentStatus,
     );
 
-    let amountPaid = 0;
+    let amountPaid = netPaid;
     let amountDue = 0;
 
     if (appointment.paymentStatus === PaymentStatus.PAID) {
-      amountPaid = price;
       amountDue = 0;
     } else if (appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID) {
-      amountPaid = netPaid;
       amountDue = Math.max(0, Number((price - amountPaid).toFixed(2)));
     } else if (appointment.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED) {
-      amountPaid = netPaid;
       amountDue = 0;
     } else if (appointment.paymentStatus === PaymentStatus.REFUNDED) {
-      amountPaid = 0;
       amountDue = 0;
     } else {
-      amountPaid = netPaid;
-
       amountDue = Math.max(0, Number((price - amountPaid).toFixed(2)));
     }
 
@@ -2434,14 +2480,10 @@ const getMyAppointments = async (
     }
 
     // =====================================================
-    // 9. G8 â€” REMAINING BALANCE
+    // 11. REMAINING BALANCE
     // =====================================================
 
     let remainingAmount = amountDue;
-
-    if (appointment.paymentStatus === PaymentStatus.PAID) {
-      remainingAmount = 0;
-    }
 
     if (
       appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID &&
@@ -2463,15 +2505,18 @@ const getMyAppointments = async (
     }
 
     // =====================================================
-    // 10. FINAL RESPONSE DTO
+    // 12. FINAL RESPONSE DTO
     // =====================================================
 
     return {
       id: appointment.id,
       orderNumber: appointment.orderNumber,
+
       bookingMethod: appointment.bookingMethod,
       appointmentStatus: appointment.appointmentStatus,
+
       paymentStatus: appointment.paymentStatus,
+      paymentDisplayStatus,
 
       branch: {
         id: appointment.branch.id,
@@ -2516,7 +2561,7 @@ const getMyAppointments = async (
   });
 
   // =====================================================
-  // 11. PAGINATION RESPONSE
+  // 13. PAGINATION RESPONSE
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
@@ -2534,6 +2579,7 @@ const getMyAppointments = async (
     },
   };
 };
+
 const getAppointmentById = async (
   appointmentId: string,
   userId: string,
@@ -2580,6 +2626,7 @@ const getAppointmentById = async (
         select: {
           id: true,
           amount: true,
+          purpose: true,
           status: true,
           provider: true,
           salonPaymentMethod: true,
@@ -2648,7 +2695,6 @@ const getAppointmentById = async (
     },
   );
 
-  // Booking-time snapshot fallback.
   let localizedItemName = appointment.itemName;
 
   if (appointment.serviceId) {
@@ -2701,10 +2747,17 @@ const getAppointmentById = async (
   // 4. QR STATE
   // =====================================================
 
+  // QR availability for all supported booking methods.
+  // A QR must exist, remain unused, and the appointment
+  // must be in an eligible state.
+
+  const qrEligibleStatuses: AppointmentStatus[] = [
+    AppointmentStatus.RESERVED,
+    AppointmentStatus.CONFIRMED,
+  ];
+
   const qrAvailable =
-    (appointment.bookingMethod === BookingMethod.RESERVE_NOW ||
-      appointment.bookingMethod === BookingMethod.DEPOSIT) &&
-    appointment.appointmentStatus === AppointmentStatus.RESERVED &&
+    qrEligibleStatuses.includes(appointment.appointmentStatus) &&
     Boolean(appointment.qrToken) &&
     !appointment.qrVerifiedAt;
 
@@ -2740,7 +2793,7 @@ const getAppointmentById = async (
     appointment.appointmentStatus === AppointmentStatus.COMPLETED;
 
   // =====================================================
-  // 7. G8 â€” DEPOSIT INFORMATION
+  // 7. DEPOSIT INFORMATION
   // =====================================================
 
   const price = Number(appointment.price);
@@ -2785,7 +2838,48 @@ const getAppointmentById = async (
   const netPaid = Math.max(0, Number((grossPaid - totalRefunded).toFixed(2)));
 
   // =====================================================
-  // 9. FINANCIAL STATE
+  // 9. VERIFY SUCCESSFUL DEPOSIT PAYMENT
+  // =====================================================
+
+  const depositPaid =
+    isDepositBooking &&
+    appointment.payments.some((payment) => {
+      if (payment.purpose !== "APPOINTMENT_DEPOSIT") {
+        return false;
+      }
+
+      if (!successfulPaymentStatuses.includes(payment.status)) {
+        return false;
+      }
+
+      if (!payment.paidAt) {
+        return false;
+      }
+
+      const refundedAmount = payment.refunds.reduce(
+        (sum, refund) => sum + Number(refund.amount),
+        0,
+      );
+
+      const depositNetPaid = Number(
+        (Number(payment.amount) - refundedAmount).toFixed(2),
+      );
+
+      return depositNetPaid > 0;
+    });
+
+  // =====================================================
+  // 10. PAYMENT DISPLAY STATUS
+  // =====================================================
+
+  const paymentDisplayStatus = getPaymentDisplayStatus(
+    appointment.paymentStatus,
+    appointment.bookingMethod,
+    depositPaid,
+  );
+
+  // =====================================================
+  // 11. FINANCIAL STATE
   // =====================================================
 
   const closedStatuses: AppointmentStatus[] = [
@@ -2798,7 +2892,8 @@ const getAppointmentById = async (
     appointment.appointmentStatus,
   );
 
-  let amountPaid = netPaid;
+  const amountPaid = netPaid;
+
   let amountDue = 0;
 
   switch (appointment.paymentStatus) {
@@ -2811,7 +2906,7 @@ const getAppointmentById = async (
       break;
 
     case PaymentStatus.PARTIALLY_REFUNDED:
-      // Refund does not automatically reopen a salon payment obligation.
+      // Refund does not automatically reopen payment obligation.
       amountDue = 0;
       break;
 
@@ -2835,17 +2930,13 @@ const getAppointmentById = async (
   }
 
   // =====================================================
-  // 10. G8 â€” REMAINING BALANCE
+  // 12. REMAINING BALANCE
   // =====================================================
-
-  // Current amount collectible at salon.
-  // Fully paid, refunded and closed bookings have no
-  // remaining collection obligation.
 
   const remainingAmount = amountDue;
 
   // =====================================================
-  // 11. LATEST SUCCESSFUL PAYMENT
+  // 13. LATEST SUCCESSFUL PAYMENT
   // =====================================================
 
   const latestPayment =
@@ -2860,7 +2951,7 @@ const getAppointmentById = async (
       )[0] ?? null;
 
   // =====================================================
-  // 12. RESPONSE DTO
+  // 14. RESPONSE DTO
   // =====================================================
 
   return {
@@ -2872,6 +2963,8 @@ const getAppointmentById = async (
     appointmentStatus: appointment.appointmentStatus,
 
     paymentStatus: appointment.paymentStatus,
+
+    paymentDisplayStatus,
 
     branch: {
       id: appointment.branch.id,
@@ -3721,6 +3814,16 @@ const getAppointmentQr = async (
   appointmentId: string,
   customerId: string,
 ): Promise<IAppointmentQrResponse> => {
+  // =====================================================
+  // 0. EXPIRE PENDING PAYMENT HOLD IF NECESSARY
+  // =====================================================
+
+  await expirePendingAppointmentIfNeeded(appointmentId);
+
+  // =====================================================
+  // 1. FIND APPOINTMENT
+  // =====================================================
+
   const appointment = await prisma.appointment.findUnique({
     where: {
       id: appointmentId,
@@ -3730,8 +3833,18 @@ const getAppointmentQr = async (
       id: true,
       customerId: true,
 
+      groupPurchaseId: true,
+
+      groupPurchase: {
+        select: {
+          purchaseFlow: true,
+          paymentStatus: true,
+        },
+      },
+
       bookingMethod: true,
       appointmentStatus: true,
+      paymentStatus: true,
 
       qrToken: true,
       qrVerifiedAt: true,
@@ -3743,7 +3856,7 @@ const getAppointmentQr = async (
   }
 
   // =====================================================
-  // 1. CUSTOMER OWNERSHIP
+  // 2. CUSTOMER OWNERSHIP
   // =====================================================
 
   if (appointment.customerId !== customerId) {
@@ -3753,34 +3866,166 @@ const getAppointmentQr = async (
     );
   }
 
+  const unavailable = (): IAppointmentQrResponse => ({
+    available: false,
+    qrValue: null,
+  });
+
   // =====================================================
-  // 2. PAY NOW HAS NO QR
+  // 3. ELIGIBLE APPOINTMENT STATUS
+  // =====================================================
+
+  const eligibleStatuses: AppointmentStatus[] = [
+    AppointmentStatus.RESERVED,
+    AppointmentStatus.CONFIRMED,
+  ];
+
+  if (!eligibleStatuses.includes(appointment.appointmentStatus)) {
+    return unavailable();
+  }
+
+  // =====================================================
+  // 4. GROUP PURCHASE FLOW VALIDATION
+  // =====================================================
+
+  const isGroupPurchase = appointment.groupPurchaseId !== null;
+
+  if (isGroupPurchase) {
+    if (!appointment.groupPurchase) {
+      return unavailable();
+    }
+
+    const purchaseFlow = appointment.groupPurchase.purchaseFlow;
+
+    if (appointment.bookingMethod === BookingMethod.GROUP_PURCHASE) {
+      // BUY_NOW_BOOK_LATER:
+      // QR is generated when the customer books an appointment
+      // using a fully paid Group Purchase.
+
+      if (purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_LATER) {
+        return unavailable();
+      }
+
+      if (appointment.groupPurchase.paymentStatus !== PaymentStatus.PAID) {
+        return unavailable();
+      }
+
+      if (
+        appointment.appointmentStatus !== AppointmentStatus.CONFIRMED ||
+        appointment.paymentStatus !== PaymentStatus.PAID
+      ) {
+        return unavailable();
+      }
+    } else {
+      // DIRECT_BOOK:
+      // Appointment is created during the purchase flow.
+
+      if (purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK) {
+        return unavailable();
+      }
+
+      if (
+        appointment.bookingMethod !== BookingMethod.PAY_NOW &&
+        appointment.bookingMethod !== BookingMethod.DEPOSIT &&
+        appointment.bookingMethod !== BookingMethod.RESERVE_NOW
+      ) {
+        return unavailable();
+      }
+
+      // Prevent QR access if the Group Purchase itself
+      // has not reached the required payment state.
+
+      if (appointment.bookingMethod === BookingMethod.PAY_NOW) {
+        if (appointment.groupPurchase.paymentStatus !== PaymentStatus.PAID) {
+          return unavailable();
+        }
+      }
+
+      if (appointment.bookingMethod === BookingMethod.DEPOSIT) {
+        if (
+          appointment.groupPurchase.paymentStatus !==
+            PaymentStatus.PARTIALLY_PAID &&
+          appointment.groupPurchase.paymentStatus !== PaymentStatus.PAID
+        ) {
+          return unavailable();
+        }
+      }
+
+      if (appointment.bookingMethod === BookingMethod.RESERVE_NOW) {
+        if (
+          appointment.groupPurchase.paymentStatus !== PaymentStatus.UNPAID &&
+          appointment.groupPurchase.paymentStatus !== PaymentStatus.PAID
+        ) {
+          return unavailable();
+        }
+      }
+    }
+  } else {
+    // Normal bookings must not use GROUP_PURCHASE booking method.
+
+    if (appointment.bookingMethod === BookingMethod.GROUP_PURCHASE) {
+      return unavailable();
+    }
+  }
+
+  // =====================================================
+  // 5. BOOKING METHOD / PAYMENT VALIDATION
   // =====================================================
 
   if (appointment.bookingMethod === BookingMethod.PAY_NOW) {
-    return {
-      available: false,
-      qrValue: null,
-    };
+    // PAY_NOW QR becomes available only after full payment.
+
+    if (
+      appointment.appointmentStatus !== AppointmentStatus.CONFIRMED ||
+      appointment.paymentStatus !== PaymentStatus.PAID
+    ) {
+      return unavailable();
+    }
+  } else if (appointment.bookingMethod === BookingMethod.DEPOSIT) {
+    // Deposit must already be paid.
+    // Appointment can be RESERVED or CONFIRMED.
+
+    if (
+      appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID &&
+      appointment.paymentStatus !== PaymentStatus.PAID
+    ) {
+      return unavailable();
+    }
+  } else if (appointment.bookingMethod === BookingMethod.RESERVE_NOW) {
+    // RESERVE_NOW may be unpaid before salon check-in.
+
+    if (
+      appointment.paymentStatus !== PaymentStatus.UNPAID &&
+      appointment.paymentStatus !== PaymentStatus.PAID
+    ) {
+      return unavailable();
+    }
+  } else if (appointment.bookingMethod === BookingMethod.GROUP_PURCHASE) {
+    // Fully paid Group Purchase redemption appointment.
+    // No additional payment is required.
+
+    if (
+      !isGroupPurchase ||
+      appointment.appointmentStatus !== AppointmentStatus.CONFIRMED ||
+      appointment.paymentStatus !== PaymentStatus.PAID
+    ) {
+      return unavailable();
+    }
+  } else {
+    return unavailable();
   }
 
   // =====================================================
-  // 3. RESERVE NOW QR AVAILABILITY
+  // 6. QR TOKEN VALIDATION
   // =====================================================
 
-  const isQrAvailable =
-    (appointment.bookingMethod === BookingMethod.RESERVE_NOW ||
-      appointment.bookingMethod === BookingMethod.DEPOSIT) &&
-    appointment.appointmentStatus === AppointmentStatus.RESERVED &&
-    Boolean(appointment.qrToken) &&
-    !appointment.qrVerifiedAt;
-
-  if (!isQrAvailable || !appointment.qrToken) {
-    return {
-      available: false,
-      qrValue: null,
-    };
+  if (!appointment.qrToken || appointment.qrVerifiedAt) {
+    return unavailable();
   }
+
+  // =====================================================
+  // 7. FINAL RESPONSE
+  // =====================================================
 
   return {
     available: true,
@@ -3817,6 +4062,17 @@ const verifyQr = async (
     throw new AppError("Invalid QR", 400);
   }
 
+  const isSupportedBookingMethod = (method: BookingMethod) =>
+    method === BookingMethod.PAY_NOW ||
+    method === BookingMethod.RESERVE_NOW ||
+    method === BookingMethod.DEPOSIT ||
+    method === BookingMethod.GROUP_PURCHASE;
+
+  const expectedStatusFor = (method: BookingMethod) =>
+    method === BookingMethod.PAY_NOW || method === BookingMethod.GROUP_PURCHASE
+      ? AppointmentStatus.CONFIRMED
+      : AppointmentStatus.RESERVED;
+
   // =====================================================
   // 2. FIND APPOINTMENT
   // =====================================================
@@ -3825,12 +4081,14 @@ const verifyQr = async (
     where: {
       qrToken,
     },
+
     include: {
       staff: {
         select: {
           userId: true,
         },
       },
+
       branch: {
         include: {
           bookingPolicy: true,
@@ -3849,16 +4107,19 @@ const verifyQr = async (
   // 3. BOOKING METHOD VALIDATION
   // =====================================================
 
-  if (appointment.bookingMethod === BookingMethod.PAY_NOW) {
-    throw new AppError("QR is not allowed for Pay Now appointments", 409);
+  if (!isSupportedBookingMethod(appointment.bookingMethod)) {
+    throw new AppError(
+      "QR verification is not supported for this booking method",
+      409,
+    );
   }
 
   if (
-    appointment.bookingMethod !== BookingMethod.RESERVE_NOW &&
-    appointment.bookingMethod !== BookingMethod.DEPOSIT
+    appointment.bookingMethod === BookingMethod.GROUP_PURCHASE &&
+    !isGroupPurchaseAppointment
   ) {
     throw new AppError(
-      "QR verification is not supported for this booking method",
+      "Group Purchase appointment is not linked to a purchase",
       409,
     );
   }
@@ -3911,10 +4172,14 @@ const verifyQr = async (
   }
 
   // =====================================================
-  // 7. APPOINTMENT STATUS
+  // 7. EXPECTED APPOINTMENT STATUS
   // =====================================================
 
-  if (appointment.appointmentStatus !== AppointmentStatus.RESERVED) {
+  const expectedAppointmentStatus = expectedStatusFor(
+    appointment.bookingMethod,
+  );
+
+  if (appointment.appointmentStatus !== expectedAppointmentStatus) {
     throw new AppError("QR cannot be verified for this appointment", 409);
   }
 
@@ -3922,13 +4187,19 @@ const verifyQr = async (
   // 8. PAYMENT VALIDATION
   // =====================================================
 
-  if (appointment.bookingMethod === BookingMethod.RESERVE_NOW) {
-    // Normal appointment:
-    // QR verification collects salon payment.
-    //
-    // Group Purchase:
-    // Remaining payment is recorded separately.
+  if (
+    appointment.bookingMethod === BookingMethod.PAY_NOW ||
+    appointment.bookingMethod === BookingMethod.GROUP_PURCHASE
+  ) {
+    if (appointment.paymentStatus !== PaymentStatus.PAID) {
+      throw new AppError(
+        "Appointment must be fully paid before QR verification",
+        409,
+      );
+    }
+  }
 
+  if (appointment.bookingMethod === BookingMethod.RESERVE_NOW) {
     if (!isGroupPurchaseAppointment && !payload.paymentMethod) {
       throw new AppError(
         "Payment method is required for reservation verification",
@@ -3984,6 +4255,7 @@ const verifyQr = async (
     where: {
       id: userId,
     },
+
     select: {
       id: true,
       name: true,
@@ -4010,21 +4282,27 @@ const verifyQr = async (
             where: {
               id: appointment.id,
             },
+
             select: {
               id: true,
               customerId: true,
               branchId: true,
               groupPurchaseId: true,
+
               bookingMethod: true,
               appointmentStatus: true,
               paymentStatus: true,
+
               qrVerifiedAt: true,
               qrToken: true,
+
               price: true,
               currency: true,
+
               date: true,
               startTime: true,
               endTime: true,
+
               staff: {
                 select: {
                   userId: true,
@@ -4037,25 +4315,42 @@ const verifyQr = async (
             throw new AppError("Invalid QR", 404);
           }
 
-          if (
-            current.bookingMethod !== BookingMethod.RESERVE_NOW &&
-            current.bookingMethod !== BookingMethod.DEPOSIT
-          ) {
+          // =============================================
+          // 12.1 RECHECK BOOKING METHOD
+          // =============================================
+
+          if (!isSupportedBookingMethod(current.bookingMethod)) {
             throw new AppError(
               "QR verification is not supported for this booking method",
               409,
             );
           }
 
+          // =============================================
+          // 12.2 RECHECK BRANCH
+          // =============================================
+
           if (current.branchId !== payload.branchId) {
             throw new AppError("QR does not belong to this branch", 403);
           }
+
+          // =============================================
+          // 12.3 RECHECK SINGLE-USE QR
+          // =============================================
 
           if (current.qrVerifiedAt) {
             throw new AppError("QR has already been used", 409);
           }
 
-          if (current.appointmentStatus !== AppointmentStatus.RESERVED) {
+          // =============================================
+          // 12.4 RECHECK APPOINTMENT STATUS
+          // =============================================
+
+          const currentExpectedStatus = expectedStatusFor(
+            current.bookingMethod,
+          );
+
+          if (current.appointmentStatus !== currentExpectedStatus) {
             throw new AppError(
               "QR cannot be verified for this appointment",
               409,
@@ -4073,6 +4368,7 @@ const verifyQr = async (
               where: {
                 id: current.groupPurchaseId!,
               },
+
               select: {
                 id: true,
                 customerId: true,
@@ -4086,25 +4382,56 @@ const verifyQr = async (
               throw new AppError("Group purchase not found", 404);
             }
 
-            if (
-              purchase.customerId !== current.customerId ||
-              purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK ||
-              purchase.bookingMethod !== current.bookingMethod
-            ) {
-              throw new AppError("Group purchase appointment mismatch", 409);
+            if (purchase.customerId !== current.customerId) {
+              throw new AppError("Group purchase customer mismatch", 409);
             }
 
-            const expectedPurchasePaymentStatus =
-              current.bookingMethod === BookingMethod.DEPOSIT
-                ? PaymentStatus.PARTIALLY_PAID
-                : PaymentStatus.UNPAID;
+            if (current.bookingMethod === BookingMethod.GROUP_PURCHASE) {
+              // BUY_NOW_BOOK_LATER:
+              // Purchase was paid first.
+              // QR was generated when an appointment
+              // was subsequently booked.
 
-            if (purchase.paymentStatus !== expectedPurchasePaymentStatus) {
-              throw new AppError(
-                "Group purchase payment state is invalid for QR verification",
-                409,
-              );
+              if (
+                purchase.purchaseFlow !==
+                  GroupPurchaseFlow.BUY_NOW_BOOK_LATER ||
+                purchase.paymentStatus !== PaymentStatus.PAID
+              ) {
+                throw new AppError(
+                  "Group Purchase redemption is not eligible for QR verification",
+                  409,
+                );
+              }
+            } else {
+              // DIRECT_BOOK:
+              // Appointment was created during purchase.
+
+              if (
+                purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK ||
+                purchase.bookingMethod !== current.bookingMethod
+              ) {
+                throw new AppError("Group purchase appointment mismatch", 409);
+              }
+
+              const expectedPurchasePaymentStatus =
+                current.bookingMethod === BookingMethod.PAY_NOW
+                  ? PaymentStatus.PAID
+                  : current.bookingMethod === BookingMethod.DEPOSIT
+                    ? PaymentStatus.PARTIALLY_PAID
+                    : PaymentStatus.UNPAID;
+
+              if (purchase.paymentStatus !== expectedPurchasePaymentStatus) {
+                throw new AppError(
+                  "Group purchase payment state is invalid for QR verification",
+                  409,
+                );
+              }
             }
+          } else if (current.bookingMethod === BookingMethod.GROUP_PURCHASE) {
+            throw new AppError(
+              "Group Purchase appointment is not linked to a purchase",
+              409,
+            );
           }
 
           // =============================================
@@ -4146,6 +4473,7 @@ const verifyQr = async (
             where: {
               branchId: current.branchId,
             },
+
             select: {
               qrVerificationRule: true,
             },
@@ -4178,6 +4506,18 @@ const verifyQr = async (
           // =============================================
           // 16. FINAL PAYMENT VALIDATION
           // =============================================
+
+          if (
+            current.bookingMethod === BookingMethod.PAY_NOW ||
+            current.bookingMethod === BookingMethod.GROUP_PURCHASE
+          ) {
+            if (current.paymentStatus !== PaymentStatus.PAID) {
+              throw new AppError(
+                "Appointment must be fully paid before QR verification",
+                409,
+              );
+            }
+          }
 
           if (current.bookingMethod === BookingMethod.RESERVE_NOW) {
             if (!currentIsGroupPurchase && !payload.paymentMethod) {
@@ -4216,17 +4556,17 @@ const verifyQr = async (
               id: current.id,
               qrToken,
               qrVerifiedAt: null,
-              appointmentStatus: AppointmentStatus.RESERVED,
+
+              appointmentStatus: currentExpectedStatus,
+
               paymentStatus: current.paymentStatus,
             },
+
             data: {
               appointmentStatus: AppointmentStatus.CONFIRMED,
 
-              // Normal RESERVE_NOW:
-              // QR verification records full payment.
-              //
-              // Group Purchase RESERVE_NOW:
-              // Payment is recorded separately.
+              // Only normal RESERVE_NOW collects
+              // full salon payment during QR verification.
 
               ...(current.bookingMethod === BookingMethod.RESERVE_NOW &&
               !currentIsGroupPurchase
@@ -4261,11 +4601,15 @@ const verifyQr = async (
               data: {
                 customerId: current.customerId,
                 appointmentId: current.id,
+
                 purpose: PaymentPurpose.APPOINTMENT,
                 provider: PaymentProvider.SALON,
+
                 salonPaymentMethod: payload.paymentMethod!,
+
                 amount: current.price,
                 currency: current.currency,
+
                 status: PaymentStatus.PAID,
                 paidAt: qrVerifiedAt,
               },
@@ -4282,6 +4626,7 @@ const verifyQr = async (
             where: {
               id: current.id,
             },
+
             select: {
               id: true,
               customerId: true,
@@ -4295,22 +4640,34 @@ const verifyQr = async (
           // 20. CUSTOMER NOTIFICATION
           // =============================================
 
-          const translations =
-            current.bookingMethod === BookingMethod.RESERVE_NOW
-              ? notificationTemplates.BOOKING_CONFIRMED_RESERVE_NOW()
-              : notificationTemplates.BOOKING_CONFIRMED_DEPOSIT();
+          // PAY_NOW and GROUP_PURCHASE redemption
+          // are already confirmed.
+          // Avoid duplicate confirmation notifications.
 
-          await notificationService.createNotification(
-            {
-              appointmentId: current.id,
-              userId: current.customerId,
-              type: "BOOKING_CONFIRMED",
-              title: translations.en!.title!,
-              message: translations.en!.message!,
-              translations,
-            },
-            tx,
-          );
+          if (
+            current.bookingMethod !== BookingMethod.PAY_NOW &&
+            current.bookingMethod !== BookingMethod.GROUP_PURCHASE
+          ) {
+            const translations =
+              current.bookingMethod === BookingMethod.RESERVE_NOW
+                ? notificationTemplates.BOOKING_CONFIRMED_RESERVE_NOW()
+                : notificationTemplates.BOOKING_CONFIRMED_DEPOSIT();
+
+            await notificationService.createNotification(
+              {
+                appointmentId: current.id,
+                userId: current.customerId,
+
+                type: "BOOKING_CONFIRMED",
+
+                title: translations.en!.title!,
+                message: translations.en!.message!,
+
+                translations,
+              },
+              tx,
+            );
+          }
 
           // =============================================
           // 21. AUDIT LOG
@@ -4322,27 +4679,40 @@ const verifyQr = async (
               action: "QR_VERIFIED",
               entityType: "APPOINTMENT",
               entityId: current.id,
+
               metadata: {
                 previousStatus: current.appointmentStatus,
-                newStatus: AppointmentStatus.CONFIRMED,
+
+                newStatus: updatedAppointment.appointmentStatus,
+
                 previousPaymentStatus: current.paymentStatus,
+
                 newPaymentStatus: updatedAppointment.paymentStatus,
+
                 branchId: current.branchId,
+
                 bookingMethod: current.bookingMethod,
+
                 groupPurchaseId: current.groupPurchaseId,
+
                 paymentId,
+
                 paymentMethod:
                   current.bookingMethod === BookingMethod.RESERVE_NOW &&
                   !currentIsGroupPurchase
                     ? payload.paymentMethod
                     : null,
+
                 paymentProvider:
                   current.bookingMethod === BookingMethod.RESERVE_NOW &&
                   !currentIsGroupPurchase
                     ? PaymentProvider.SALON
                     : null,
+
                 qrVerifiedAt: qrVerifiedAt.toISOString(),
+
                 performedByRole: role,
+
                 qrVerificationRule: currentQrRule,
               },
             },
@@ -4369,6 +4739,7 @@ const verifyQr = async (
         appointmentStatus: "CONFIRMED",
         paymentStatus: result.paymentStatus,
         qrVerifiedAt: result.qrVerifiedAt,
+
         verifiedBy: {
           id: verifiedByUser.id,
           name: verifiedByUser.name,
@@ -4626,6 +4997,7 @@ const completeAppointment = async (
     reviewEnabled: true,
   };
 };
+
 const markNoShow = async (
   appointmentId: string,
   userId: string,
@@ -4645,6 +5017,7 @@ const markNoShow = async (
       id: true,
       branchId: true,
       appointmentStatus: true,
+      qrVerifiedAt: true,
     },
   });
 
@@ -4694,6 +5067,17 @@ const markNoShow = async (
   }
 
   // =====================================================
+  // 3.1 PREVENT NO-SHOW AFTER QR VERIFICATION
+  // =====================================================
+
+  if (appointment.qrVerifiedAt !== null) {
+    throw new AppError(
+      "Appointment cannot be marked as no-show because the customer has already checked in",
+      409,
+    );
+  }
+
+  // =====================================================
   // 4. PREPARE NO-SHOW DATA
   // =====================================================
 
@@ -4719,6 +5103,7 @@ const markNoShow = async (
         id: true,
         customerId: true,
         appointmentStatus: true,
+        qrVerifiedAt: true,
       },
     });
 
@@ -4738,7 +5123,18 @@ const markNoShow = async (
     }
 
     // ===================================================
-    // 5.3 ATOMIC STATUS UPDATE
+    // 5.3 RECHECK QR VERIFICATION
+    // ===================================================
+
+    if (current.qrVerifiedAt !== null) {
+      throw new AppError(
+        "Appointment cannot be marked as no-show because the customer has already checked in",
+        409,
+      );
+    }
+
+    // ===================================================
+    // 5.4 ATOMIC STATUS UPDATE
     // ===================================================
 
     const updateResult = await tx.appointment.updateMany({
@@ -4748,6 +5144,9 @@ const markNoShow = async (
         appointmentStatus: {
           in: noShowAllowedStatuses,
         },
+
+        // Protect against concurrent QR verification.
+        qrVerifiedAt: null,
       },
 
       data: {
@@ -4761,13 +5160,13 @@ const markNoShow = async (
 
     if (updateResult.count !== 1) {
       throw new AppError(
-        "Appointment cannot be marked as no-show in its current status",
+        "Appointment cannot be marked as no-show because its status or QR verification has changed",
         409,
       );
     }
 
     // ===================================================
-    // 5.4 GET UPDATED APPOINTMENT
+    // 5.5 GET UPDATED APPOINTMENT
     // ===================================================
 
     const updatedAppointment = await tx.appointment.findUniqueOrThrow({
@@ -4828,6 +5227,8 @@ const markNoShow = async (
           noShowAt: noShowAt.toISOString(),
 
           performedByRole: role,
+
+          qrVerified: false,
         },
       },
       tx,
@@ -4868,7 +5269,6 @@ const getBranchAppointments = async (
     where: {
       id: branchId,
     },
-
     select: {
       id: true,
       name: true,
@@ -4897,10 +5297,6 @@ const getBranchAppointments = async (
 
   let staffProfileId: string | null = null;
 
-  // =====================================================
-  // 2.1 BRANCH MANAGER ACCESS
-  // =====================================================
-
   if (role === Role.BRANCH_MANAGER) {
     const managerBranch = await prisma.branchManagerBranch.findUnique({
       where: {
@@ -4909,7 +5305,6 @@ const getBranchAppointments = async (
           branchId,
         },
       },
-
       select: {
         userId: true,
       },
@@ -4923,24 +5318,17 @@ const getBranchAppointments = async (
     }
   }
 
-  // =====================================================
-  // 2.2 STAFF ACCESS
-  // =====================================================
-
   if (role === Role.STAFF) {
     const staff = await prisma.staff.findUnique({
       where: {
         userId,
       },
-
       select: {
         id: true,
-
         branches: {
           where: {
             branchId,
           },
-
           select: {
             branchId: true,
           },
@@ -5076,12 +5464,7 @@ const getBranchAppointments = async (
     }),
   };
 
-  // =====================================================
-  // 8.1 STAFF FILTER
-  // =====================================================
-
   if (role === Role.STAFF) {
-    // Staff can only view their own appointments.
     where.staffId = staffProfileId!;
   } else if (query.staffId) {
     where.staffId = query.staffId;
@@ -5094,27 +5477,12 @@ const getBranchAppointments = async (
   const [appointments, total] = await prisma.$transaction([
     prisma.appointment.findMany({
       where,
-
       skip,
       take: limit,
 
-      orderBy: [
-        {
-          date: "desc",
-        },
-        {
-          startTime: "asc",
-        },
-        {
-          id: "asc",
-        },
-      ],
+      orderBy: [{ date: "desc" }, { startTime: "asc" }, { id: "asc" }],
 
       select: {
-        // -----------------------------------------------
-        // APPOINTMENT
-        // -----------------------------------------------
-
         id: true,
 
         bookingMethod: true,
@@ -5133,17 +5501,9 @@ const getBranchAppointments = async (
         price: true,
         currency: true,
 
-        // -----------------------------------------------
-        // DEPOSIT
-        // -----------------------------------------------
-
         depositPercentage: true,
         depositAmount: true,
         remainingAmount: true,
-
-        // -----------------------------------------------
-        // QR VERIFICATION
-        // -----------------------------------------------
 
         qrToken: true,
         qrVerifiedAt: true,
@@ -5155,19 +5515,11 @@ const getBranchAppointments = async (
           },
         },
 
-        // -----------------------------------------------
-        // REVIEW
-        // -----------------------------------------------
-
         review: {
           select: {
             id: true,
           },
         },
-
-        // -----------------------------------------------
-        // CUSTOMER
-        // -----------------------------------------------
 
         customer: {
           select: {
@@ -5177,20 +5529,12 @@ const getBranchAppointments = async (
           },
         },
 
-        // -----------------------------------------------
-        // STAFF
-        // -----------------------------------------------
-
         staff: {
           select: {
             id: true,
             name: true,
           },
         },
-
-        // -----------------------------------------------
-        // SERVICE
-        // -----------------------------------------------
 
         serviceId: true,
 
@@ -5202,10 +5546,6 @@ const getBranchAppointments = async (
           },
         },
 
-        // -----------------------------------------------
-        // PACKAGE
-        // -----------------------------------------------
-
         packageId: true,
 
         package: {
@@ -5213,6 +5553,25 @@ const getBranchAppointments = async (
             id: true,
             name: true,
             translations: true,
+          },
+        },
+
+        // NEW: Actual deposit payment and refund records
+        payments: {
+          select: {
+            purpose: true,
+            amount: true,
+            status: true,
+            paidAt: true,
+
+            refunds: {
+              where: {
+                status: "SUCCEEDED",
+              },
+              select: {
+                amount: true,
+              },
+            },
           },
         },
       },
@@ -5235,11 +5594,13 @@ const getBranchAppointments = async (
   // 11. FORMAT RESPONSE ITEMS
   // =====================================================
 
-  const items = appointments.map((appointment) => {
-    // ---------------------------------------------------
-    // LOCALIZE APPOINTMENT ITEM
-    // ---------------------------------------------------
+  const successfulPaymentStatuses: PaymentStatus[] = [
+    PaymentStatus.PAID,
+    PaymentStatus.PARTIALLY_REFUNDED,
+    PaymentStatus.REFUNDED,
+  ];
 
+  const items = appointments.map((appointment) => {
     const localizedItem = getLocalizedContent(
       appointment.itemNameTranslations,
       language,
@@ -5248,19 +5609,11 @@ const getBranchAppointments = async (
       },
     );
 
-    // ---------------------------------------------------
-    // LOCALIZE SERVICE
-    // ---------------------------------------------------
-
     const localizedService = appointment.service
       ? getLocalizedContent(appointment.service.translations, language, {
           name: appointment.service.name,
         })
       : null;
-
-    // ---------------------------------------------------
-    // LOCALIZE PACKAGE
-    // ---------------------------------------------------
 
     const localizedPackage = appointment.package
       ? getLocalizedContent(appointment.package.translations, language, {
@@ -5268,9 +5621,9 @@ const getBranchAppointments = async (
         })
       : null;
 
-    // ---------------------------------------------------
-    // PAYMENT VALUES
-    // ---------------------------------------------------
+    // =====================================================
+    // 12. PAYMENT VALUES
+    // =====================================================
 
     const price = Number(appointment.price);
 
@@ -5280,11 +5633,60 @@ const getBranchAppointments = async (
 
     const remainingAmount = Number(appointment.remainingAmount ?? 0);
 
-    // ---------------------------------------------------
-    // QR STATUS
-    // ---------------------------------------------------
+    // =====================================================
+    // 13. VERIFY ACTUAL DEPOSIT PAYMENT
+    // =====================================================
 
-    const qrAvailable = Boolean(appointment.qrToken);
+    const depositPaid =
+      appointment.bookingMethod === BookingMethod.DEPOSIT &&
+      appointment.payments.some((payment) => {
+        if (payment.purpose !== "APPOINTMENT_DEPOSIT") {
+          return false;
+        }
+
+        if (!successfulPaymentStatuses.includes(payment.status)) {
+          return false;
+        }
+
+        if (!payment.paidAt) {
+          return false;
+        }
+
+        const refundedAmount = payment.refunds.reduce(
+          (sum, refund) => sum + Number(refund.amount),
+          0,
+        );
+
+        const netDeposit = Number(
+          (Number(payment.amount) - refundedAmount).toFixed(2),
+        );
+
+        return netDeposit > 0;
+      });
+
+    // =====================================================
+    // 14. PAYMENT DISPLAY STATUS
+    // =====================================================
+
+    const paymentDisplayStatus = getPaymentDisplayStatus(
+      appointment.paymentStatus,
+      appointment.bookingMethod,
+      depositPaid,
+    );
+
+    // =====================================================
+    // 15. QR STATUS
+    // =====================================================
+
+    const qrEligibleStatuses: AppointmentStatus[] = [
+      AppointmentStatus.RESERVED,
+      AppointmentStatus.CONFIRMED,
+    ];
+
+    const qrAvailable =
+      qrEligibleStatuses.includes(appointment.appointmentStatus) &&
+      Boolean(appointment.qrToken) &&
+      !appointment.qrVerifiedAt;
 
     const qrVerified = Boolean(appointment.qrVerifiedAt);
 
@@ -5295,26 +5697,18 @@ const getBranchAppointments = async (
         }
       : null;
 
-    // ---------------------------------------------------
-    // RESPONSE
-    // ---------------------------------------------------
+    // =====================================================
+    // 16. RESPONSE
+    // =====================================================
 
     return {
-      // ================================================
-      // BASIC
-      // ================================================
-
       id: appointment.id,
 
       bookingMethod: appointment.bookingMethod,
-
       appointmentStatus: appointment.appointmentStatus,
 
       paymentStatus: appointment.paymentStatus,
-
-      // ================================================
-      // CUSTOMER
-      // ================================================
+      paymentDisplayStatus,
 
       customer: {
         id: appointment.customer.id,
@@ -5322,32 +5716,19 @@ const getBranchAppointments = async (
         phone: appointment.customer.phone,
       },
 
-      // ================================================
-      // BRANCH
-      // ================================================
-
       branch: {
         id: branch.id,
         name: localizedBranch.name ?? branch.name,
       },
-
-      // ================================================
-      // STAFF
-      // ================================================
 
       staff: {
         id: appointment.staff.id,
         name: appointment.staff.name,
       },
 
-      // ================================================
-      // SERVICE
-      // ================================================
-
       service: appointment.serviceId
         ? {
             id: appointment.serviceId,
-
             name:
               localizedService?.name ??
               localizedItem.name ??
@@ -5355,24 +5736,15 @@ const getBranchAppointments = async (
           }
         : null,
 
-      // ================================================
-      // PACKAGE
-      // ================================================
-
       package: appointment.packageId
         ? {
             id: appointment.packageId,
-
             name:
               localizedPackage?.name ??
               localizedItem.name ??
               appointment.itemName,
           }
         : null,
-
-      // ================================================
-      // DATE / TIME
-      // ================================================
 
       date: appointment.date.toISOString().slice(0, 10),
 
@@ -5381,10 +5753,6 @@ const getBranchAppointments = async (
 
       durationMinutes: appointment.durationMinutes,
 
-      // ================================================
-      // PAYMENT
-      // ================================================
-
       price,
       currency: appointment.currency,
 
@@ -5392,39 +5760,23 @@ const getBranchAppointments = async (
       depositAmount,
       remainingAmount,
 
-      // ================================================
-      // REVIEW
-      // ================================================
-
       reviewed: appointment.review !== null,
 
-      // ================================================
-      // QR VERIFICATION
-      // ================================================
-
       qrToken: appointment.qrToken,
-
       qrVerifiedAt: appointment.qrVerifiedAt,
-
       qrVerifiedBy: verifiedBy,
-
-      // ================================================
-      // QR SUMMARY
-      // ================================================
 
       qr: {
         available: qrAvailable,
         verified: qrVerified,
-
         verifiedAt: appointment.qrVerifiedAt,
-
         verifiedBy,
       },
     };
   });
 
   // =====================================================
-  // 12. PAGINATION
+  // 17. PAGINATION
   // =====================================================
 
   const totalPages = Math.ceil(total / limit);
@@ -5437,9 +5789,7 @@ const getBranchAppointments = async (
       limit,
       total,
       totalPages,
-
       hasNextPage: page < totalPages,
-
       hasPreviousPage: page > 1,
     },
   };
@@ -5462,11 +5812,11 @@ const getAllAppointments = async (
   const page = Number(query.page ?? 1);
   const limit = Number(query.limit ?? 20);
 
-  if (page < 1) {
-    throw new AppError("page must be at least 1", 400);
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new AppError("page must be a positive integer", 400);
   }
 
-  if (limit < 1 || limit > 100) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new AppError("limit must be between 1 and 100", 400);
   }
 
@@ -5536,6 +5886,9 @@ const getAllAppointments = async (
         {
           startTime: "desc",
         },
+        {
+          id: "asc",
+        },
       ],
 
       select: {
@@ -5596,6 +5949,29 @@ const getAllAppointments = async (
             translations: true,
           },
         },
+
+        // =================================================
+        // NEW: PAYMENT AND REFUND RECORDS
+        // =================================================
+
+        payments: {
+          select: {
+            purpose: true,
+            amount: true,
+            status: true,
+            paidAt: true,
+
+            refunds: {
+              where: {
+                status: "SUCCEEDED",
+              },
+
+              select: {
+                amount: true,
+              },
+            },
+          },
+        },
       },
     }),
 
@@ -5605,11 +5981,24 @@ const getAllAppointments = async (
   ]);
 
   // =====================================================
-  // 4. LOCALIZED RESPONSE DTO
+  // 4. SUCCESSFUL PAYMENT STATUSES
+  // =====================================================
+
+  const successfulPaymentStatuses: PaymentStatus[] = [
+    PaymentStatus.PAID,
+    PaymentStatus.PARTIALLY_REFUNDED,
+    PaymentStatus.REFUNDED,
+  ];
+
+  // =====================================================
+  // 5. LOCALIZED RESPONSE DTO
   // =====================================================
 
   const items = appointments.map((appointment) => {
-    // Branch localization
+    // ---------------------------------------------------
+    // BRANCH LOCALIZATION
+    // ---------------------------------------------------
+
     const localizedBranch = getLocalizedContent(
       appointment.branch.translations,
       language,
@@ -5618,19 +6007,70 @@ const getAllAppointments = async (
       },
     );
 
-    // Service localization
+    // ---------------------------------------------------
+    // SERVICE LOCALIZATION
+    // ---------------------------------------------------
+
     const localizedService = appointment.service
       ? getLocalizedContent(appointment.service.translations, language, {
           name: appointment.itemName,
         })
       : null;
 
-    // Package localization
+    // ---------------------------------------------------
+    // PACKAGE LOCALIZATION
+    // ---------------------------------------------------
+
     const localizedPackage = appointment.package
       ? getLocalizedContent(appointment.package.translations, language, {
           name: appointment.itemName,
         })
       : null;
+
+    // =====================================================
+    // 6. VERIFY ACTUAL DEPOSIT PAYMENT
+    // =====================================================
+
+    const depositPaid =
+      appointment.bookingMethod === BookingMethod.DEPOSIT &&
+      appointment.payments.some((payment) => {
+        if (payment.purpose !== "APPOINTMENT_DEPOSIT") {
+          return false;
+        }
+
+        if (!successfulPaymentStatuses.includes(payment.status)) {
+          return false;
+        }
+
+        if (!payment.paidAt) {
+          return false;
+        }
+
+        const refundedAmount = payment.refunds.reduce(
+          (sum, refund) => sum + Number(refund.amount),
+          0,
+        );
+
+        const netDeposit = Number(
+          (Number(payment.amount) - refundedAmount).toFixed(2),
+        );
+
+        return netDeposit > 0;
+      });
+
+    // =====================================================
+    // 7. PAYMENT DISPLAY STATUS
+    // =====================================================
+
+    const paymentDisplayStatus = getPaymentDisplayStatus(
+      appointment.paymentStatus,
+      appointment.bookingMethod,
+      depositPaid,
+    );
+
+    // =====================================================
+    // 8. RESPONSE
+    // =====================================================
 
     return {
       id: appointment.id,
@@ -5640,6 +6080,9 @@ const getAllAppointments = async (
       appointmentStatus: appointment.appointmentStatus,
 
       paymentStatus: appointment.paymentStatus,
+
+      // Frontend-friendly derived payment status
+      paymentDisplayStatus,
 
       branch: {
         id: appointment.branch.id,
@@ -5661,7 +6104,6 @@ const getAllAppointments = async (
         ? {
             id: appointment.serviceId,
 
-            // Localized name, fallback to booking-time snapshot
             name: localizedService?.name ?? appointment.itemName,
           }
         : null,
@@ -5670,7 +6112,6 @@ const getAllAppointments = async (
         ? {
             id: appointment.packageId,
 
-            // Localized name, fallback to booking-time snapshot
             name: localizedPackage?.name ?? appointment.itemName,
           }
         : null,
@@ -5687,6 +6128,10 @@ const getAllAppointments = async (
     };
   });
 
+  // =====================================================
+  // 9. PAGINATION
+  // =====================================================
+
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   return {
@@ -5702,7 +6147,6 @@ const getAllAppointments = async (
     },
   };
 };
-
 const recordRemainingPayment = async (
   appointmentId: string,
   payload: TRecordRemainingPayment,
@@ -5966,6 +6410,331 @@ const recordRemainingPayment = async (
   return result;
 };
 
+const completeEligibleAppointments = async (): Promise<{
+  completedCount: number;
+}> => {
+  // =====================================================
+  // 1. CONFIGURATION
+  // =====================================================
+
+  const batchSize = 100;
+
+  let completedCount = 0;
+
+  const runStartedAt = new Date();
+
+  // =====================================================
+  // 2. FIND CANDIDATE APPOINTMENTS
+  // =====================================================
+
+  // Only confirmed, fully paid and QR-verified
+  // appointments can be automatically completed.
+  //
+  // Booking method is intentionally not filtered.
+  // This supports:
+  //
+  // Normal PAY_NOW
+  // Normal RESERVE_NOW
+  // Normal DEPOSIT
+  //
+  // Group Purchase DIRECT_BOOK
+  // Group Purchase BUY_NOW_BOOK_LATER redemption
+
+  const where: Prisma.AppointmentWhereInput = {
+    appointmentStatus: AppointmentStatus.CONFIRMED,
+
+    paymentStatus: PaymentStatus.PAID,
+
+    qrVerifiedAt: {
+      not: null,
+      lte: runStartedAt,
+    },
+
+    durationMinutes: {
+      gt: 0,
+    },
+  };
+
+  // =====================================================
+  // 3. PAGINATE THROUGH CANDIDATES
+  // =====================================================
+
+  // Keyset pagination prevents the same first 100
+  // records from blocking later eligible appointments.
+  //
+  // We use the appointment ID as the stable cursor.
+  // The candidate set is bounded by runStartedAt.
+
+  let cursorId: string | undefined;
+
+  while (true) {
+    const candidates = await prisma.appointment.findMany({
+      where: {
+        ...where,
+
+        ...(cursorId
+          ? {
+              id: {
+                gt: cursorId,
+              },
+            }
+          : {}),
+      },
+
+      select: {
+        id: true,
+        qrVerifiedAt: true,
+        durationMinutes: true,
+      },
+
+      orderBy: {
+        id: "asc",
+      },
+
+      take: batchSize,
+    });
+
+    if (candidates.length === 0) {
+      break;
+    }
+
+    // Advance the cursor independently of whether
+    // individual appointments are completed.
+    cursorId = candidates[candidates.length - 1].id;
+
+    // ===================================================
+    // 4. PROCESS EACH APPOINTMENT
+    // ===================================================
+
+    for (const candidate of candidates) {
+      try {
+        if (!candidate.qrVerifiedAt) {
+          continue;
+        }
+
+        // ===============================================
+        // 4.1 CALCULATE COMPLETION ELIGIBILITY
+        // ===============================================
+
+        const completionEligibleAt = new Date(
+          candidate.qrVerifiedAt.getTime() + candidate.durationMinutes * 60_000,
+        );
+
+        if (
+          Number.isNaN(completionEligibleAt.getTime()) ||
+          runStartedAt < completionEligibleAt
+        ) {
+          continue;
+        }
+
+        // ===============================================
+        // 4.2 TRANSACTIONAL COMPLETION
+        // ===============================================
+
+        const completed = await prisma.$transaction(
+          async (tx) => {
+            // -------------------------------------------
+            // Recheck current appointment state
+            // -------------------------------------------
+
+            const current = await tx.appointment.findUnique({
+              where: {
+                id: candidate.id,
+              },
+
+              select: {
+                id: true,
+                customerId: true,
+
+                bookingMethod: true,
+                groupPurchaseId: true,
+
+                appointmentStatus: true,
+                paymentStatus: true,
+
+                qrVerifiedAt: true,
+                durationMinutes: true,
+              },
+            });
+
+            if (!current) {
+              return false;
+            }
+
+            // -------------------------------------------
+            // Validate current appointment state
+            // -------------------------------------------
+
+            if (
+              current.appointmentStatus !== AppointmentStatus.CONFIRMED ||
+              current.paymentStatus !== PaymentStatus.PAID ||
+              !current.qrVerifiedAt ||
+              current.durationMinutes <= 0
+            ) {
+              return false;
+            }
+
+            // -------------------------------------------
+            // Recalculate using current database values
+            // -------------------------------------------
+
+            const currentEligibleAt = new Date(
+              current.qrVerifiedAt.getTime() + current.durationMinutes * 60_000,
+            );
+
+            const completedAt = new Date();
+
+            if (
+              Number.isNaN(currentEligibleAt.getTime()) ||
+              completedAt < currentEligibleAt
+            ) {
+              return false;
+            }
+
+            // ===========================================
+            // 5. ATOMIC COMPLETION
+            // ===========================================
+
+            // Conditional update prevents:
+            //
+            // - Duplicate completion
+            // - Completion without QR verification
+            // - Completion without full payment
+            // - Completion after concurrent state changes
+
+            const updateResult = await tx.appointment.updateMany({
+              where: {
+                id: current.id,
+
+                appointmentStatus: AppointmentStatus.CONFIRMED,
+
+                paymentStatus: PaymentStatus.PAID,
+
+                qrVerifiedAt: current.qrVerifiedAt,
+
+                durationMinutes: current.durationMinutes,
+              },
+
+              data: {
+                appointmentStatus: AppointmentStatus.COMPLETED,
+
+                completedAt,
+              },
+            });
+
+            if (updateResult.count !== 1) {
+              return false;
+            }
+
+            // ===========================================
+            // 6. MULTILINGUAL CUSTOMER NOTIFICATION
+            // ===========================================
+
+            const translations = notificationTemplates.SERVICE_COMPLETED();
+
+            await notificationService.createNotification(
+              {
+                appointmentId: current.id,
+
+                userId: current.customerId,
+
+                type: "SERVICE_COMPLETED",
+
+                title: translations.en!.title!,
+
+                message: translations.en!.message!,
+
+                translations,
+              },
+              tx,
+            );
+
+            // ===========================================
+            // 7. SYSTEM AUDIT LOG
+            // ===========================================
+
+            // Automatic completion has no logged-in
+            // staff or manager.
+            //
+            // userId is intentionally omitted.
+            // The AuditLog model permits null userId.
+
+            await auditLogService.createAuditLog(
+              {
+                action: "APPOINTMENT_AUTO_COMPLETED",
+
+                entityType: "APPOINTMENT",
+
+                entityId: current.id,
+
+                metadata: {
+                  performedBy: "SYSTEM",
+
+                  trigger: "APPOINTMENT_COMPLETION_CRON",
+
+                  previousStatus: AppointmentStatus.CONFIRMED,
+
+                  newStatus: AppointmentStatus.COMPLETED,
+
+                  paymentStatus: PaymentStatus.PAID,
+
+                  bookingMethod: current.bookingMethod,
+
+                  groupPurchaseId: current.groupPurchaseId,
+
+                  qrVerifiedAt: current.qrVerifiedAt.toISOString(),
+
+                  durationMinutes: current.durationMinutes,
+
+                  completionEligibleAt: currentEligibleAt.toISOString(),
+
+                  completedAt: completedAt.toISOString(),
+                },
+              },
+              tx,
+            );
+
+            return true;
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          },
+        );
+
+        if (completed) {
+          completedCount++;
+        }
+      } catch (error) {
+        // ===============================================
+        // 8. INDIVIDUAL APPOINTMENT ERROR HANDLING
+        // ===============================================
+
+        // A failed appointment must not stop the
+        // remaining appointments from processing.
+        //
+        // The failed appointment remains eligible
+        // for a later cron run.
+
+        logUnexpectedError(error, {
+          source: "appointment.service.ts:completeEligibleAppointments",
+        });
+      }
+    }
+
+    // No further candidate pages.
+    if (candidates.length < batchSize) {
+      break;
+    }
+  }
+
+  // =====================================================
+  // 9. FINAL RESPONSE
+  // =====================================================
+
+  return {
+    completedCount,
+  };
+};
 export const appointmentService = {
   createPayNowAppointment,
   createDepositAppointment,
@@ -5983,4 +6752,5 @@ export const appointmentService = {
   recordRemainingPayment,
   expirePendingAppointmentIfNeeded,
   expirePendingAppointments,
+  completeEligibleAppointments,
 };

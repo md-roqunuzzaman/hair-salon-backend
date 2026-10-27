@@ -126,12 +126,34 @@ export class MigrationFixture {
     storage.sql.exec("UPDATE Payment SET appointmentId='old-appointment-two' WHERE id='legacy-payment'");
     const paymentsBeforeRequired = JSON.stringify(storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray());
     const refundsBeforeRequired = JSON.stringify(storage.sql.exec('SELECT * FROM Refund ORDER BY id').toArray());
-    applyMigrations(storage, migrations);
+    applyMigrations(storage, migrations.slice(0, 16));
     if (storage.sql.exec("SELECT orderNumber FROM Appointment WHERE id='old-appointment-one'").one().orderNumber !== 'ABC234') throw new Error('Repeated initialization reset order number');
     const backfilled = storage.sql.exec('SELECT id,orderNumber FROM Appointment ORDER BY id').toArray();
     if (backfilled.some(row => !/^[A-HJ-NP-Z2-9]{6}$/.test(row.orderNumber)) || new Set(backfilled.map(row => row.orderNumber)).size !== 4) throw new Error('Required order number backfill missing, invalid or duplicated');
     if (backfilled.find(row => row.id === 'old-appointment-three').orderNumber !== 'AAAAAA') throw new Error('Backfill overwrote an existing code');
     if (paymentsBeforeRequired !== JSON.stringify(storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray()) || refundsBeforeRequired !== JSON.stringify(storage.sql.exec('SELECT * FROM Refund ORDER BY id').toArray())) throw new Error('Backfill changed payment/refund records');
+    applyMigrations(storage, migrations.slice(0, 17));
+    const upgradedPayments = storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray();
+    if (upgradedPayments.some(row => row.orderNumber !== null) || JSON.stringify(upgradedPayments.map(({ orderNumber, ...row }) => row)) !== paymentsBeforeRequired) throw new Error('Payment order migration changed existing payment data');
+    storage.sql.exec("UPDATE Payment SET orderNumber='PAY234' WHERE id='legacy-payment'");
+    let duplicatePaymentOrder = false;
+    try { storage.sql.exec("UPDATE Payment SET orderNumber='PAY234' WHERE id='ordinary-payment'"); } catch { duplicatePaymentOrder = true; }
+    if (!duplicatePaymentOrder) throw new Error('Payment order uniqueness not enforced');
+    storage.sql.exec("INSERT INTO Payment (id,customerId,purpose,amount,orderNumber,updatedAt) VALUES ('occupied-code','customer','APPOINTMENT',1234,'A2AAAA',1),('needs-code','customer','APPOINTMENT',5678,NULL,1)");
+    const beforePaymentBackfill = storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray();
+    applyMigrations(storage, migrations);
+    const afterPaymentBackfill = storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray();
+    if (afterPaymentBackfill.some(row => !/^(?=.*[A-HJ-NP-Z])(?=.*[2-9])[A-HJ-NP-Z2-9]{6}$/.test(row.orderNumber)) || new Set(afterPaymentBackfill.map(row => row.orderNumber)).size !== afterPaymentBackfill.length) throw new Error('Payment backfill has missing, invalid or duplicate codes');
+    for (const before of beforePaymentBackfill) {
+      const after = afterPaymentBackfill.find(row => row.id === before.id);
+      const { orderNumber: oldCode, ...oldFields } = before;
+      const { orderNumber: newCode, ...newFields } = after;
+      if (JSON.stringify(oldFields) !== JSON.stringify(newFields) || (oldCode !== null && oldCode !== newCode)) throw new Error('Payment backfill overwrote existing fields or codes');
+    }
+    applyMigrations(storage, migrations);
+    if (JSON.stringify(storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray()) !== JSON.stringify(afterPaymentBackfill)) throw new Error('Repeated initialization changed payment backfill');
+    if (storage.sql.exec("SELECT orderNumber FROM Payment WHERE id='legacy-payment'").one().orderNumber !== 'PAY234') throw new Error('Repeated migration reset payment order number');
+    if (refundsBeforeRequired !== JSON.stringify(storage.sql.exec('SELECT * FROM Refund ORDER BY id').toArray())) throw new Error('Payment order migration changed refunds');
     let nullUpdateRejected = false;
     try { storage.sql.exec("UPDATE Appointment SET orderNumber=NULL WHERE id='old-appointment-two'"); } catch { nullUpdateRejected = true; }
     let nullInsertRejected = false;

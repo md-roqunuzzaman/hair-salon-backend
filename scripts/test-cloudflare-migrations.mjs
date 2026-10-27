@@ -7,5 +7,5 @@ try {
   const response = await mf.dispatchFetch('https://test/');
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { preserved: true, repeatable: true, foreignKey: true, checksumProtected: true });
-  console.log('Existing databases upgrade to v16: missing order numbers backfilled without collisions; existing codes, payments and refunds preserved; NULL writes rejected; repeatability, foreign keys, wallet, policy and checksum checks pass.');
+  console.log('Existing databases upgrade to v18: NULL payment codes backfilled with unique letter/digit codes; occupied codes skipped; existing codes, payment fields and refunds preserved; repeatability, foreign key and checksum checks pass.');
 } finally { await mf.dispose(); }

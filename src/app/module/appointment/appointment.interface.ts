@@ -1,4 +1,5 @@
 import { SalonPaymentMethod } from "../../../../generated/prisma/enums.js";
+import { PaymentDisplayStatus } from "../../utils/getPaymentDisplayStatus.js";
 
 export type BookingMethodType =
   | "PAY_NOW"
@@ -85,6 +86,7 @@ export interface IMyAppointmentsQuery {
 
 export interface IMyAppointmentItem {
   id: string;
+  paymentDisplayStatus: PaymentDisplayStatus;
 
   bookingMethod: BookingMethodType;
 
@@ -146,6 +148,7 @@ export interface IMyAppointmentsResult {
 export interface IAppointmentDetails {
   id: string;
   orderNumber: string | null;
+  paymentDisplayStatus: PaymentDisplayStatus;
   bookingMethod: BookingMethodType;
   appointmentStatus: AppointmentStatusType;
   paymentStatus: PaymentStatusType;

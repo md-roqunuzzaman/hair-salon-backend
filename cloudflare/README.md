@@ -4,6 +4,8 @@ The existing Express routes and services have a separate Cloudflare build. The N
 
 ## Runtime
 
+The minute Cron Trigger in both production and staging runs appointment expiry, group-purchase expiry, automatic appointment completion, reminders and session cleanup through the same Durable Object queue. Workers invokes `completeEligibleAppointments()` directly; the Node `node-cron` file is used only by `src/server.ts`. Completion requires CONFIRMED status, full payment, QR verification and elapsed service duration. Transactions include the customer notification and system audit log; repeat runs do not complete an appointment twice. No additional Cron Trigger or schema migration is required for this job.
+
 | Component | Cloudflare implementation |
 | --- | --- |
 | Express API | Worker with Node HTTP compatibility |
@@ -79,6 +81,18 @@ Setup requires a secret of at least 32 characters, accepts POST only and permane
 8. Run full frontend/API regression on staging. Check minute cron runs, expired holds, password-reset delivery, R2 CORS and upload confirmation. Review storage/CPU usage under expected concurrent traffic.
 
 ## Production cutover
+
+### Historical payment order number backfill (v18)
+
+`0018_backfill_payment_order_numbers.sql` is the Cloudflare equivalent of the Node/PostgreSQL `scripts/backfill-payment-order-numbers.ts` script. On first database initialization after deployment, it fills only NULL payment codes atomically with distinct six-character codes containing letters and digits, skipping existing codes. Existing codes, financial fields and relations remain unchanged. Future payments can still have NULL codes because the schema remains optional; this migration is a one-time backfill.
+
+No separate backfill command is needed on Cloudflare. Run `npm run cloudflare:check`, `npm run test:cloudflare:migrations` and the database/API regressions, then deploy with `npm run cloudflare:deploy:staging` or `npm run cloudflare:deploy`. This does not execute the PostgreSQL backfill script.
+
+### Payment order number upgrade (v17)
+
+`0017_payment_order_number.sql` adds nullable, unique `Payment.orderNumber`. Historical payments keep null codes, amounts and relations; this migration does not generate payment order numbers. Existing appointment order numbers are unchanged. The build bundles v17 and it applies once on Durable Object initialization after deployment. A matching PostgreSQL migration is included for the Node runtime.
+
+Validate using `npm run cloudflare:check`, `npm run typecheck`, `npm run test:cloudflare:migrations`, `npm run test:cloudflare:database`, `npm run test:cloudflare:api` and `npm run test:book-now`. Then deploy with `npm run cloudflare:deploy:staging` or `npm run cloudflare:deploy`, retaining existing secrets and database identity.
 
 ### Required appointment order number upgrade (v16)
 

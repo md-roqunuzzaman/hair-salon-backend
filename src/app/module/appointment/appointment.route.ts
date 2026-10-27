@@ -87,12 +87,12 @@ router.post(
   appointmentController.verifyQr,
 );
 
-router.post(
-  "/:appointmentId/complete",
-  auth(Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER),
-  validateRequest(appointmentValidation.completeAppointmentValidationSchema),
-  appointmentController.completeAppointment,
-);
+// router.post(
+//   "/:appointmentId/complete",
+//   auth(Role.STAFF, Role.BRANCH_MANAGER, Role.BRAND_OWNER),
+//   validateRequest(appointmentValidation.completeAppointmentValidationSchema),
+//   appointmentController.completeAppointment,
+// );
 
 router.post(
   "/:appointmentId/no-show",

@@ -1,6 +1,7 @@
 import { bookNowFixture, providerEvent, policyTestControl } from './book-now-fixture.mjs';
 // Bundled only by build-cloudflare --test. Never included in the deployed entry.
 import { runGroupSafety } from './group-safety-fixture.mjs';
+import { completionFixture } from './completion-fixture.mjs';
 import worker, { SalonDatabase } from '../worker.mjs';
 import { failureResponse } from './errors.mjs';
 import bcrypt from 'bcryptjs';
@@ -16,6 +17,10 @@ export class SalonTestDatabase extends SalonDatabase {
   async sendMail(message) { this.outbox.push(message); return { messageId: 'test' }; }
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === '/__completion-test') return this.enqueue(async () => {
+      try { return Response.json(await completionFixture(this.db, this.ctx.storage, await request.json())); }
+      catch (error) { return Response.json({ error: error.message, stack: error.stack }, { status: 500 }); }
+    });
     if (url.pathname === '/__book-now-fixture') return this.enqueue(async () => Response.json(await bookNowFixture(this.db, (await request.json()).customerId)));
     if (url.pathname === '/__book-now-provider') return this.enqueue(async () => Response.json(await providerEvent(this.db, await request.json())));
     if(url.pathname==='/__policy-test')return this.enqueue(async()=>Response.json(await policyTestControl(this.db,await request.json())));

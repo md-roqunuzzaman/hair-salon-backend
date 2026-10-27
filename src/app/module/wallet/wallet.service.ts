@@ -543,6 +543,7 @@ const payAppointmentWithWallet = async (
               id: true,
               customerId: true,
               groupPurchaseId: true,
+              bookingMethod: true,
               appointmentStatus: true,
               paymentStatus: true,
               price: true,
@@ -565,12 +566,27 @@ const payAppointmentWithWallet = async (
             );
           }
 
-          if (appointment.groupPurchaseId) {
-            throw new AppError("Group Purchase-linked appointments must use the Group Purchase payment flow", 409);
+          // Group Purchase uses its own payment flow.
+          if (appointment.groupPurchaseId !== null) {
+            throw new AppError(
+              "Group Purchase-linked appointments must use the Group Purchase payment flow",
+              409,
+            );
           }
 
           // ==========================================
-          // 3. PAYMENT STATUS
+          // 3. BOOKING METHOD VALIDATION
+          // ==========================================
+
+          if (appointment.bookingMethod !== BookingMethod.PAY_NOW) {
+            throw new AppError(
+              "Wallet payment is only supported for Pay Now appointments",
+              409,
+            );
+          }
+
+          // ==========================================
+          // 4. PAYMENT STATUS VALIDATION
           // ==========================================
 
           if (
@@ -587,18 +603,22 @@ const payAppointmentWithWallet = async (
             throw new AppError("INVALID_APPOINTMENT_STATUS", 409);
           }
 
+          if (appointment.paymentStatus !== PaymentStatus.PENDING) {
+            throw new AppError("INVALID_PAYMENT_STATUS", 409);
+          }
+
           // ==========================================
-          // 4. HOLD EXPIRY
+          // 5. HOLD EXPIRY VALIDATION
           // ==========================================
 
           const now = new Date();
 
-          if (appointment.holdExpiresAt && appointment.holdExpiresAt <= now) {
+          if (!appointment.holdExpiresAt || appointment.holdExpiresAt <= now) {
             throw new AppError("SLOT_HOLD_EXPIRED", 409);
           }
 
           // ==========================================
-          // 5. CHECK EXISTING PAYMENTS
+          // 6. CHECK EXISTING PAYMENTS
           // ==========================================
 
           const existingPayments = await tx.payment.findMany({
@@ -624,8 +644,8 @@ const payAppointmentWithWallet = async (
             throw new AppError("PAYMENT_ALREADY_COMPLETED", 409);
           }
 
-          // Prevent paying by wallet while a Stripe
-          // payment may still complete asynchronously.
+          // Prevent wallet payment while a Stripe payment
+          // may still complete asynchronously.
           if (
             existingPayments.some(
               (payment) =>
@@ -637,7 +657,7 @@ const payAppointmentWithWallet = async (
           }
 
           // ==========================================
-          // 6. ATOMIC WALLET DEDUCTION
+          // 7. ATOMIC WALLET DEDUCTION
           // ==========================================
 
           const walletResult = await deductWalletBalance(
@@ -650,23 +670,32 @@ const payAppointmentWithWallet = async (
           );
 
           // ==========================================
-          // 7. GUARDED APPOINTMENT UPDATE
+          // 8. GENERATE QR + GUARDED APPOINTMENT UPDATE
           // ==========================================
+
+          const qrToken = crypto.randomBytes(32).toString("hex");
 
           const updated = await tx.appointment.updateMany({
             where: {
               id: appointment.id,
               customerId,
+              groupPurchaseId: null,
+              bookingMethod: BookingMethod.PAY_NOW,
               appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
-              paymentStatus: appointment.paymentStatus,
-              ...(appointment.holdExpiresAt
-                ? { holdExpiresAt: { gt: now } }
-                : {}),
+              paymentStatus: PaymentStatus.PENDING,
+              holdExpiresAt: {
+                gt: now,
+              },
             },
             data: {
               paymentStatus: PaymentStatus.PAID,
               appointmentStatus: AppointmentStatus.CONFIRMED,
               holdExpiresAt: null,
+
+              // QR is available only after successful payment.
+              qrToken,
+              qrVerifiedAt: null,
+              qrVerifiedBy: null,
             },
           });
 
@@ -675,7 +704,7 @@ const payAppointmentWithWallet = async (
           }
 
           // ==========================================
-          // 8. CREATE WALLET PAYMENT RECORD
+          // 9. CREATE WALLET PAYMENT RECORD
           // ==========================================
 
           await tx.payment.create({
@@ -687,12 +716,12 @@ const payAppointmentWithWallet = async (
               amount: appointment.price,
               currency: "HKD",
               status: PaymentStatus.PAID,
-              paidAt: new Date(),
+              paidAt: now,
             },
           });
 
           // ==========================================
-          // 9. BOOKING CONFIRMED NOTIFICATION
+          // 10. BOOKING CONFIRMED NOTIFICATION
           // ==========================================
 
           await notificationService.createNotification(
@@ -707,7 +736,7 @@ const payAppointmentWithWallet = async (
           );
 
           // ==========================================
-          // 10. RESPONSE
+          // 11. RESPONSE
           // ==========================================
 
           return {
@@ -718,7 +747,6 @@ const payAppointmentWithWallet = async (
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
           maxWait: 10000,
-
           timeout: 15000,
         },
       );
@@ -875,7 +903,9 @@ const payGroupPurchaseWithWallet = async (
           // 7. VALIDATE LINKED APPOINTMENT
           // =====================================================
 
-          const initialAppointments = purchase.appointments.filter(item => item.bookingMethod === purchase.bookingMethod);
+          const initialAppointments = purchase.appointments.filter(
+            (item) => item.bookingMethod === purchase.bookingMethod,
+          );
           const appointment = isBookNow ? initialAppointments[0] : null;
 
           if (isBookNow) {
@@ -960,7 +990,6 @@ const payGroupPurchaseWithWallet = async (
               paidAt: now,
             },
           });
-
 
           const nextPurchaseStatus = isDeposit
             ? PaymentStatus.PARTIALLY_PAID

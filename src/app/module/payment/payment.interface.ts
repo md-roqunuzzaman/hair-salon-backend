@@ -36,7 +36,7 @@ export interface IMyPaymentsQuery {
 
 export interface IMyPaymentItem {
   id: string;
-
+  orderNumber: string | null;
   amount: number;
   currency: string;
 

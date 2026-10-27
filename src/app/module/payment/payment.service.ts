@@ -1,5 +1,8 @@
 import { reconcileApprovedStripeRefund } from "../refund-request/refund-request.processing.js";
-import { getOrCreateLateGroupPurchaseRefund, ensureLateGroupPurchaseRefund } from "./late-group-refund.js";
+import {
+  getOrCreateLateGroupPurchaseRefund,
+  ensureLateGroupPurchaseRefund,
+} from "./late-group-refund.js";
 import { logUnexpectedError } from "../../utils/normalize-error.js";
 import {
   AppointmentStatus,
@@ -384,17 +387,45 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
   }
 
   // Refund notifications may arrive after a timeout or a crash before local finalization.
-  if (["refund.created", "refund.updated", "refund.failed"].includes(event.type)) {
+  if (
+    ["refund.created", "refund.updated", "refund.failed"].includes(event.type)
+  ) {
     const providerRefund = event.data.object as Stripe.Refund;
-    const local = await prisma.refund.findFirst({ where: { reason: "LATE_GROUP_PURCHASE_PAYMENT", OR: [{ providerRefundId: providerRefund.id }, ...(providerRefund.metadata?.refundId ? [{ id: providerRefund.metadata.refundId }] : [])] }, include: { payment: true } });
+    const local = await prisma.refund.findFirst({
+      where: {
+        reason: "LATE_GROUP_PURCHASE_PAYMENT",
+        OR: [
+          { providerRefundId: providerRefund.id },
+          ...(providerRefund.metadata?.refundId
+            ? [{ id: providerRefund.metadata.refundId }]
+            : []),
+        ],
+      },
+      include: { payment: true },
+    });
     if (local?.payment.providerPaymentId) {
-      const intent = await stripe.paymentIntents.retrieve(local.payment.providerPaymentId);
+      const intent = await stripe.paymentIntents.retrieve(
+        local.payment.providerPaymentId,
+      );
       return handleGroupPurchaseStripeEvent(event, intent);
     }
-    const approved = await prisma.refund.findFirst({ where: { OR: [{ providerRefundId: providerRefund.id }, ...(providerRefund.metadata?.refundId ? [{ id: providerRefund.metadata.refundId }] : [])] }, include: { refundRequest: true, payment: true } });
+    const approved = await prisma.refund.findFirst({
+      where: {
+        OR: [
+          { providerRefundId: providerRefund.id },
+          ...(providerRefund.metadata?.refundId
+            ? [{ id: providerRefund.metadata.refundId }]
+            : []),
+        ],
+      },
+      include: { refundRequest: true, payment: true },
+    });
     if (approved?.refundRequest) {
-      const result = await reconcileApprovedStripeRefund(approved.refundRequest.id);
-      if (result.status !== "COMPLETED") throw new AppError("Stripe refund is still pending", 503);
+      const result = await reconcileApprovedStripeRefund(
+        approved.refundRequest.id,
+      );
+      if (result.status !== "COMPLETED")
+        throw new AppError("Stripe refund is still pending", 503);
     }
     return { received: true };
   }
@@ -585,7 +616,12 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
           // NORMAL PAY NOW SUCCESS
 
+          // NORMAL PAY NOW SUCCESS
+
           if (holdIsStillActive) {
+            const qrToken =
+              appointment.qrToken ?? crypto.randomBytes(32).toString("hex");
+
             await tx.appointment.update({
               where: {
                 id: appointment.id,
@@ -594,6 +630,11 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
                 appointmentStatus: AppointmentStatus.CONFIRMED,
                 paymentStatus: PaymentStatus.PAID,
                 holdExpiresAt: null,
+
+                // QR is generated only after successful payment.
+                qrToken,
+                qrVerifiedAt: null,
+                qrVerifiedBy: null,
               },
             });
 
@@ -1268,8 +1309,7 @@ const createGroupPurchaseStripeIntent = async (
   // 2. VALIDATE PURCHASE FLOW AND BOOKING METHOD
   // =====================================================
 
-  const isBookNow =
-    purchase.purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK;
+  const isBookNow = purchase.purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK;
 
   if (
     purchase.purchaseFlow !== GroupPurchaseFlow.BUY_NOW_BOOK_LATER &&
@@ -1344,20 +1384,60 @@ const createGroupPurchaseStripeIntent = async (
   let payment: Prisma.PaymentGetPayload<{}> | undefined;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      payment = await prisma.$transaction(async tx => {
-        await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id" = ${purchaseId} FOR UPDATE`;
-        const current = await tx.groupPurchase.findUnique({ where: { id: purchaseId } });
-        if (!current || current.customerId !== customerId || current.paymentStatus !== PaymentStatus.PENDING || !current.reservationExpiresAt || current.reservationExpiresAt <= new Date()) throw new AppError("Group purchase is no longer payable", 409);
-        const pending = await tx.payment.findFirst({ where: { groupPurchaseId: purchaseId, customerId, purpose: PaymentPurpose.GROUP_PURCHASE, provider: PaymentProvider.STRIPE, status: PaymentStatus.PENDING }, orderBy: { createdAt: "asc" } });
-        if (pending) {
-          if (!pending.amount.equals(paymentAmount)) throw new AppError("Existing payment amount does not match purchase", 409);
-          return pending;
-        }
-        return tx.payment.create({ data: { customerId, groupPurchaseId: purchaseId, purpose: PaymentPurpose.GROUP_PURCHASE, provider: PaymentProvider.STRIPE, amount: paymentAmount, currency: "HKD", status: PaymentStatus.PENDING } });
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      payment = await prisma.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id" = ${purchaseId} FOR UPDATE`;
+          const current = await tx.groupPurchase.findUnique({
+            where: { id: purchaseId },
+          });
+          if (
+            !current ||
+            current.customerId !== customerId ||
+            current.paymentStatus !== PaymentStatus.PENDING ||
+            !current.reservationExpiresAt ||
+            current.reservationExpiresAt <= new Date()
+          )
+            throw new AppError("Group purchase is no longer payable", 409);
+          const pending = await tx.payment.findFirst({
+            where: {
+              groupPurchaseId: purchaseId,
+              customerId,
+              purpose: PaymentPurpose.GROUP_PURCHASE,
+              provider: PaymentProvider.STRIPE,
+              status: PaymentStatus.PENDING,
+            },
+            orderBy: { createdAt: "asc" },
+          });
+          if (pending) {
+            if (!pending.amount.equals(paymentAmount))
+              throw new AppError(
+                "Existing payment amount does not match purchase",
+                409,
+              );
+            return pending;
+          }
+          return tx.payment.create({
+            data: {
+              customerId,
+              groupPurchaseId: purchaseId,
+              purpose: PaymentPurpose.GROUP_PURCHASE,
+              provider: PaymentProvider.STRIPE,
+              amount: paymentAmount,
+              currency: "HKD",
+              status: PaymentStatus.PENDING,
+            },
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
       break;
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034" && attempt < 3) continue;
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034" &&
+        attempt < 3
+      )
+        continue;
       throw error;
     }
   }
@@ -1589,7 +1669,14 @@ export const handleGroupPurchaseStripeEvent = async (
     return { received: true as const };
   }
 
-  if (!["payment_intent.succeeded", "refund.created", "refund.updated", "refund.failed"].includes(event.type)) {
+  if (
+    ![
+      "payment_intent.succeeded",
+      "refund.created",
+      "refund.updated",
+      "refund.failed",
+    ].includes(event.type)
+  ) {
     return { received: true as const };
   }
 
@@ -1675,7 +1762,9 @@ export const handleGroupPurchaseStripeEvent = async (
             throw new AppError("Group purchase payment mismatch", 409);
           }
 
-          const initialAppointments = purchase.appointments.filter(item => item.bookingMethod === purchase.bookingMethod);
+          const initialAppointments = purchase.appointments.filter(
+            (item) => item.bookingMethod === purchase.bookingMethod,
+          );
           const appointment = isBookNow ? initialAppointments[0] : null;
 
           if (
@@ -1694,15 +1783,44 @@ export const handleGroupPurchaseStripeEvent = async (
           const now = new Date();
 
           // A duplicate payment must never change which payment settled this purchase.
-          if (purchase.purchasedAt && [PaymentStatus.PAID, PaymentStatus.PARTIALLY_PAID, PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED].some(status => status === purchase.paymentStatus)) {
-            if (!purchase.settledPaymentId) throw new AppError("Legacy group settlement identity requires manual reconciliation", 503);
+          if (
+            purchase.purchasedAt &&
+            [
+              PaymentStatus.PAID,
+              PaymentStatus.PARTIALLY_PAID,
+              PaymentStatus.REFUNDED,
+              PaymentStatus.PARTIALLY_REFUNDED,
+            ].some((status) => status === purchase.paymentStatus)
+          ) {
+            if (!purchase.settledPaymentId)
+              throw new AppError(
+                "Legacy group settlement identity requires manual reconciliation",
+                503,
+              );
             if (purchase.settledPaymentId === currentPayment.id) {
-              if (![PaymentStatus.PAID, PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED].some(status => status === currentPayment.status)) throw new AppError("Group settlement payment state requires reconciliation", 503);
-              await tx.stripeWebhookEvent.create({ data: { id: event.id, type: event.type } });
+              if (
+                ![
+                  PaymentStatus.PAID,
+                  PaymentStatus.REFUNDED,
+                  PaymentStatus.PARTIALLY_REFUNDED,
+                ].some((status) => status === currentPayment.status)
+              )
+                throw new AppError(
+                  "Group settlement payment state requires reconciliation",
+                  503,
+                );
+              await tx.stripeWebhookEvent.create({
+                data: { id: event.id, type: event.type },
+              });
               return "ALREADY_SETTLED";
             }
           }
-          if ([PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED].includes(currentPayment.status as "REFUNDED" | "PARTIALLY_REFUNDED")) return "REFUND_REQUIRED";
+          if (
+            [PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED].includes(
+              currentPayment.status as "REFUNDED" | "PARTIALLY_REFUNDED",
+            )
+          )
+            return "REFUND_REQUIRED";
 
           // =================================================
           // 4. CHECK ACTIVE RESERVATION
@@ -1978,14 +2096,26 @@ export const handleGroupPurchaseStripeEvent = async (
   let providerRefundId: string | null;
   try {
     const result = await ensureLateGroupPurchaseRefund(localRefund.id);
-    if (result.requiresInvestigation || result.status !== RefundStatus.SUCCEEDED || !result.providerRefundId) {
-      throw new AppError("Stripe refund pending or requires investigation", 503);
+    if (
+      result.requiresInvestigation ||
+      result.status !== RefundStatus.SUCCEEDED ||
+      !result.providerRefundId
+    ) {
+      throw new AppError(
+        "Stripe refund pending or requires investigation",
+        503,
+      );
     }
     providerRefundId = result.providerRefundId;
   } catch (error) {
-    logUnexpectedError(error, { source: "handleGroupPurchaseStripeEvent:lateRefund" });
+    logUnexpectedError(error, {
+      source: "handleGroupPurchaseStripeEvent:lateRefund",
+    });
     if (error instanceof AppError) throw error;
-    throw new AppError("Stripe refund outcome is uncertain; reconciliation required", 503);
+    throw new AppError(
+      "Stripe refund outcome is uncertain; reconciliation required",
+      503,
+    );
   }
 
   // =====================================================
@@ -2060,7 +2190,21 @@ export const handleGroupPurchaseStripeEvent = async (
               },
             });
 
-            await auditLogService.createAuditLog({ userId: null, action: "LATE_GROUP_PURCHASE_REFUNDED", entityType: "PAYMENT", entityId: payment.id, metadata: { refundId: currentRefund.id, providerRefundId, amount: Number(currentRefund.amount), currency: payment.currency } }, tx);
+            await auditLogService.createAuditLog(
+              {
+                userId: null,
+                action: "LATE_GROUP_PURCHASE_REFUNDED",
+                entityType: "PAYMENT",
+                entityId: payment.id,
+                metadata: {
+                  refundId: currentRefund.id,
+                  providerRefundId,
+                  amount: Number(currentRefund.amount),
+                  currency: payment.currency,
+                },
+              },
+              tx,
+            );
 
             // ---------------------------------------------
             // 11.3 CUSTOMER NOTIFICATION
@@ -2245,6 +2389,8 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
 
       select: {
         id: true,
+        orderNumber: true,
+
         amount: true,
         currency: true,
         status: true,
@@ -2252,7 +2398,6 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
         providerPaymentId: true,
         appointmentId: true,
 
-        // G6 - NEW FIELDS
         createdAt: true,
         purpose: true,
         groupPurchaseId: true,
@@ -2322,6 +2467,8 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   const items: IMyPaymentItem[] = payments.map((payment) => ({
     id: payment.id,
 
+    orderNumber: payment.orderNumber,
+
     amount: Number(payment.amount),
 
     currency: payment.currency,
@@ -2333,8 +2480,6 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
     providerPaymentId: payment.providerPaymentId,
 
     appointmentId: payment.appointmentId,
-
-    // G6 - NEW FIELDS
 
     createdAt: payment.createdAt,
 

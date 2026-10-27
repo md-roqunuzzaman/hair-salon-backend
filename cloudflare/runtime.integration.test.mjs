@@ -244,4 +244,39 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
   assert.ok(groupSafety.data.passed.length >= 50);
   t.diagnostic(`Unified Group Purchase: ${groupSafety.data.passed.length} real SQLite service checks passed`);
 
+  const completionCases = (await api('/__completion-test', { method: 'POST', body: { prepare: true } })).data;
+  const completionIds = Object.values(completionCases);
+  const completionState = async clearFailure => (await api('/__completion-test', {
+    method: 'POST', body: { ids: completionIds, clearFailure },
+  })).data;
+  const runCron = () => namespace.get(namespace.idFromName('salon-v1')).fetch('https://internal/__internal/cron');
+  const concurrentCrons = await Promise.all([runCron(), runCron()]);
+  for (const response of concurrentCrons) assert.equal(response.status, 200, await response.text());
+  const completedState = await completionState(false);
+  for (const name of ['payNow', 'reserve', 'deposit']) {
+    const row = completedState.appointments.find(row => row.id === completionCases[name]);
+    assert.equal(row.appointmentStatus, 'COMPLETED', name);
+    assert.ok(row.completedAt);
+    assert.equal(completedState.notifications.filter(note => note.appointmentId === row.id).length, 1);
+    const audit = completedState.audits.filter(audit => audit.entityId === row.id);
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0].userId, null);
+    assert.equal(audit[0].metadata.performedBy, 'SYSTEM');
+  }
+  for (const name of ['rollback', 'unverified', 'tooEarly', 'unpaid', 'cancelled', 'zeroDuration']) {
+    const row = completedState.appointments.find(row => row.id === completionCases[name]);
+    assert.equal(row.appointmentStatus, name === 'cancelled' ? 'CANCELLED' : 'CONFIRMED', name);
+    assert.equal(row.completedAt, null);
+    assert.equal(completedState.notifications.some(note => note.appointmentId === row.id), false);
+    assert.equal(completedState.audits.some(audit => audit.entityId === row.id), false);
+  }
+  await completionState(true);
+  assert.equal((await runCron()).status, 200);
+  const recoveredState = await completionState(false);
+  assert.equal(recoveredState.appointments.find(row => row.id === completionCases.rollback).appointmentStatus, 'COMPLETED');
+  assert.equal(recoveredState.notifications.length, 4);
+  assert.equal(recoveredState.audits.length, 4);
+  assert.equal((await runCron()).status, 200);
+  assert.deepEqual(await completionState(false), recoveredState);
+
 });

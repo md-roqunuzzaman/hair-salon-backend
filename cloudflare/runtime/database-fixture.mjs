@@ -9,6 +9,8 @@ import bannerManagement from '../migrations/0013_banner_management.sql';
 import staffPortfolio from '../migrations/0014_staff_portfolio.sql';
 import appointmentOrderNumber from '../migrations/0015_appointment_order_number.sql';
 import requiredOrderNumber from '../migrations/0016_require_appointment_order_number.sql';
+import paymentOrderNumber from '../migrations/0017_payment_order_number.sql';
+import paymentOrderBackfill from '../migrations/0018_backfill_payment_order_numbers.sql';
 import migration from '../migrations/0001_initial.sql';
 import upgrade from '../migrations/0002_wallet_topup_promotion.sql';
 import settlementIdentity from '../migrations/0006_group_settlement_identity.sql';
@@ -20,7 +22,7 @@ import { Sessions } from './sessions.mjs';
 export class DatabaseFixture {
   constructor(state) {
     this.state = state;
-    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema + refundEntitlements + branchPolicies + policyExecution + bannerManagement + staffPortfolio + appointmentOrderNumber + requiredOrderNumber));
+    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema + refundEntitlements + branchPolicies + policyExecution + bannerManagement + staffPortfolio + appointmentOrderNumber + requiredOrderNumber + paymentOrderNumber + paymentOrderBackfill));
     this.db = createDatabase(state.storage);
   }
   async fetch() {
@@ -47,6 +49,14 @@ export class DatabaseFixture {
       const published = await db.staffPortfolioCase.update({ where: { id: portfolio.id }, data: { status: 'PUBLISHED', tags: { set: ['cut', '染髮', 'color'] } } });
       if (published.status !== 'PUBLISHED' || published.tags.at(-1) !== 'color') throw new Error('Portfolio enum or tags update failed');
       const payment = await db.payment.create({ data: { customerId: user.id, purpose: 'APPOINTMENT', amount: '123.45' } });
+      if (payment.orderNumber !== null) throw new Error('Payment order number must default to null');
+      await db.payment.update({ where: { id: payment.id }, data: { orderNumber: 'PAY234' } });
+      const numberedPayment = await db.payment.findUnique({ where: { orderNumber: 'PAY234' } });
+      if (numberedPayment?.id !== payment.id || numberedPayment.amount.toString() !== '123.45') throw new Error('Payment order number roundtrip failed');
+      let paymentOrderCollision;
+      try { await db.payment.create({ data: { customerId: user.id, purpose: 'APPOINTMENT', amount: '1', orderNumber: 'PAY234' } }); }
+      catch (error) { paymentOrderCollision = error.code; }
+      if (paymentOrderCollision !== 'P2002') throw new Error('Payment order number uniqueness missing');
       const request = await db.refundRequest.create({ data: { customerId: user.id, paymentId: payment.id, amount: '123.45', reason: 'Schema roundtrip', eligiblePaidAmount: '123.45', refundPercentage: '12.50', refundDeduction: '0.12', policySnapshot: { version: 2 }, idempotencyKey: 'adapter-refund' } });
       if (request.eligiblePaidAmount.toString() !== '123.45' || request.refundPercentage.toString() !== '12.5' || request.refundDeduction.toString() !== '0.12' || request.policySnapshot.version !== 2 || request.requestType !== 'APPOINTMENT_CANCELLATION' || request.isCancellationOnly !== false) throw new Error('Refund request precision/default/JSON roundtrip failed');
       let rolledBack = false;

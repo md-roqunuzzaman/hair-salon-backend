@@ -37,6 +37,8 @@ try {
   const [backfill, ...requiredTriggers] = (await readFile('cloudflare/migrations/0016_require_appointment_order_number.sql', 'utf8')).split(/(?=CREATE TRIGGER)/);
   await apply(actual, backfill);
   for (const trigger of requiredTriggers) await actual.prepare(trigger).run();
+  await apply(actual, await readFile('cloudflare/migrations/0017_payment_order_number.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0018_backfill_payment_order_numbers.sql', 'utf8'));
   // v16 enforces this required field with triggers to retain the referenced table.
   // Verify both exact definitions before treating their enforcement as NOT NULL.
   for (const trigger of requiredTriggers) {

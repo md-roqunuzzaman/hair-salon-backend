@@ -1429,6 +1429,7 @@ const createGroupPurchaseAppointment = async (
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     const orderNumber = generateOrderNumber();
+
     try {
       return await prisma.$transaction(
         async (tx) => {
@@ -1436,7 +1437,13 @@ const createGroupPurchaseAppointment = async (
           // 4.1 RECHECK PURCHASE
           // =============================================
 
-          await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id" = ${purchaseId} FOR UPDATE`;
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "GroupPurchase"
+            WHERE "id" = ${purchaseId}
+            FOR UPDATE
+          `;
+
           const currentPurchase = await tx.groupPurchase.findUnique({
             where: {
               id: purchaseId,
@@ -1497,8 +1504,8 @@ const createGroupPurchaseAppointment = async (
           // 5. CHECK REMAINING PURCHASED QUANTITY
           // =============================================
 
-          // Includes the initial DIRECT_BOOK
-          // appointment, if one was created.
+          // Includes the initial DIRECT_BOOK appointment,
+          // if one was created.
           //
           // Cancelled appointments follow the existing
           // policy and do not consume package quantity.
@@ -1512,17 +1519,25 @@ const createGroupPurchaseAppointment = async (
             },
           });
 
-          if (purchaseExpired(currentPurchase))
+          if (purchaseExpired(currentPurchase)) {
             throw new AppError("GROUP_PURCHASE_EXPIRED", 409);
-          if (
-            await tx.refundRequest.findFirst({
-              where: {
-                payment: { groupPurchaseId: purchaseId },
-                status: { in: ["PENDING", "APPROVED", "PROCESSING"] },
+          }
+
+          const refundInProgress = await tx.refundRequest.findFirst({
+            where: {
+              payment: {
+                groupPurchaseId: purchaseId,
               },
-            })
-          )
+              status: {
+                in: ["PENDING", "APPROVED", "PROCESSING"],
+              },
+            },
+          });
+
+          if (refundInProgress) {
             throw new AppError("GROUP_PURCHASE_REFUND_IN_PROGRESS", 409);
+          }
+
           if (
             allocatedCount +
               currentPurchase.forfeitedQuantity +
@@ -1579,12 +1594,25 @@ const createGroupPurchaseAppointment = async (
               : (currentPurchase.package.translations as Prisma.InputJsonValue);
 
           // =============================================
-          // 9. CREATE REDEMPTION APPOINTMENT
+          // 9. GENERATE UNIQUE APPOINTMENT QR
+          // =============================================
+
+          // QR belongs to the appointment, not the
+          // Group Purchase payment.
+          //
+          // A new QR is generated for each successful
+          // redemption booking.
+
+          const qrToken = crypto.randomBytes(32).toString("hex");
+
+          // =============================================
+          // 10. CREATE REDEMPTION APPOINTMENT
           // =============================================
 
           const appointment = await tx.appointment.create({
             data: {
               ...(await snapshotData(tx, branchId, "GROUP_CANCEL")),
+
               customerId,
               branchId,
               orderNumber,
@@ -1620,7 +1648,10 @@ const createGroupPurchaseAppointment = async (
 
               holdExpiresAt: null,
 
-              qrToken: null,
+              // Unique QR for this appointment.
+              qrToken,
+
+              // QR has not been scanned yet.
               qrVerifiedAt: null,
               qrVerifiedBy: null,
             },
@@ -1636,7 +1667,7 @@ const createGroupPurchaseAppointment = async (
           });
 
           // =============================================
-          // 10. TEAM NOTIFICATION
+          // 11. TEAM NOTIFICATION
           // =============================================
 
           await notificationService.notifyAppointmentTeam(
@@ -1649,7 +1680,7 @@ const createGroupPurchaseAppointment = async (
           );
 
           // =============================================
-          // 11. RESPONSE
+          // 12. RESPONSE
           // =============================================
 
           return {
@@ -1659,7 +1690,12 @@ const createGroupPurchaseAppointment = async (
             appointmentStatus: appointment.appointmentStatus,
             paymentStatus: appointment.paymentStatus,
             staffId: appointment.staffId,
-            qrAvailable: false,
+
+            // Customer can retrieve the QR
+            // through the appointment QR endpoint.
+            qrAvailable: true,
+
+            // Group Purchase was already fully paid.
             additionalPaymentRequired: false,
           };
         },
@@ -1686,6 +1722,7 @@ const createGroupPurchaseAppointment = async (
         console.warn(
           "[GROUP_PURCHASE_APPOINTMENT] Order number collision. Retrying...",
         );
+
         continue;
       }
 

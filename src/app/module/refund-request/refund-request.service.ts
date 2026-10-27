@@ -1,6 +1,11 @@
-import { isSnapshot } from '../cancellation-refund/policy.calculation.js';
-import { validatePolicyRefund } from '../cancellation-refund/policy-refund.execution.js';
-import { cancelWithPolicy, previewAppointment, previewGroupRefund, requestGroupRefund } from '../cancellation-refund/cancellation-refund.service.js';
+import { isSnapshot } from "../cancellation-refund/policy.calculation.js";
+import { validatePolicyRefund } from "../cancellation-refund/policy-refund.execution.js";
+import {
+  cancelWithPolicy,
+  previewAppointment,
+  previewGroupRefund,
+  requestGroupRefund,
+} from "../cancellation-refund/cancellation-refund.service.js";
 import {
   PaymentProvider,
   PaymentPurpose,
@@ -77,19 +82,50 @@ const createRefundRequest = async (
     throw new AppError("REFUND_NOT_ALLOWED", 403);
   }
 
-  const snap = payment.appointment?.cancellationPolicySnapshot ?? payment.groupPurchase?.refundPolicySnapshot;
+  const snap =
+    payment.appointment?.cancellationPolicySnapshot ??
+    payment.groupPurchase?.refundPolicySnapshot;
   if (isSnapshot(snap) && !snap.legacy) {
     let created;
     if (payment.appointment && !payment.appointment.groupPurchaseId) {
-      const preview = await previewAppointment(payment.appointment.id,customerId);
-      if (preview.refund.refundAmount <= 0) throw new AppError('ZERO_REFUND_USE_CANCELLATION_ENDPOINT',422);
-      const result = await cancelWithPolicy(payment.appointment.id,customerId,Role.CUSTOMER,{reason:payload.reason,idempotencyKey:'existing-refund-'+payment.id,previewToken:preview.previewToken}) as {refundRequestId:string};
-      created = await prisma.refundRequest.findUniqueOrThrow({where:{id:result.refundRequestId}});
+      const preview = await previewAppointment(
+        payment.appointment.id,
+        customerId,
+      );
+      if (preview.refund.refundAmount <= 0)
+        throw new AppError("ZERO_REFUND_USE_CANCELLATION_ENDPOINT", 422);
+      const result = (await cancelWithPolicy(
+        payment.appointment.id,
+        customerId,
+        Role.CUSTOMER,
+        {
+          reason: payload.reason,
+          idempotencyKey: "existing-refund-" + payment.id,
+          previewToken: preview.previewToken,
+        },
+      )) as { refundRequestId: string };
+      created = await prisma.refundRequest.findUniqueOrThrow({
+        where: { id: result.refundRequestId },
+      });
     } else if (payment.groupPurchase) {
-      const preview = await previewGroupRefund(payment.groupPurchase.id,customerId);
-      created = await requestGroupRefund(payment.groupPurchase.id,customerId,{reason:payload.reason,idempotencyKey:'existing-refund-'+payment.id,previewToken:preview.previewToken});
-    } else throw new AppError('REFUND_NOT_ALLOWED',409);
-    return {id:created.id,paymentId:created.paymentId,amount:Number(created.amount),currency:payment.currency,status:'PENDING',createdAt:created.createdAt};
+      const preview = await previewGroupRefund(
+        payment.groupPurchase.id,
+        customerId,
+      );
+      created = await requestGroupRefund(payment.groupPurchase.id, customerId, {
+        reason: payload.reason,
+        idempotencyKey: "existing-refund-" + payment.id,
+        previewToken: preview.previewToken,
+      });
+    } else throw new AppError("REFUND_NOT_ALLOWED", 409);
+    return {
+      id: created.id,
+      paymentId: created.paymentId,
+      amount: Number(created.amount),
+      currency: payment.currency,
+      status: "PENDING",
+      createdAt: created.createdAt,
+    };
   }
 
   // =====================================================
@@ -301,6 +337,7 @@ const getMyRefundRequests = async (customerId: string) => {
 
       payment: {
         select: {
+          orderNumber: true,
           currency: true,
           purpose: true,
           appointmentId: true,
@@ -316,16 +353,30 @@ const getMyRefundRequests = async (customerId: string) => {
 
   return requests.map((request) => ({
     id: request.id,
+
     paymentId: request.paymentId,
+
+    // Customer-friendly order number
+    orderNumber: request.payment.orderNumber,
+
     amount: Number(request.amount),
+
     currency: request.payment.currency,
+
     purpose: request.payment.purpose,
+
     appointmentId: request.payment.appointmentId,
+
     groupPurchaseId: request.payment.groupPurchaseId,
+
     reason: request.reason,
+
     status: request.status,
+
     reviewedAt: request.reviewedAt,
+
     reviewNote: request.reviewNote,
+
     createdAt: request.createdAt,
   }));
 };
@@ -588,13 +639,18 @@ const reviewRefundRequest = async (
         .filter((refund) => refund.status === RefundStatus.SUCCEEDED)
         .reduce((sum, refund) => sum + Number(refund.amount), 0);
 
-      const eligibility = policyExecution ? {eligible:true,refundableAmount:Number(payment.amount)-alreadyRefunded} : calculateRefundEligibility({
-        paymentStatus: payment.status,
-        paymentProvider: payment.provider,
-        paymentPurpose: payment.purpose,
-        paymentAmount: Number(payment.amount),
-        alreadyRefunded,
-      });
+      const eligibility = policyExecution
+        ? {
+            eligible: true,
+            refundableAmount: Number(payment.amount) - alreadyRefunded,
+          }
+        : calculateRefundEligibility({
+            paymentStatus: payment.status,
+            paymentProvider: payment.provider,
+            paymentPurpose: payment.purpose,
+            paymentAmount: Number(payment.amount),
+            alreadyRefunded,
+          });
 
       if (
         payment.refunds.some((refund) => refund.status === RefundStatus.PENDING)

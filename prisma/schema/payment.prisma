@@ -4,6 +4,7 @@ model Payment {
   customerId      String
   appointmentId   String?
   groupPurchaseId String?
+  orderNumber     String? @unique
 
   purpose  PaymentPurpose
   provider PaymentProvider @default(STRIPE)

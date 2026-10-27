@@ -13,6 +13,7 @@ import { groupPurchaseExpiryService } from '../src/app/module/group-purchase/gro
 import { failureResponse } from './runtime/errors.mjs';
 import { AppError } from '../src/app/utils/app-error.ts';
 import { logUnexpectedError } from '../src/app/utils/normalize-error.ts';
+import { retryIdempotentDatabaseOperation } from '../src/app/utils/retry-database.ts';
 
 import { sendAppointmentReminders } from '../src/app/module/notification/notification-reminder.service.ts';
 
@@ -48,6 +49,7 @@ export class SalonDatabase {
       if (path === '/__internal/cron') {
         await appointmentService.expirePendingAppointments();
         await groupPurchaseExpiryService.expirePendingGroupPurchases();
+        await retryIdempotentDatabaseOperation(() => appointmentService.completeEligibleAppointments());
         await sendAppointmentReminders();
         this.sessions.cleanup();
         return new Response('OK');
@@ -90,10 +92,10 @@ export default {
     const run = async () => {
       try {
         const response = await database(env).fetch('https://internal/__internal/cron');
-        if (!response.ok) throw new Error(`Expiry cron failed: ${response.status}`);
+        if (!response.ok) throw new Error(`Scheduled jobs failed: ${response.status}`);
       } catch (error) {
         logUnexpectedError(error, { source: 'scheduled' });
-        throw new Error('Expiry cron failed');
+        throw new Error('Scheduled jobs failed');
       }
     };
     ctx.waitUntil(run());

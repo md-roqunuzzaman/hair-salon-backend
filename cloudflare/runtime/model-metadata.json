@@ -526,6 +526,7 @@
       "customerId": "String",
       "appointmentId": "String",
       "groupPurchaseId": "String",
+      "orderNumber": "String",
       "purpose": "PaymentPurpose",
       "provider": "PaymentProvider",
       "salonPaymentMethod": "SalonPaymentMethod",
