@@ -176,7 +176,9 @@ const createReview = async (
       moderationReason = moderationResult.reason ?? "Unsafe review content";
     }
   } catch (error) {
-    logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:178" });
+    logUnexpectedError(error, {
+      source: "src/app/module/review/review.service.ts:178",
+    });
 
     moderationStatus = ReviewModerationStatus.PENDING;
 
@@ -370,7 +372,9 @@ const createReview = async (
       translations,
     });
   } catch (error) {
-    logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:372" });
+    logUnexpectedError(error, {
+      source: "src/app/module/review/review.service.ts:372",
+    });
   }
 
   // =====================================================
@@ -1455,7 +1459,9 @@ const updateReview = async (
         };
       }
     } catch (error) {
-      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1457" });
+      logUnexpectedError(error, {
+        source: "src/app/module/review/review.service.ts:1457",
+      });
 
       moderationUpdate = {
         moderationStatus: ReviewModerationStatus.PENDING,
@@ -1578,7 +1584,9 @@ const updateReview = async (
         translations,
       });
     } catch (error) {
-      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1580" });
+      logUnexpectedError(error, {
+        source: "src/app/module/review/review.service.ts:1580",
+      });
     }
   }
 
@@ -1666,7 +1674,9 @@ const deleteReview = async (customerId: string, reviewId: string) => {
         ),
       );
     } catch (error) {
-      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1668" });
+      logUnexpectedError(error, {
+        source: "src/app/module/review/review.service.ts:1668",
+      });
     }
   }
 
@@ -1816,7 +1826,9 @@ const moderateReview = async (
         translations,
       });
     } catch (error) {
-      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1818" });
+      logUnexpectedError(error, {
+        source: "src/app/module/review/review.service.ts:1818",
+      });
     }
   }
 
@@ -1958,7 +1970,9 @@ const saveReviewReply = async (
         translations,
       });
     } catch (error) {
-      logUnexpectedError(error, { source: "src/app/module/review/review.service.ts:1960" });
+      logUnexpectedError(error, {
+        source: "src/app/module/review/review.service.ts:1960",
+      });
     }
   }
 
@@ -2060,6 +2074,165 @@ const deleteReviewReply = async (
 
   return null;
 };
+
+const getPendingReviews = async (
+  customerId: string,
+  query: Pick<IGetReviewsQuery, "page" | "limit">,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. PAGINATION VALIDATION
+  // =====================================================
+
+  const page = Number(query.page ?? 1);
+  const limit = Number(query.limit ?? 10);
+
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new AppError("Page must be a positive integer", 400);
+  }
+
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new AppError("Limit must be between 1 and 100", 400);
+  }
+
+  const skip = (page - 1) * limit;
+
+  if (!Number.isSafeInteger(skip)) {
+    throw new AppError("Pagination offset is too large", 400);
+  }
+
+  // =====================================================
+  // 2. FILTER COMPLETED APPOINTMENTS WITHOUT REVIEWS
+  // =====================================================
+
+  const where: Prisma.AppointmentWhereInput = {
+    customerId,
+
+    appointmentStatus: AppointmentStatus.COMPLETED,
+
+    review: {
+      is: null,
+    },
+  };
+
+  // =====================================================
+  // 3. FETCH APPOINTMENTS + TOTAL COUNT
+  // =====================================================
+
+  const [appointments, total] = await prisma.$transaction([
+    prisma.appointment.findMany({
+      where,
+
+      skip,
+      take: limit,
+
+      orderBy: [{ completedAt: "desc" }, { id: "desc" }],
+
+      select: {
+        id: true,
+        orderNumber: true,
+
+        date: true,
+        startTime: true,
+        endTime: true,
+        completedAt: true,
+
+        itemName: true,
+        itemNameTranslations: true,
+
+        branch: {
+          select: {
+            id: true,
+            name: true,
+            translations: true,
+          },
+        },
+
+        staff: {
+          select: {
+            id: true,
+            user: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        },
+      },
+    }),
+
+    prisma.appointment.count({
+      where,
+    }),
+  ]);
+
+  // =====================================================
+  // 4. LOCALIZE RESPONSE
+  // =====================================================
+
+  const items = appointments.map((appointment) => {
+    const localizedBranch = getLocalizedContent(
+      appointment.branch.translations,
+      language,
+      {
+        name: appointment.branch.name,
+      },
+    );
+
+    const localizedItem = getLocalizedContent(
+      appointment.itemNameTranslations,
+      language,
+      {
+        name: appointment.itemName,
+      },
+    );
+
+    return {
+      appointmentId: appointment.id,
+      orderNumber: appointment.orderNumber,
+
+      branch: {
+        id: appointment.branch.id,
+        name: localizedBranch.name,
+      },
+
+      staff: {
+        id: appointment.staff.id,
+        name: appointment.staff.user.name,
+      },
+
+      appointment: {
+        id: appointment.id,
+        date: appointment.date.toISOString().slice(0, 10),
+        startTime: appointment.startTime,
+        endTime: appointment.endTime,
+        itemName: localizedItem.name,
+        completedAt: appointment.completedAt?.toISOString() ?? null,
+      },
+
+      canReview: true,
+    };
+  });
+
+  // =====================================================
+  // 5. PAGINATION RESPONSE
+  // =====================================================
+
+  const totalPages = Math.ceil(total / limit);
+
+  return {
+    items,
+
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    },
+  };
+};
 export const reviewService = {
   createReview,
   getBranchReviews,
@@ -2071,4 +2244,5 @@ export const reviewService = {
   moderateReview,
   saveReviewReply,
   deleteReviewReply,
+  getPendingReviews,
 };

@@ -34,6 +34,7 @@ import { PolicyManagementRoutes } from "./app/module/cancellation-refund/policy-
 import { CancellationRefundRoutes } from "./app/module/cancellation-refund/cancellation-refund.route.js";
 import { BannerRoutes } from "./app/module/banner/banner.router.js";
 import { staffPortfolioRoutes } from "./app/module/staff-portfolio/staff-portfolio.route.js";
+import { BrandEmailSettingRoutes } from "./app/module/brand-email-setting/brand-email-setting.route.js";
 
 const app: Application = express();
 
@@ -95,6 +96,7 @@ app.use("/api/v1/staff", staffPortfolioRoutes);
 app.use("/api/v1/refund-requests", RefundRequestRoutes);
 app.use("/api/v1/policy-management", PolicyManagementRoutes);
 app.use("/api/v1/cancellation-refund", CancellationRefundRoutes);
+app.use("/api/v1/brand-email-settings", BrandEmailSettingRoutes);
 // Basic route
 app.get("/", async (req: Request, res: Response) => {
   res.status(httpStatus.OK).json({

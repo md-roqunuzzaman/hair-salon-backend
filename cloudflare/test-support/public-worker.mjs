@@ -6,9 +6,11 @@ import path from 'node:path';
 import { createHmac } from 'node:crypto';
 const require = createRequire(path.resolve('node_modules/wrangler/package.json'));
 const { Miniflare, Log, LogLevel } = await import(pathToFileURL(require.resolve('miniflare')).href);
-export async function setup(t, flag) {
+export async function setup(t, flag, emailOutboxEnabled = 'false') {
   const mf = new Miniflare({ log: new Log(LogLevel.NONE), modules: true, scriptPath: 'cloudflare/.build/integration.mjs', compatibilityDate: '2025-10-11', compatibilityFlags: ['nodejs_compat', 'enable_nodejs_http_server_modules'], modulesRules: [{ type: 'CompiledWasm', include: ['**/*.wasm'] }], durableObjects: { SALON_DB: { className: 'SalonTestDatabase', useSQLite: true } }, bindings: {
     NODE_ENV: 'production', CORS_ORIGIN: 'https://frontend.example.com', BCRYPT_SALT_ROUNDS: '10', JWT_ACCESS_SECRET: 'test-access-secret-'.repeat(3), JWT_REFRESH_SECRET: 'test-refresh-secret-'.repeat(3), STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_WEBHOOK_SECRET: 'whsec_test', OPENAI_API_KEY: 'test-key', R2_ACCOUNT_ID: 'test-account', R2_ACCESS_KEY_ID: 'test-key', R2_SECRET_ACCESS_KEY: 'test-secret', R2_BUCKET_NAME: 'test', EMAIL_SENDER: 'test@example.com', BOOTSTRAP_TOKEN: 'test-bootstrap-token-'.repeat(3), BRAND_OWNER_NAME: 'Owner', BRAND_OWNER_EMAIL: 'owner@example.com', BRAND_OWNER_PASSWORD: 'OwnerPassword123!', ...(flag !== undefined && { ENABLE_BOOK_NOW_PURCHASE: flag }),
+    EMAIL_OUTBOX_ENABLED: emailOutboxEnabled, EMAIL_ENCRYPTION_KEY: 'ab'.repeat(32), MICROSOFT_EMAIL_CLIENT_ID: 'test-client', MICROSOFT_EMAIL_CLIENT_SECRET: 'test-secret',
+    MICROSOFT_EMAIL_REDIRECT_URI: 'https://test/api/v1/brand-email-settings/microsoft/callback',
   } });
   t.after(() => mf.dispose());
   let token;

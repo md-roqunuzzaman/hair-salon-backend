@@ -11,11 +11,11 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalonDatabase"] }],
   "triggers": { "crons": ["* * * * *"] },
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
-  "vars": { "NODE_ENV": "production", "BCRYPT_SALT_ROUNDS": "12" },
+  "vars": { "NODE_ENV": "production", "BCRYPT_SALT_ROUNDS": "12", "EMAIL_OUTBOX_ENABLED": "false" },
   "env": {
     "staging": {
       "name": "hair-salon-backend-staging",
-      "vars": { "NODE_ENV": "production", "BCRYPT_SALT_ROUNDS": "12" },
+      "vars": { "NODE_ENV": "production", "BCRYPT_SALT_ROUNDS": "12", "EMAIL_OUTBOX_ENABLED": "false" },
       "durable_objects": { "bindings": [{ "name": "SALON_DB", "class_name": "SalonDatabase" }] },
       "triggers": { "crons": ["* * * * *"] }
     }

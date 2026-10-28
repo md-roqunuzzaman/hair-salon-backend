@@ -1,5 +1,7 @@
 # Cloudflare deployment
 
+For the current merchant/transactional email candidate, follow [transactional-email-system.md](../docs/transactional-email-system.md). Keep the frontend staging API online: implementation checks and migration rehearsals are local; do not deploy maintenance or run live migrations to prepare the build. `EMAIL_OUTBOX_ENABLED=false` keeps business delivery inactive. The v22 candidate includes an additive delivery-fence migration; after it is applied, a historical v19 application is not a compatible rollback. Current restored staging status is in [staging-api-restoration-report.md](../docs/staging-api-restoration-report.md). Live deployment and delivery activation each require separate authorization.
+
 The existing Express routes and services have a separate Cloudflare build. The Node/PostgreSQL entry remains available. No Cloudflare account, production database, real payment or customer email was changed during implementation.
 
 ## Runtime
@@ -83,6 +85,12 @@ Setup requires a secret of at least 32 characters, accepts POST only and permane
 8. Run full frontend/API regression on staging. Check minute cron runs, expired holds, password-reset delivery, R2 CORS and upload confirmation. Review storage/CPU usage under expected concurrent traffic.
 
 ## Production cutover
+
+### Brand email settings schema upgrade (v19)
+
+`0019_brand_email_settings.sql` adds `BrandEmailSetting` with one setting per brand, cascading brand relations, nullable encrypted SMTP/OAuth credentials and disabled/unverified defaults. SQLite stores `EmailProvider` as text; generated Prisma enums contain all six providers. Existing brand/payment data and global SMTP settings are preserved. Deploying applies the schema once on Durable Object initialization.
+
+The email-settings router is now mounted in `src/app.ts`. The provider implementation includes a Worker-specific SMTP socket adapter, Microsoft Graph OAuth, Resend DNS/domain verification and guarded custom SMTP on Node only. v20 adds the dormant outbox table; v21 adds provider configuration version/status metadata and invalidates old verification once while retaining encrypted credentials. No business-email scheduler or booking-email trigger is activated. See [the merchant email setup and Postman guide](../docs/merchant-email-provider-guide.md) for secrets, external setup, mock-test evidence and pending real-provider verification. Tests use synthetic credentials and do not send real emails.
 
 ### Historical payment order number backfill (v18)
 

@@ -11,6 +11,10 @@ import appointmentOrderNumber from '../migrations/0015_appointment_order_number.
 import requiredOrderNumber from '../migrations/0016_require_appointment_order_number.sql';
 import paymentOrderNumber from '../migrations/0017_payment_order_number.sql';
 import paymentOrderBackfill from '../migrations/0018_backfill_payment_order_numbers.sql';
+import brandEmailSettings from '../migrations/0019_brand_email_settings.sql';
+import emailOutbox from '../migrations/0020_email_outbox.sql';
+import emailProviderConfiguration from '../migrations/0021_email_provider_configuration.sql';
+import emailOutboxFence from '../migrations/0022_email_outbox_delivery_fence.sql';
 import migration from '../migrations/0001_initial.sql';
 import upgrade from '../migrations/0002_wallet_topup_promotion.sql';
 import settlementIdentity from '../migrations/0006_group_settlement_identity.sql';
@@ -22,12 +26,24 @@ import { Sessions } from './sessions.mjs';
 export class DatabaseFixture {
   constructor(state) {
     this.state = state;
-    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema + refundEntitlements + branchPolicies + policyExecution + bannerManagement + staffPortfolio + appointmentOrderNumber + requiredOrderNumber + paymentOrderNumber + paymentOrderBackfill));
+    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema + refundEntitlements + branchPolicies + policyExecution + bannerManagement + staffPortfolio + appointmentOrderNumber + requiredOrderNumber + paymentOrderNumber + paymentOrderBackfill + brandEmailSettings + emailOutbox + emailProviderConfiguration + emailOutboxFence));
     this.db = createDatabase(state.storage);
   }
   async fetch() {
     try {
       const db = this.db;
+      const emailBrand = await db.brand.create({ data: { name: 'Email settings test' } });
+      const emailSetting = await db.brandEmailSetting.create({ data: {
+        brandId: emailBrand.id, provider: 'GMAIL', fromName: 'Salon', fromEmail: 'test@example.com',
+        smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecure: true,
+        encryptedCredential: 'test-ciphertext', oauthDataEncrypted: 'test-oauth-ciphertext',
+      } });
+      if (emailSetting.isEnabled || emailSetting.isVerified || emailSetting.smtpUsername !== null) throw new Error('Brand email defaults failed');
+      for (const provider of ['GMAIL', 'MICROSOFT_365', 'QQ', 'NETEASE_163', 'CUSTOM_SMTP', 'RESEND']) {
+        await db.brandEmailSetting.update({ where: { brandId: emailBrand.id }, data: { provider } });
+        const roundtrip = await db.brand.findUnique({ where: { id: emailBrand.id }, include: { emailSetting: true } });
+        if (roundtrip.emailSetting.provider !== provider || roundtrip.emailSetting.encryptedCredential !== 'test-ciphertext' || roundtrip.emailSetting.oauthDataEncrypted !== 'test-oauth-ciphertext') throw new Error('Brand email enum/credential relation roundtrip failed');
+      }
       const locatedBranch = await db.branch.create({ data: { name: 'Coordinates', address: 'Hong Kong', latitude: 22.3193, longitude: 114.1694 } });
       const policy = await db.branchCancellationPolicy.create({ data: { branchId: locatedBranch.id, refundTiers: [{ hours: 12, percentage: 100 }] } });
       const storedPolicy = await db.branchCancellationPolicy.findUnique({ where: { branchId: locatedBranch.id } });

@@ -51,4 +51,5 @@ router.patch(
 
 router.delete("/:reviewId", auth(Role.CUSTOMER), reviewController.deleteReview);
 
+router.get("/pending", auth(Role.CUSTOMER), reviewController.getPendingReviews);
 export const ReviewRoutes = router;

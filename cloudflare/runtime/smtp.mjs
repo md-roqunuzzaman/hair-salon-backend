@@ -1,7 +1,7 @@
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 
 // Implicit TLS only: credentials are never sent over a plaintext connection.
-export async function sendSmtpEmail(connect, env, message) {
+export async function sendSmtpEmail(connect, env, message, { verifyOnly = false } = {}) {
   const host = env.SMTP_HOST || 'smtp.gmail.com';
   const port = Number(env.SMTP_PORT || 465);
   if (port !== 465 || !env.SMTP_USER || !env.SMTP_PASSWORD || !env.EMAIL_SENDER) {
@@ -21,7 +21,17 @@ export async function sendSmtpEmail(connect, env, message) {
   const decoder = new TextDecoder();
   let buffer = '';
   let accepted = false;
-  const timer = setTimeout(() => { socket.close().catch(() => {}); }, 30000);
+  let stage = 'CONNECT';
+  let deliveryUncertain = false;
+  let timeoutReject;
+  const timeout = new Promise((_, reject) => { timeoutReject = reject; });
+  // Also consumed while no I/O is pending, so timeout rejection is never unhandled.
+  timeout.catch(() => {});
+  const timer = setTimeout(() => {
+    const error = Object.assign(new Error('SMTP operation timed out'), { code: 'ETIMEDOUT', stage, deliveryUncertain });
+    timeoutReject(error);
+    socket.close().catch(() => {});
+  }, 30000);
   async function reply(expected) {
     let size = 0;
     while (true) {
@@ -36,36 +46,50 @@ export async function sendSmtpEmail(connect, env, message) {
         if (!expected.includes(code)) {
           const error = new Error(`SMTP command failed (${code})`);
           error.code = `SMTP_${code}`;
+          error.responseCode = code;
+          if (code >= 400 && code <= 599) error.deliveryUncertain = false;
           throw error;
         }
         return;
       }
-      const chunk = await reader.read();
+      const chunk = await Promise.race([reader.read(), timeout]);
       if (chunk.done) throw new Error('SMTP connection closed');
       buffer += decoder.decode(chunk.value, { stream: true });
       if (buffer.length > 65536) throw new Error('SMTP response too large');
     }
   }
   async function command(value, expected) {
-    await writer.write(new TextEncoder().encode(value + '\r\n'));
+    await Promise.race([writer.write(new TextEncoder().encode(value + '\r\n')), timeout]);
     await reply(expected);
   }
   try {
+    if (socket.opened) { stage = 'TLS'; await Promise.race([socket.opened, timeout]); }
+    stage = 'CONNECT';
     await reply([220]);
     await command('EHLO salon.invalid', [250]);
+    stage = 'AUTH';
     await command('AUTH LOGIN', [334]);
     await command(Buffer.from(env.SMTP_USER).toString('base64'), [334]);
     await command(Buffer.from(env.SMTP_PASSWORD).toString('base64'), [235]);
+    if (verifyOnly) return { messageId: null, accepted: [] };
+    stage = 'SEND';
     await command(`MAIL FROM:<${envelope.from}>`, [250]);
     for (const address of envelope.to) await command(`RCPT TO:<${address}>`, [250, 251]);
     await command('DATA', [354]);
+    deliveryUncertain = true;
     await command(raw.replace(/\r?\n/g, '\r\n').replace(/^\./gm, '..').replace(/\r\n$/, '') + '\r\n.', [250]);
     accepted = true;
     return { messageId: mail.messageId(), accepted: envelope.to };
+  } catch (error) {
+    // Never attach SMTP replies or credentials to diagnostics.
+    error.stage ??= stage;
+    error.deliveryUncertain ??= deliveryUncertain;
+    throw error;
   } finally {
     clearTimeout(timer);
     // A server accepting DATA is success even if connection teardown fails.
-    if (accepted) await writer.write(new TextEncoder().encode('QUIT\r\n')).catch(() => {});
+    // DATA acceptance is final. Do not wait for a QUIT reply or retry on teardown.
+    await reader.cancel().catch(() => {});
     reader.releaseLock();
     writer.releaseLock();
     await socket.close().catch(() => {});

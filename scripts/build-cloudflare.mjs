@@ -63,7 +63,11 @@ const appointmentOrderNumber = await readFile('cloudflare/migrations/0015_appoin
 const requiredOrderNumber = await readFile('cloudflare/migrations/0016_require_appointment_order_number.sql', 'utf8');
 const paymentOrderNumber = await readFile('cloudflare/migrations/0017_payment_order_number.sql', 'utf8');
 const paymentOrderBackfill = await readFile('cloudflare/migrations/0018_backfill_payment_order_numbers.sql', 'utf8');
-const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+const brandEmailSettings = await readFile('cloudflare/migrations/0019_brand_email_settings.sql', 'utf8');
+const emailOutbox = await readFile('cloudflare/migrations/0020_email_outbox.sql', 'utf8');
+const emailProviderConfiguration = await readFile('cloudflare/migrations/0021_email_provider_configuration.sql', 'utf8');
+const emailOutboxFence = await readFile('cloudflare/migrations/0022_email_outbox_delivery_fence.sql', 'utf8');
+const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);
@@ -72,6 +76,7 @@ const aliases = {
   'src/app/lib/prisma.ts': 'cloudflare/runtime/prisma.mjs',
   'src/app/lib/redis.ts': 'cloudflare/runtime/redis.mjs',
   'src/app/lib/nodemailer.ts': 'cloudflare/runtime/nodemailer.mjs',
+  'src/app/lib/merchant-smtp.ts': 'cloudflare/runtime/merchant-smtp.mjs',
   'src/app/config/env.ts': 'cloudflare/runtime/env.mjs',
   'generated/prisma/client.ts': 'generated/sqlite/client.ts',
   'generated/prisma/enums.ts': 'generated/sqlite/enums.ts',
@@ -94,7 +99,7 @@ await build({
     builder.onResolve({ filter: /query_compiler_fast_bg\.wasm\?module$/ }, () => ({ path: './compiler.wasm', external: true }));
     builder.onResolve({ filter: /^bcrypt$/ }, () => ({ path: path.resolve('node_modules/bcryptjs/index.js') }));
     builder.onResolve({ filter: /^ejs$/ }, () => ({ path: path.resolve(`${directory}/templates.mjs`) }));
-    builder.onResolve({ filter: /(?:prisma|redis|nodemailer|env|client|enums)\.js$/ }, args => {
+    builder.onResolve({ filter: /(?:prisma|redis|nodemailer|merchant-smtp|env|client|enums)\.js$/ }, args => {
       const resolved = path.relative(process.cwd(), path.resolve(args.resolveDir, args.path)).replaceAll('\\', '/').replace(/\.js$/, '.ts');
       if (aliases[resolved]) return { path: path.resolve(aliases[resolved]) };
     });

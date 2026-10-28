@@ -16,6 +16,7 @@ import { logUnexpectedError } from '../src/app/utils/normalize-error.ts';
 import { retryIdempotentDatabaseOperation } from '../src/app/utils/retry-database.ts';
 
 import { sendAppointmentReminders } from '../src/app/module/notification/notification-reminder.service.ts';
+import { processBusinessEmailBatch } from '../src/app/module/brand-email-setting/brand-email-setting.outbox-processor.ts';
 
 app.listen(3000);
 const http = httpServerHandler({ port: 3000 });
@@ -34,10 +35,12 @@ export class SalonDatabase {
     });
   }
   sendMail(message) { return sendSmtpEmail(connect, this.env, message); }
+  connectSmtp(address, options) { return connect(address, options); }
   enqueue(callback) {
     const result = this.tail.then(() => applicationRuntime.run({
       prisma: this.db, redis: this.sessions,
       sendMail: message => this.sendMail(message),
+      connectSmtp: (address, options) => this.connectSmtp(address, options),
     }, callback));
     this.tail = result.catch(() => {});
     return result;
@@ -52,6 +55,8 @@ export class SalonDatabase {
         await retryIdempotentDatabaseOperation(() => appointmentService.completeEligibleAppointments());
         await sendAppointmentReminders();
         this.sessions.cleanup();
+        try { await processBusinessEmailBatch(2); }
+        catch { console.error('[Email Outbox]', { code: 'EMAIL_BATCH_STORAGE_FAILED' }); }
         return new Response('OK');
       }
       if (path === '/__internal/seed') {

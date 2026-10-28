@@ -1,7 +1,9 @@
 import { bookNowFixture, providerEvent, policyTestControl } from './book-now-fixture.mjs';
+import { businessEmailTestControl } from './business-email-fixture.mjs';
 // Bundled only by build-cloudflare --test. Never included in the deployed entry.
 import { runGroupSafety } from './group-safety-fixture.mjs';
 import { completionFixture } from './completion-fixture.mjs';
+import { emailTestControl, emailMockSocket } from './email-test-fixture.mjs';
 import worker, { SalonDatabase } from '../worker.mjs';
 import { failureResponse } from './errors.mjs';
 import bcrypt from 'bcryptjs';
@@ -15,8 +17,11 @@ export class SalonTestDatabase extends SalonDatabase {
     this.outbox = outbox;
   }
   async sendMail(message) { this.outbox.push(message); return { messageId: 'test' }; }
+  connectSmtp(address, options) { return emailMockSocket(address, options); }
   async fetch(request) {
+    if (new URL(request.url).pathname === '/__business-email-test') return this.enqueue(async () => Response.json(await businessEmailTestControl(this.db, this.ctx.storage, await request.json())));
     const url = new URL(request.url);
+    if (url.pathname === '/__email-test-control') return this.enqueue(async () => Response.json(await emailTestControl(this.db, this.sessions, await request.json())));
     if (url.pathname === '/__completion-test') return this.enqueue(async () => {
       try { return Response.json(await completionFixture(this.db, this.ctx.storage, await request.json())); }
       catch (error) { return Response.json({ error: error.message, stack: error.stack }, { status: 500 }); }

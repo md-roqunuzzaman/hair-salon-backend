@@ -38,6 +38,7 @@ import { uploadService } from "../upload/upload.service.js";
 
 import { ICreateGroupPurchasePayload } from "./group-purchase.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
+import { enqueueAppointmentEmail, enqueueGroupPurchaseEmail } from '../brand-email-setting/brand-email-setting.events.js';
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { presentGroupPurchase } from "./group-purchase.presentation.js";
 import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
@@ -653,6 +654,7 @@ const createGroupPurchase = async (
               },
             });
 
+            if (isReserveNow) await enqueueAppointmentEmail(tx, appointment.id, 'RESERVE_NOW_RESERVED');
             firstAppointment = {
               appointmentId: appointment.id,
               appointmentStatus: appointment.appointmentStatus,
@@ -2205,6 +2207,7 @@ export const recordGroupPurchaseRemainingPayment = async (
           // =============================================
           // 15. CUSTOMER NOTIFICATION
           // =============================================
+          if (expectedPaymentStatus === PaymentStatus.UNPAID) await enqueueGroupPurchaseEmail(tx, purchase.id);
 
           const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
             Number(payment.amount),

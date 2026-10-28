@@ -45,3 +45,17 @@ test('SMTP rejects missing credentials and plaintext ports before connecting', a
   await assert.rejects(sendSmtpEmail(connect, { ...env, SMTP_PORT: '25' }, {}), /SMTP requires/);
   await assert.rejects(sendSmtpEmail(connect, { ...env, SMTP_PASSWORD: '' }, {}), /SMTP requires/);
 });
+
+test('SMTP connectivity verification never submits DATA or claims message delivery', async () => {
+  const smtp = server(['220 Ready\r\n250 AUTH LOGIN\r\n334 User\r\n334 Password\r\n235 Authenticated\r\n']);
+  const result = await sendSmtpEmail(smtp.connect, env, { to:'customer@example.com', text:'not sent' }, { verifyOnly:true });
+  assert.equal(result.messageId, null);
+  assert.equal(smtp.writes.some(value => value.startsWith('DATA')), false);
+});
+
+test('SMTP disconnect after DATA is marked uncertain, never accepted', async () => {
+  const smtp = server(['220 Ready\r\n250 AUTH LOGIN\r\n334 User\r\n334 Password\r\n235 Authenticated\r\n250 Sender\r\n250 Recipient\r\n354 Data\r\n']);
+  await assert.rejects(sendSmtpEmail(smtp.connect, env, {to:'customer@example.com',text:'test'}), error => {
+    assert.equal(error.stage,'SEND'); assert.equal(error.deliveryUncertain,true); return true;
+  });
+});

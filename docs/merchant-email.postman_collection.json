@@ -1,0 +1,406 @@
+{
+  "info": {
+    "name": "Merchant Email Configuration - Manual Only",
+    "description": "Do not run the entire collection. Read merchant-email-provider-guide.md. Real sends require confirmation and are restricted to the designated recipient.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{ownerToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://api-staging.example.com"
+    },
+    {
+      "key": "brandId",
+      "value": ""
+    },
+    {
+      "key": "ownerToken",
+      "value": ""
+    },
+    {
+      "key": "gmailAppPassword",
+      "value": ""
+    },
+    {
+      "key": "qqEmail",
+      "value": ""
+    },
+    {
+      "key": "qqAuthorizationCode",
+      "value": ""
+    },
+    {
+      "key": "neteaseEmail",
+      "value": ""
+    },
+    {
+      "key": "neteaseAuthorizationCode",
+      "value": ""
+    },
+    {
+      "key": "microsoftEmail",
+      "value": ""
+    },
+    {
+      "key": "customFromEmail",
+      "value": ""
+    },
+    {
+      "key": "customSmtpHost",
+      "value": ""
+    },
+    {
+      "key": "customSmtpUsername",
+      "value": ""
+    },
+    {
+      "key": "customSmtpPassword",
+      "value": ""
+    },
+    {
+      "key": "resendFromEmail",
+      "value": ""
+    },
+    {
+      "key": "resendApiKey",
+      "value": ""
+    },
+    {
+      "key": "resendDomain",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "01 View current configuration",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}",
+        "description": ""
+      }
+    },
+    {
+      "name": "02 Save Gmail",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"fromName\": \"ABC Hair Salon\",\n  \"provider\": \"GMAIL\",\n  \"fromEmail\": \"khanrokon571@gmail.com\",\n  \"smtpUsername\": \"khanrokon571@gmail.com\",\n  \"password\": \"{{gmailAppPassword}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "03 Save QQ",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"fromName\": \"ABC Hair Salon\",\n  \"provider\": \"QQ\",\n  \"fromEmail\": \"{{qqEmail}}\",\n  \"smtpUsername\": \"{{qqEmail}}\",\n  \"password\": \"{{qqAuthorizationCode}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "04 Save NetEase 163",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"fromName\": \"ABC Hair Salon\",\n  \"provider\": \"NETEASE_163\",\n  \"fromEmail\": \"{{neteaseEmail}}\",\n  \"smtpUsername\": \"{{neteaseEmail}}\",\n  \"password\": \"{{neteaseAuthorizationCode}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "05 Save Microsoft 365",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"fromName\": \"ABC Hair Salon\",\n  \"provider\": \"MICROSOFT_365\",\n  \"fromEmail\": \"{{microsoftEmail}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "06 Microsoft connect",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/microsoft/connect",
+        "description": "Open authorizationUrl in the consenting account browser. The registered callback returns safe metadata. Never expose tokens.",
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "07 Microsoft disconnect",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/microsoft/disconnect",
+        "description": "Local tokens are removed. Remove app consent in My Apps for provider-side revocation."
+      }
+    },
+    {
+      "name": "08 Save custom SMTP (Node delivery only)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"fromName\": \"ABC Hair Salon\",\n  \"provider\": \"CUSTOM_SMTP\",\n  \"fromEmail\": \"{{customFromEmail}}\",\n  \"smtpHost\": \"{{customSmtpHost}}\",\n  \"smtpPort\": 465,\n  \"smtpSecure\": true,\n  \"smtpUsername\": \"{{customSmtpUsername}}\",\n  \"password\": \"{{customSmtpPassword}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "09 Save Resend",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"fromName\": \"ABC Hair Salon\",\n  \"provider\": \"RESEND\",\n  \"fromEmail\": \"{{resendFromEmail}}\",\n  \"apiKey\": \"{{resendApiKey}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "10 Register or discover Resend sender domain",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/resend/domain",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"domain\": \"{{resendDomain}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "11 Check Resend DNS records/status",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/resend/domain",
+        "description": ""
+      }
+    },
+    {
+      "name": "12 Request Resend domain verification",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/resend/domain/verify",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "13 REAL SEND - CONFIRM FIRST - once per provider",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/test-email",
+        "description": "STOP: ask user confirmation first. Send once per configured provider at most. No retries without approval. Provider acceptance is not inbox receipt. No booking, bulk or promotional messages.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"recipientEmail\": \"khanrokon571@gmail.com\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "14 Enable verified provider",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/enable",
+        "description": ""
+      }
+    },
+    {
+      "name": "15 Disable provider (keeps credentials)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/disable",
+        "description": ""
+      }
+    },
+    {
+      "name": "Inspect outbox (read only)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/outbox",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "brand-email-settings",
+            "{{brandId}}",
+            "outbox"
+          ]
+        },
+        "description": "Owner-only latest 100 job metadata. Does not process, retry, enable, or send email. See transactional-email-system.md."
+      }
+    }
+  ]
+}

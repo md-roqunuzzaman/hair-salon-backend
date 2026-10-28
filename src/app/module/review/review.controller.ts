@@ -248,6 +248,49 @@ const deleteReviewReply = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getPendingReviews = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. AUTHENTICATED CUSTOMER
+  // =====================================================
+
+  if (!req.user) {
+    throw new AppError("Unauthorized", 401);
+  }
+
+  const customerId = req.user.userId;
+
+  // =====================================================
+  // 2. LANGUAGE
+  // =====================================================
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  // =====================================================
+  // 3. FETCH PENDING REVIEWS
+  // =====================================================
+
+  const data = await reviewService.getPendingReviews(
+    customerId,
+    {
+      page: Number(req.query.page ?? 1),
+      limit: Number(req.query.limit ?? 10),
+    },
+    language,
+  );
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
+
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: "Pending reviews fetched successfully",
+    data,
+  });
+});
 export const reviewController = {
   createReview,
   getBranchReviews,
@@ -259,4 +302,5 @@ export const reviewController = {
   moderateReview,
   saveReviewReply,
   deleteReviewReply,
+  getPendingReviews,
 };

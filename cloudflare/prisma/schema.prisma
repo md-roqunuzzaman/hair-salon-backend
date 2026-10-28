@@ -366,17 +366,90 @@ model Brand {
   translations  Json?
   banners       Banner[]
 
-  primaryColor    String @default("#0F766E")
-  secondaryColor  String @default("#B45309")
-  backgroundColor String @default("#F3F1EA")
-  surfaceColor    String @default("#FBFAF6")
-  textColor       String @default("#1A1813")
-  mutedTextColor  String @default("#8B8676")
-  lineColor       String @default("#E2DED3")
-  onPrimaryColor  String @default("#FFFFFF")
+  primaryColor    String             @default("#0F766E")
+  secondaryColor  String             @default("#B45309")
+  backgroundColor String             @default("#F3F1EA")
+  surfaceColor    String             @default("#FBFAF6")
+  textColor       String             @default("#1A1813")
+  mutedTextColor  String             @default("#8B8676")
+  lineColor       String             @default("#E2DED3")
+  onPrimaryColor  String             @default("#FFFFFF")
+  emailSetting    BrandEmailSetting?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+}
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model BrandEmailSetting {
+    id       String        @id @default(uuid())
+    brandId  String        @unique
+    provider EmailProvider
+
+    // Sender information
+    fromName  String
+    fromEmail String
+
+    // SMTP configuration
+    smtpHost     String?
+    smtpPort     Int?
+    smtpSecure   Boolean?
+    smtpUsername String?
+
+    // Encrypted SMTP password / authorization code
+    encryptedCredential String?
+
+    // Microsoft 365 OAuth credentials/tokens
+    oauthDataEncrypted String?
+
+    // Configuration status
+    isEnabled  Boolean @default(false)
+    isVerified Boolean @default(false)
+    configurationVersion Int @default(1)
+    providerData Json?
+    lastTestAt DateTime?
+    lastErrorCode String?
+
+    // Relations
+    brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}
+
+model EmailOutbox {
+    id String @id @default(uuid())
+
+    brandId       String
+    userId        String?
+    appointmentId String?
+
+    eventType      String
+    idempotencyKey String @unique
+
+    recipientEmail String
+    subject        String
+    html           String
+
+    status      String @default("PENDING")
+    attempts    Int    @default(0)
+    maxAttempts Int    @default(3)
+
+    nextAttemptAt DateTime  @default(now())
+    lockedUntil   DateTime?
+    claimToken    String?
+    attemptedAt   DateTime?
+    text          String?
+
+    sentAt            DateTime?
+    lastError         String?
+    provider          String?
+    providerMessageId String?
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    @@index([status, nextAttemptAt])
+    @@index([brandId, createdAt])
+    @@index([appointmentId])
 }
 
 enum Role {
@@ -574,6 +647,15 @@ enum StaffPortfolioStatus {
   DRAFT
   PUBLISHED
   HIDDEN
+}
+
+enum EmailProvider {
+  GMAIL
+  MICROSOFT_365
+  QQ
+  NETEASE_163
+  CUSTOM_SMTP
+  RESEND
 }
 
 model GroupPurchase {

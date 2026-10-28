@@ -1,6 +1,7 @@
 import { validatePolicyRefund, finalizePolicyGroupRefund, recordPolicyRefundCompletion } from '../cancellation-refund/policy-refund.execution.js';
 import { executionSnapshot } from '../cancellation-refund/cancellation-refund.interface.js';
 import { notificationService } from "../notification/notification.service.js";
+import { enqueueRefundEmail } from '../brand-email-setting/brand-email-setting.events.js';
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { logUnexpectedError } from "../../utils/normalize-error.js";
 import Stripe from "stripe";
@@ -422,6 +423,7 @@ const finalizeApprovedStripeRefund = async (requestId: string, stripeRefund: Str
         },
       });
 
+      await enqueueRefundEmail(tx, request.refundId);
       const totalRefundedCents = payment.refunds.reduce(
         (sum, refund) =>
           sum +
@@ -933,6 +935,7 @@ const processApprovedWalletRefund = async (
             },
           });
 
+          await enqueueRefundEmail(tx, refund.id);
           // 8. Restore wallet balances.
           await tx.wallet.update({
             where: { id: wallet.id },

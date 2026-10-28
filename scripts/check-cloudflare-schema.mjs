@@ -39,6 +39,10 @@ try {
   for (const trigger of requiredTriggers) await actual.prepare(trigger).run();
   await apply(actual, await readFile('cloudflare/migrations/0017_payment_order_number.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0018_backfill_payment_order_numbers.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0019_brand_email_settings.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0020_email_outbox.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0021_email_provider_configuration.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0022_email_outbox_delivery_fence.sql', 'utf8'));
   // v16 enforces this required field with triggers to retain the referenced table.
   // Verify both exact definitions before treating their enforcement as NOT NULL.
   for (const trigger of requiredTriggers) {

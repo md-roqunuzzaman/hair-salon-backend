@@ -194,3 +194,12 @@ enum StaffPortfolioStatus {
   PUBLISHED
   HIDDEN
 }
+
+enum EmailProvider {
+  GMAIL
+  MICROSOFT_365
+  QQ
+  NETEASE_163
+  CUSTOM_SMTP
+  RESEND
+}

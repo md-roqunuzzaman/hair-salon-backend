@@ -16,7 +16,7 @@ test('merchant policies: real Worker APIs, snapshots, cancellation, approval and
     const created=(await api(`/api/v1/appointments/${method==='PAY_NOW'?'pay-now':method==='DEPOSIT'?'deposit':'reserve'}`,{body:{branchId:fixture.branchId,serviceId:fixture.serviceId,staffId:fixture.staffId,date:fixture.date,startTime:time()},status:201})).data;
     const id=created.appointmentId;
     let paymentId;
-    if(method!=='RESERVE_NOW'){
+    if(method!=='RESERVE_NOW' && provider!=='NONE'){
       if(provider==='WALLET')await api(`/api/v1/appointments/${id}/pay-with-wallet`,{body:{useBonus:true}});
       else{const intent=(await api('/api/v1/payments/stripe/create-intent',{body:{appointmentId:id},status:201})).data;paymentId=intent.paymentId;await webhook(await api('/__book-now-provider',{body:{paymentId}}));}
     }
@@ -77,14 +77,16 @@ test('merchant policies: real Worker APIs, snapshots, cancellation, approval and
     const current=await control({});assert.equal(current.requests.find(r=>r.id===result.refundRequestId).status,mode==='failed'?'FAILED':'COMPLETED');assert.equal(current.providerRefundCount,provider.providerRefundCount);
   });
   await control({refundMode:'succeeded'});
-  await t.test('DEPOSIT only refunds original deposit after salon remainder collection',async()=>{
+  await t.test('DEPOSIT refunds only the deposit before arrival; checked-in remainder collection cannot bypass cancellation protection',async()=>{
     await api('/__book-now-policy',{body:{branchId:fixture.branchId,data:{depositPercentage:10}}});
+    const beforeArrival=await book('DEPOSIT','STRIPE',25);
+    assert.equal((await preview(beforeArrival.id)).refund.eligiblePaidAmount,30);assert.equal((await preview(beforeArrival.id)).refund.refundAmount,24);
+    const request=await cancel(beforeArrival.id,'deposit-before-arrival');await approve(request.refundRequestId);await process(request.refundRequestId);
     const {id}=await book('DEPOSIT','STRIPE',25);let appointment=(await state()).appointments.find(a=>a.id===id);
     await api('/api/v1/appointments/verify-qr',{body:{qrToken:appointment.qrToken,branchId:fixture.branchId,paymentMethod:'CASH'},roleToken:ownerToken});
     await api(`/api/v1/appointments/${id}/remaining-payment`,{body:{paymentMethod:'CASH'},roleToken:ownerToken});
-    assert.equal((await preview(id)).refund.eligiblePaidAmount,30);assert.equal((await preview(id)).refund.refundAmount,24);
-    const r=await cancel(id,'deposit-after-salon');await approve(r.refundRequestId);await process(r.refundRequestId);
-    appointment=(await state()).appointments.find(a=>a.id===id);assert.equal(appointment.appointmentStatus,'CANCELLED');
+    assert.equal((await preview(id)).refund.eligiblePaidAmount,30);assert.equal((await preview(id)).canCancel,false);assert.equal((await preview(id)).refund.refundAmount,0);
+    await api(`/api/v1/appointments/${id}/cancel`,{body:{reason:'Checked-in protection'},status:409});
   });
   const buy=async(quantity=2)=>{const created=(await api('/api/v1/group-purchases',{body:{packageId:fixture.packageId,branchId:fixture.branchId,quantity,purchaseFlow:'BUY_NOW_BOOK_LATER'},status:201})).data;await api(`/api/v1/group-purchases/${created.purchaseId}/pay-with-wallet`,{body:{useBonus:true}});return created.purchaseId;};
   const redeem=async id=>(await api(`/api/v1/group-purchases/${id}/book-appointment`,{body:{branchId:fixture.branchId,date:fixture.date,startTime:time()},status:201})).data;
@@ -131,9 +133,10 @@ test('merchant policies: real Worker APIs, snapshots, cancellation, approval and
     await cancel(first.appointmentId,'release-staff-capacity');
     const next=(await api('/api/v1/appointments/reserve',{body,status:201})).data;assert.notEqual(next.appointmentId,first.appointmentId);
   });
-  await t.test('existing ordinary Wallet checkout settles full price even from a DEPOSIT hold',async()=>{
-    const {id}=await book('DEPOSIT','WALLET',25);const p=await preview(id);assert.equal(p.refund.eligiblePaidAmount,300);assert.equal(p.refund.refundAmount,240);
-    const r=await cancel(id,'wallet-deposit-refund');await approve(r.refundRequestId);await process(r.refundRequestId);
+  await t.test('ordinary Wallet checkout rejects a DEPOSIT hold without changing financial records',async()=>{
+    const {id}=await book('DEPOSIT','NONE',25);const before=await state();
+    await api(`/api/v1/appointments/${id}/pay-with-wallet`,{body:{useBonus:true},status:409});
+    assert.deepEqual(await state(),before);
   });
   await t.test('Stripe full unused group refund settles once and invalidates remaining quantity',async()=>{
     const purchase=(await api('/api/v1/group-purchases',{body:{packageId:fixture.packageId,branchId:fixture.branchId,quantity:2},status:201})).data;
@@ -152,5 +155,13 @@ test('merchant policies: real Worker APIs, snapshots, cancellation, approval and
     const next=await buy(2);await control({purchaseId:next,ageHours:25});p=(await api(`${root}/group-purchases/${next}/refund-preview`)).data;assert.equal(p.canRequestRefund,true);
     const unused=await buy(2);const appointment=await redeem(unused);await control({appointmentId:appointment.appointmentId,status:'COMPLETED'});
     assert.equal((await api(`${root}/group-purchases/${unused}/refund-preview`)).data.reason,'USED_GROUP_PURCHASE_NOT_REFUNDABLE');
+  });
+  await t.test('successful refund records each own one outbox event; pending/failed refunds own none',async()=>{
+    const rows=(await api('/__business-email-test',{body:{}})).jobs;
+    const refunds=(await state()).refunds;
+    assert.ok(refunds.some(r=>r.status==='SUCCEEDED'));
+    for(const r of refunds)assert.equal(rows.filter(j=>j.eventType==='REFUND_COMPLETED'&&j.idempotencyKey.endsWith(`:${r.id}`)).length,r.status==='SUCCEEDED'?1:0);
+    assert.equal(new Set(rows.map(j=>j.idempotencyKey)).size,rows.length);
+    assert.ok(rows.some(j=>j.eventType==='BOOKING_CANCELLED'));
   });
 });

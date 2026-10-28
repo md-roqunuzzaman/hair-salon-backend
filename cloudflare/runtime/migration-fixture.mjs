@@ -85,7 +85,7 @@ export class MigrationFixture {
     // An unmapped policy must stop v11 atomically, retaining all old rows/schema.
     const oldPolicy = JSON.stringify(storage.sql.exec("SELECT * FROM GroupPurchaseRefundPolicy WHERE id = 'refund-policy'").one());
     let mappingBlocked = false;
-    try { applyMigrations(storage, migrations); } catch { mappingBlocked = true; }
+    try { applyMigrations(storage, migrations.slice(0, 18)); } catch { mappingBlocked = true; }
     if (!mappingBlocked || JSON.stringify(storage.sql.exec("SELECT * FROM GroupPurchaseRefundPolicy WHERE id = 'refund-policy'").one()) !== oldPolicy || storage.sql.exec('SELECT MAX(version) AS version FROM _Migrations').one().version !== 10) throw new Error('Ambiguous mapping did not stop and roll back safely');
     // Remove only disposable fixture policies, then seed the user's explicit mapping.
     storage.sql.exec('DELETE FROM GroupPurchaseRefundPolicy');
@@ -97,7 +97,7 @@ export class MigrationFixture {
     storage.sql.exec("INSERT INTO GroupPurchaseRefundPolicy (id,packageId,refundTiers,version,createdAt,updatedAt) VALUES ('mapped-refund',?, '[{" + '"minimumHoursAfterPurchase":0,"calculationType":"PERCENTAGE","value":50' + "}]',7,123,456)", mappedPackage);
     storage.sql.exec("INSERT INTO GroupPurchaseCancellationPolicy (id,packageId,lateCancellationOutcome,version,updatedAt) VALUES ('mapped-cancel',?,'RESTORED',4,456)", mappedPackage);
     let associationBlocked = false;
-    try { applyMigrations(storage, migrations); } catch { associationBlocked = true; }
+    try { applyMigrations(storage, migrations.slice(0, 18)); } catch { associationBlocked = true; }
     if (!associationBlocked) throw new Error('Policy migrated without an eligible target branch assignment');
     storage.sql.exec('INSERT INTO PackageBranch (packageId,branchId) VALUES (?,?),(?,?)', mappedPackage,mappedBranch,mappedPackage,'branch');
     const refundBefore = storage.sql.exec("SELECT * FROM GroupPurchaseRefundPolicy WHERE id='mapped-refund'").one();
@@ -141,7 +141,7 @@ export class MigrationFixture {
     if (!duplicatePaymentOrder) throw new Error('Payment order uniqueness not enforced');
     storage.sql.exec("INSERT INTO Payment (id,customerId,purpose,amount,orderNumber,updatedAt) VALUES ('occupied-code','customer','APPOINTMENT',1234,'A2AAAA',1),('needs-code','customer','APPOINTMENT',5678,NULL,1)");
     const beforePaymentBackfill = storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray();
-    applyMigrations(storage, migrations);
+    applyMigrations(storage, migrations.slice(0, 18));
     const afterPaymentBackfill = storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray();
     if (afterPaymentBackfill.some(row => !/^(?=.*[A-HJ-NP-Z])(?=.*[2-9])[A-HJ-NP-Z2-9]{6}$/.test(row.orderNumber)) || new Set(afterPaymentBackfill.map(row => row.orderNumber)).size !== afterPaymentBackfill.length) throw new Error('Payment backfill has missing, invalid or duplicate codes');
     for (const before of beforePaymentBackfill) {
@@ -150,7 +150,7 @@ export class MigrationFixture {
       const { orderNumber: newCode, ...newFields } = after;
       if (JSON.stringify(oldFields) !== JSON.stringify(newFields) || (oldCode !== null && oldCode !== newCode)) throw new Error('Payment backfill overwrote existing fields or codes');
     }
-    applyMigrations(storage, migrations);
+    applyMigrations(storage, migrations.slice(0, 18));
     if (JSON.stringify(storage.sql.exec('SELECT * FROM Payment ORDER BY id').toArray()) !== JSON.stringify(afterPaymentBackfill)) throw new Error('Repeated initialization changed payment backfill');
     if (storage.sql.exec("SELECT orderNumber FROM Payment WHERE id='legacy-payment'").one().orderNumber !== 'PAY234') throw new Error('Repeated migration reset payment order number');
     if (refundsBeforeRequired !== JSON.stringify(storage.sql.exec('SELECT * FROM Refund ORDER BY id').toArray())) throw new Error('Payment order migration changed refunds');
@@ -159,14 +159,14 @@ export class MigrationFixture {
     let nullInsertRejected = false;
     try { storage.sql.exec("INSERT INTO Appointment (id,customerId,branchId,staffId,bookingMethod,appointmentStatus,paymentStatus,date,startTime,endTime,price,durationMinutes,itemName,updatedAt,orderNumber) SELECT 'null-insert',customerId,branchId,staffId,bookingMethod,appointmentStatus,paymentStatus,date,startTime,endTime,price,durationMinutes,itemName,updatedAt,NULL FROM Appointment WHERE id='old-appointment-two'"); } catch (error) { nullInsertRejected = error.message.includes('NOT NULL constraint failed: Appointment.orderNumber'); }
     if (!nullUpdateRejected || !nullInsertRejected) throw new Error('Required order number NULL enforcement missing');
-    applyMigrations(storage, migrations);
+    applyMigrations(storage, migrations.slice(0, 18));
     if (JSON.stringify(storage.sql.exec('SELECT id,orderNumber FROM Appointment ORDER BY id').toArray()) !== JSON.stringify(backfilled)) throw new Error('Repeated initialization changed backfilled codes');
     if (storage.sql.exec('PRAGMA foreign_key_check').toArray().length) throw new Error('Required order migration broke foreign keys');
     storage.sql.exec("UPDATE Payment SET appointmentId=NULL WHERE id='legacy-payment'");
     storage.sql.exec("DELETE FROM Appointment WHERE id LIKE 'old-appointment-%'");
     storage.sql.exec("INSERT INTO StaffPortfolioCase (id,staffId,serviceId,title,tags,updatedAt) VALUES ('portfolio','portfolio-staff','portfolio-service','Cut result','[]',1)");
     storage.sql.exec("INSERT INTO StaffPortfolioCaseImage (id,caseId,objectKey,updatedAt) VALUES ('portfolio-image','portfolio','portfolio/image.jpg',1)");
-    applyMigrations(storage, migrations);
+    applyMigrations(storage, migrations.slice(0, 18));
     const portfolio = storage.sql.exec("SELECT status,sortOrder,tags FROM StaffPortfolioCase WHERE id='portfolio'").one();
     if (portfolio.status !== 'DRAFT' || portfolio.sortOrder !== 0 || portfolio.tags !== '[]') throw new Error('Portfolio defaults or persistence failed');
     let orphanPortfolio = false;
@@ -178,6 +178,28 @@ export class MigrationFixture {
     for (const table of ['StaffPortfolioCase', 'StaffPortfolioCaseImage']) {
       if (storage.sql.exec(`SELECT COUNT(*) AS count FROM "${table}"`).one().count !== 0) throw new Error('Portfolio staff cascade delete failed');
     }
+    applyMigrations(storage, migrations.slice(0, 18));
+    const brandBeforeEmail = JSON.stringify(storage.sql.exec("SELECT * FROM Brand WHERE id='banner-brand'").one());
+    applyMigrations(storage, migrations.slice(0, 19));
+    if (JSON.stringify(storage.sql.exec("SELECT * FROM Brand WHERE id='banner-brand'").one()) !== brandBeforeEmail) throw new Error('Email settings migration changed brand data');
+    storage.sql.exec("INSERT INTO BrandEmailSetting (id,brandId,provider,fromName,fromEmail,encryptedCredential,isEnabled,isVerified,updatedAt) VALUES ('email-setting','banner-brand','GMAIL','Salon','test@example.com','test-ciphertext',1,1,1)");
+    let duplicateEmailBrand = false;
+    try { storage.sql.exec("INSERT INTO BrandEmailSetting (id,brandId,provider,fromName,fromEmail,updatedAt) VALUES ('duplicate-email','banner-brand','QQ','Salon','test@example.com',1)"); } catch { duplicateEmailBrand = true; }
+    if (!duplicateEmailBrand) throw new Error('One email setting per brand uniqueness missing');
+    let orphanEmailBrand = false;
+    try { storage.sql.exec("INSERT INTO BrandEmailSetting (id,brandId,provider,fromName,fromEmail,updatedAt) VALUES ('orphan-email','missing','QQ','Salon','test@example.com',1)"); } catch { orphanEmailBrand = true; }
+    if (!orphanEmailBrand) throw new Error('Email settings brand foreign key missing');
+    applyMigrations(storage, migrations.slice(0,21));
+    storage.sql.exec("INSERT INTO EmailOutbox (id,brandId,eventType,idempotencyKey,recipientEmail,subject,html,status,attempts,updatedAt) VALUES ('legacy-send','banner-brand','TEST','legacy-send','test@example.com','test','test','PROCESSING',1,1),('legacy-retry','banner-brand','TEST','legacy-retry','test@example.com','test','test','PENDING',1,1),('never-attempted','banner-brand','TEST','never-attempted','test@example.com','test','test','PENDING',0,1)");
+    applyMigrations(storage, migrations);
+    const oldJobs = storage.sql.exec('SELECT id,status,claimToken,attemptedAt,text FROM EmailOutbox ORDER BY id').toArray();
+    if (oldJobs.some(j => j.status !== (j.id === 'never-attempted' ? 'PENDING' : 'DELIVERY_UNCERTAIN') || j.claimToken !== null || j.attemptedAt !== null || j.text !== null)) throw new Error('Legacy outbox upgrade could replay an ambiguous attempt');
+    const emailSetting = storage.sql.exec("SELECT * FROM BrandEmailSetting WHERE id='email-setting'").one();
+    if (emailSetting.isEnabled !== 0 || emailSetting.isVerified !== 0 || emailSetting.encryptedCredential !== 'test-ciphertext') throw new Error('Email settings defaults/persistence failed');
+    if (emailSetting.configurationVersion !== 1 || emailSetting.providerData !== null) throw new Error('Email provider configuration upgrade defaults failed');
+    storage.sql.exec("UPDATE BrandEmailSetting SET isEnabled=1,isVerified=1 WHERE id='email-setting'");
+    applyMigrations(storage, migrations);
+    if (storage.sql.exec("SELECT isEnabled FROM BrandEmailSetting WHERE id='email-setting'").one().isEnabled !== 1) throw new Error('Repeated upgrade invalidated newly verified settings');
     storage.sql.exec("INSERT INTO Banner (id,brandId,title,updatedAt) VALUES ('banner','banner-brand','Launch',1)");
     storage.sql.exec("INSERT INTO BannerBranch (bannerId,branchId) VALUES ('banner','branch')");
     storage.sql.exec("INSERT INTO BannerMedia (id,bannerId,mediaType,objectKey) VALUES ('image','banner','IMAGE','banners/banner/image.jpg'),('video','banner','VIDEO','banners/banner/video.mp4')");
@@ -189,7 +211,7 @@ export class MigrationFixture {
     try { storage.sql.exec("INSERT INTO BannerBranch (bannerId,branchId) VALUES ('banner','missing')"); } catch { orphanBanner = true; }
     if (!orphanBanner) throw new Error('Banner branch foreign key not enforced');
     storage.sql.exec("DELETE FROM Brand WHERE id='banner-brand'");
-    for (const table of ['Banner', 'BannerBranch', 'BannerMedia']) {
+    for (const table of ['Banner', 'BannerBranch', 'BannerMedia', 'BrandEmailSetting']) {
       if (storage.sql.exec(`SELECT COUNT(*) AS count FROM "${table}"`).one().count !== 0) throw new Error('Banner cascade delete failed');
     }
     if (JSON.stringify(storage.sql.exec("SELECT * FROM Wallet WHERE id='wallet'").one()) !== walletBeforeBanners) throw new Error('Banner migration changed wallet data');

@@ -1,4 +1,5 @@
 import { snapshotData } from "../cancellation-refund/policy.snapshot.js";
+import { enqueueAppointmentEmail } from '../brand-email-setting/brand-email-setting.events.js';
 import { isSnapshot } from "../cancellation-refund/policy.calculation.js";
 import {
   cancelWithPolicy,
@@ -2068,6 +2069,7 @@ const createReserveAppointment = async (
           );
 
           console.log("[RESERVE_NOW] Booking notification created");
+          await enqueueAppointmentEmail(tx, appointment.id, 'RESERVE_NOW_RESERVED');
 
           // =================================================
           // 12. RETURN APPOINTMENT FROM TRANSACTION
@@ -3481,6 +3483,7 @@ const cancelAppointment = async (
           // =============================================
 
           const translations = notificationTemplates.BOOKING_CANCELLED();
+          await enqueueAppointmentEmail(tx, current.id, 'BOOKING_CANCELLED');
 
           await notificationService.createNotification(
             {
@@ -3711,6 +3714,9 @@ const rescheduleAppointment = async (
               qrVerifiedAt: true,
               bookingMethod: true,
               staffId: true,
+              date: true,
+              startTime: true,
+              endTime: true,
             },
           });
 
@@ -3811,6 +3817,7 @@ const rescheduleAppointment = async (
             tx,
           );
 
+          await enqueueAppointmentEmail(tx, current.id, 'BOOKING_RESCHEDULED', current);
           return updatedAppointment;
         },
 

@@ -313,7 +313,8 @@
   "Brand": {
     "money": {},
     "relations": {
-      "banners": "Banner"
+      "banners": "Banner",
+      "emailSetting": "BrandEmailSetting"
     },
     "arrays": [],
     "scalars": {
@@ -332,6 +333,64 @@
       "mutedTextColor": "String",
       "lineColor": "String",
       "onPrimaryColor": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "BrandEmailSetting": {
+    "money": {},
+    "relations": {
+      "brand": "Brand"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "brandId": "String",
+      "provider": "EmailProvider",
+      "fromName": "String",
+      "fromEmail": "String",
+      "smtpHost": "String",
+      "smtpPort": "Int",
+      "smtpSecure": "Boolean",
+      "smtpUsername": "String",
+      "encryptedCredential": "String",
+      "oauthDataEncrypted": "String",
+      "isEnabled": "Boolean",
+      "isVerified": "Boolean",
+      "configurationVersion": "Int",
+      "providerData": "Json",
+      "lastTestAt": "DateTime",
+      "lastErrorCode": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "EmailOutbox": {
+    "money": {},
+    "relations": {},
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "brandId": "String",
+      "userId": "String",
+      "appointmentId": "String",
+      "eventType": "String",
+      "idempotencyKey": "String",
+      "recipientEmail": "String",
+      "subject": "String",
+      "html": "String",
+      "status": "String",
+      "attempts": "Int",
+      "maxAttempts": "Int",
+      "nextAttemptAt": "DateTime",
+      "lockedUntil": "DateTime",
+      "claimToken": "String",
+      "attemptedAt": "DateTime",
+      "text": "String",
+      "sentAt": "DateTime",
+      "lastError": "String",
+      "provider": "String",
+      "providerMessageId": "String",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }

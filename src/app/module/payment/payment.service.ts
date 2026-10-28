@@ -40,6 +40,7 @@ import {
   IRefundPaymentResponse,
 } from "./payment.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
+import { enqueueAppointmentEmail, enqueueGroupPurchaseEmail, enqueueRefundEmail } from '../brand-email-setting/brand-email-setting.events.js';
 import { notificationTemplates } from "../notification/notification.templates.js";
 
 const createStripeIntent = async (
@@ -855,6 +856,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
             // MULTILINGUAL BOOKING CONFIRMED NOTIFICATION
 
+            await enqueueAppointmentEmail(tx, appointment.id, 'PAY_NOW_CONFIRMED');
             const translations = notificationTemplates.PAY_NOW_CONFIRMED();
 
             await notificationService.createNotification(
@@ -950,6 +952,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
             // MULTILINGUAL DEPOSIT RECEIVED NOTIFICATION
 
+            await enqueueAppointmentEmail(tx, appointment.id, 'DEPOSIT_RECEIVED');
             const translations = notificationTemplates.DEPOSIT_RECEIVED(
               Number(currentPayment.amount),
               currentPayment.currency,
@@ -1290,6 +1293,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
           // MULTILINGUAL LATE PAYMENT REFUND NOTIFICATION
 
+          await enqueueRefundEmail(tx, localRefund.id);
           const translations = notificationTemplates.LATE_APPOINTMENT_REFUND(
             latePayment.amount,
             latePayment.currency,
@@ -2678,6 +2682,7 @@ async function handleGroupPurchaseStripeEvent(
             },
           });
 
+          await enqueueGroupPurchaseEmail(tx, purchase.id);
           const translations = notificationTemplates.GROUP_PURCHASE_SUCCESSFUL(
             Number(currentPayment.amount),
             currentPayment.currency,
@@ -2859,6 +2864,7 @@ async function handleGroupPurchaseStripeEvent(
             // 11.3 CUSTOMER NOTIFICATION
             // ---------------------------------------------
 
+            await enqueueRefundEmail(tx, currentRefund.id);
             const translations = notificationTemplates.LATE_GROUP_REFUND(
               Number(payment.amount),
               payment.currency,
@@ -3841,6 +3847,7 @@ const refundWalletPayment = async (
           // 13. CUSTOMER NOTIFICATION
           // ==========================================
 
+          await enqueueRefundEmail(tx, refund.id);
           const translations = notificationTemplates.REFUND_COMPLETED(
             refundAmount.toNumber(),
             payment.currency,

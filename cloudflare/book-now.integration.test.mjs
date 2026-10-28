@@ -139,6 +139,11 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
       assert.equal(listed.firstAppointment.appointmentId, appointmentId);
       const inventory = (await state()).packages.find(row => row.id === fixture.packageId);
       assert.equal(inventory.soldQuantity, index * 2); assert.equal(inventory.reservedQuantity, 0);
+      const emails = (await api('/__business-email-test', {body:{}})).jobs;
+      const successEmails = emails.filter(j => j.eventType === 'GROUP_PURCHASE_SUCCESSFUL' && j.idempotencyKey.endsWith(`:${id}`));
+      assert.equal(successEmails.length, 1, 'Initial purchase settlement produces one email; QR/remaining payment produce no duplicate');
+      assert.equal(emails.filter(j => j.appointmentId === appointmentId && j.eventType === 'RESERVE_NOW_RESERVED').length, method === 'RESERVE_NOW' ? 1 : 0);
+      assert.equal(emails.filter(j => j.appointmentId === appointmentId && ['PAY_NOW_CONFIRMED','DEPOSIT_RECEIVED'].includes(j.eventType)).length, 0, 'Group purchases have one combined purchase event');
     });
   }
   await t.test('initial entitlement counts and redemption cannot exceed quantity', async () => {
