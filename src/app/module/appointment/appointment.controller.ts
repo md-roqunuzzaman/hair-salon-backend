@@ -332,6 +332,31 @@ const recordRemainingPayment = catchAsync(async (req, res) => {
   });
 });
 
+const recordGroupPurchaseRemainingPayment = catchAsync(
+  async (req: Request, res: Response) => {
+    const purchaseId = req.params.purchaseId;
+
+    if (!purchaseId || typeof purchaseId !== "string") {
+      throw new AppError("Invalid group purchase ID", 400);
+    }
+
+    const userId = req.user!.userId;
+
+    const result = await appointmentService.recordGroupPurchaseRemainingPayment(
+      purchaseId,
+      req.body,
+      userId,
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Group Purchase remaining payment recorded successfully",
+      data: result,
+    });
+  },
+);
+
 export const appointmentController = {
   createPayNowAppointment,
   createDepositAppointment,

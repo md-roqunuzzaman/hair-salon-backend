@@ -65,9 +65,34 @@ const payGroupPurchaseWithWalletValidationSchema = z.object({
   }),
 });
 
+const payAppointmentRemainingWithWalletValidationSchema = z.object({
+  params: z.object({
+    appointmentId: z.string().uuid("Invalid appointment ID"),
+  }),
+
+  body: z
+    .object({
+      useBonus: z.boolean(),
+    })
+    .strict(),
+});
+
+const payGroupPurchaseRemainingWithWalletValidationSchema = z.object({
+  params: z.object({
+    purchaseId: z.string().uuid("Invalid group purchase ID"),
+  }),
+
+  body: z
+    .object({
+      useBonus: z.boolean(),
+    })
+    .strict(),
+});
 export const walletValidation = {
   getWalletTransactionsValidationSchema,
   createWalletTopupValidationSchema,
   payAppointmentWithWalletValidationSchema,
   payGroupPurchaseWithWalletValidationSchema,
+  payAppointmentRemainingWithWalletValidationSchema,
+  payGroupPurchaseRemainingWithWalletValidationSchema,
 };

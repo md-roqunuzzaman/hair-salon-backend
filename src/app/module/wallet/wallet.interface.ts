@@ -53,3 +53,51 @@ export interface IPayAppointmentWithWalletResponse {
   remainingPaidBalance: number;
   remainingBonusBalance: number;
 }
+
+export interface IPayAppointmentRemainingWithWalletPayload {
+  useBonus: boolean;
+}
+
+export interface IPayAppointmentRemainingWithWalletResponse {
+  appointmentId: string;
+  paymentId: string;
+
+  bookingMethod: "DEPOSIT";
+  appointmentStatus: "CONFIRMED";
+  paymentStatus: "PAID";
+
+  amountPaid: number;
+  currency: string;
+
+  paidBalanceUsed: number;
+  bonusBalanceUsed: number;
+
+  remainingPaidBalance: number;
+  remainingBonusBalance: number;
+}
+
+export interface IPayGroupPurchaseRemainingWithWalletPayload {
+  useBonus: boolean;
+}
+
+export interface IPayGroupPurchaseRemainingWithWalletResponse {
+  purchaseId: string;
+  appointmentId: string;
+  paymentId: string;
+
+  bookingMethod: "DEPOSIT";
+  paymentStatus: "PAID";
+  appointmentStatus: "CONFIRMED";
+
+  totalAmount: number;
+  depositAmount: number;
+  amountPaid: number;
+
+  currency: string;
+
+  paidBalanceUsed: number;
+  bonusBalanceUsed: number;
+
+  remainingPaidBalance: number;
+  remainingBonusBalance: number;
+}

@@ -96,10 +96,79 @@ const payGroupPurchaseWithWallet = catchAsync(
   },
 );
 
+const payAppointmentRemainingWithWallet = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. AUTHENTICATED CUSTOMER
+    // =====================================================
+
+    const customerId = req.user!.userId;
+
+    // =====================================================
+    // 2. VALIDATE APPOINTMENT ID
+    // =====================================================
+
+    const appointmentId = req.params.appointmentId;
+
+    if (typeof appointmentId !== "string" || !appointmentId.trim()) {
+      throw new AppError("Invalid appointmentId", 400);
+    }
+
+    // =====================================================
+    // 3. CUSTOMER WALLET REMAINING PAYMENT
+    // =====================================================
+
+    const result = await walletService.payAppointmentRemainingWithWallet(
+      customerId,
+      appointmentId,
+      req.body,
+    );
+
+    // =====================================================
+    // 4. RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message:
+        "Appointment remaining payment completed with wallet successfully",
+      data: result,
+    });
+  },
+);
+
+const payGroupPurchaseRemainingWithWallet = catchAsync(
+  async (req: Request, res: Response) => {
+    const customerId = req.user!.userId;
+    const purchaseId = req.params.purchaseId;
+
+    if (typeof purchaseId !== "string" || !purchaseId.trim()) {
+      throw new AppError("INVALID_GROUP_PURCHASE_ID", 400);
+    }
+
+    const result = await walletService.payGroupPurchaseRemainingWithWallet(
+      customerId,
+      purchaseId,
+      req.body,
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message:
+        "Group purchase remaining payment completed with wallet successfully",
+      data: result,
+    });
+  },
+);
+
 export const walletController = {
   getMyWallet,
   getMyTransactions,
   createTopup,
   payAppointmentWithWallet,
   payGroupPurchaseWithWallet,
+  payAppointmentRemainingWithWallet,
+  payGroupPurchaseRemainingWithWallet,
 };

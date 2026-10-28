@@ -52,4 +52,21 @@ router.get(
   paymentController.getPaymentById,
 );
 
+router.post(
+  "/appointments/:appointmentId/remaining-payment/stripe",
+  auth(Role.CUSTOMER),
+  validateRequest(
+    paymentValidation.createAppointmentRemainingStripeIntentValidationSchema,
+  ),
+  paymentController.createAppointmentRemainingStripeIntent,
+);
+
+router.post(
+  "/group-purchases/:purchaseId/remaining-payment/stripe",
+  auth(Role.CUSTOMER),
+  validateRequest(
+    paymentValidation.createGroupPurchaseRemainingStripeIntentValidationSchema,
+  ),
+  paymentController.createGroupPurchaseRemainingStripeIntent,
+);
 export const PaymentRoutes = router;

@@ -397,6 +397,14 @@ const recordRemainingPaymentValidationSchema = z.object({
   }),
 });
 
+const recordGroupPurchaseRemainingPaymentValidationSchema = z.object({
+  params: z.object({
+    purchaseId: z.string().uuid("Invalid group purchase ID"),
+  }),
+  body: z.object({
+    paymentMethod: z.enum(["CASH", "CARD"]),
+  }),
+});
 export const appointmentValidation = {
   createPayNowValidationSchema,
   createReserveValidationSchema,
@@ -411,4 +419,5 @@ export const appointmentValidation = {
   getAllAppointmentsValidationSchema,
   createDepositAppointmentValidationSchema,
   recordRemainingPaymentValidationSchema,
+  recordGroupPurchaseRemainingPaymentValidationSchema,
 };

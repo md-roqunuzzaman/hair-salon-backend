@@ -114,7 +114,7 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
       let current = await state(); let purchase = current.purchases.find(row => row.id === id); let appointment = current.appointments.find(row => row.id === appointmentId);
       assert.equal(appointment.appointmentStatus, method === 'PAY_NOW' ? 'CONFIRMED' : 'RESERVED');
       assert.equal(appointment.paymentStatus, method === 'PAY_NOW' ? 'PAID' : method === 'DEPOSIT' ? 'PARTIALLY_PAID' : 'UNPAID');
-      assert.equal(!!appointment.qrToken, method !== 'PAY_NOW');
+      assert.equal(!!appointment.qrToken, true);
       await api(`/api/v1/appointments/${appointmentId}/cancel`, { body: { reason: 'Test cancellation' }, status: 409 });
       if (method !== 'PAY_NOW') {
         await api(`${root}/${id}/remaining-payment`, { body: { paymentMethod: 'CASH' }, roleToken: ownerToken, status: 409 });

@@ -109,6 +109,54 @@ const createGroupPurchaseStripeIntent = catchAsync(
   },
 );
 
+const createAppointmentRemainingStripeIntent = catchAsync(
+  async (req: Request, res: Response) => {
+    const customerId = req.user!.userId;
+    const appointmentId = req.params.appointmentId;
+
+    if (!appointmentId || typeof appointmentId !== "string") {
+      throw new AppError("Invalid appointment ID", 400);
+    }
+
+    const result = await paymentService.createAppointmentRemainingStripeIntent(
+      customerId,
+      appointmentId,
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message:
+        "Appointment remaining Stripe PaymentIntent created successfully",
+      data: result,
+    });
+  },
+);
+
+const createGroupPurchaseRemainingStripeIntent = catchAsync(
+  async (req: Request, res: Response) => {
+    const customerId = req.user!.userId;
+    const purchaseId = req.params.purchaseId;
+
+    if (!purchaseId || typeof purchaseId !== "string") {
+      throw new AppError("Invalid group purchase ID", 400);
+    }
+
+    const result =
+      await paymentService.createGroupPurchaseRemainingStripeIntent(
+        customerId,
+        purchaseId,
+      );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message:
+        "Group Purchase remaining Stripe PaymentIntent created successfully",
+      data: result,
+    });
+  },
+);
 export const paymentController = {
   createStripeIntent,
   stripeWebhook,
@@ -116,4 +164,6 @@ export const paymentController = {
   getMyPayments,
   refundPayment,
   createGroupPurchaseStripeIntent,
+  createAppointmentRemainingStripeIntent,
+  createGroupPurchaseRemainingStripeIntent,
 };

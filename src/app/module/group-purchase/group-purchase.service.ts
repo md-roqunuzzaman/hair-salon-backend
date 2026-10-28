@@ -1869,6 +1869,7 @@ export const recordGroupPurchaseRemainingPayment = async (
             },
             select: {
               id: true,
+              settledPaymentId: true,
               customerId: true,
               amount: true,
               depositAmount: true,
@@ -2033,25 +2034,109 @@ export const recordGroupPurchaseRemainingPayment = async (
           // 11. CHECK EXISTING SALON PAYMENT
           // =============================================
 
-          const existingRemainingPayment = await tx.payment.findFirst({
+          // =====================================================
+          // =====================================================
+          // 11. VERIFY INITIAL PAYMENT AND CHECK EXISTING PAYMENTS
+          // =====================================================
+
+          let initialPaymentId: string | null = null;
+
+          if (isDeposit) {
+            if (!purchase.settledPaymentId) {
+              throw new AppError(
+                "Initial Group Purchase deposit payment reference not found",
+                409,
+              );
+            }
+
+            const initialPayment = await tx.payment.findUnique({
+              where: {
+                id: purchase.settledPaymentId,
+              },
+            });
+
+            if (
+              !initialPayment ||
+              initialPayment.groupPurchaseId !== purchase.id ||
+              initialPayment.customerId !== purchase.customerId ||
+              initialPayment.purpose !== PaymentPurpose.GROUP_PURCHASE ||
+              initialPayment.status !== PaymentStatus.PAID ||
+              !initialPayment.amount.equals(depositAmount)
+            ) {
+              throw new AppError(
+                "Paid Group Purchase deposit could not be verified",
+                409,
+              );
+            }
+
+            initialPaymentId = initialPayment.id;
+          }
+
+          // For RESERVE_NOW, no deposit was paid.
+          // For DEPOSIT, exclude the verified initial deposit payment.
+          //
+          // Check every other active GROUP_PURCHASE payment attempt,
+          // regardless of amount or payment provider.
+
+          const existingPayments = await tx.payment.findMany({
             where: {
               groupPurchaseId: purchase.id,
               purpose: PaymentPurpose.GROUP_PURCHASE,
-              status: PaymentStatus.PAID,
-              provider: PaymentProvider.SALON,
-            },
-            select: {
-              id: true,
+
+              ...(initialPaymentId
+                ? {
+                    id: {
+                      not: initialPaymentId,
+                    },
+                  }
+                : {}),
+
+              status: {
+                in: [
+                  PaymentStatus.PENDING,
+                  PaymentStatus.PAID,
+                  PaymentStatus.PARTIALLY_REFUNDED,
+                ],
+              },
             },
           });
 
-          if (existingRemainingPayment) {
+          const settledRemainingPayment = existingPayments.find(
+            (payment) =>
+              payment.status === PaymentStatus.PAID ||
+              payment.status === PaymentStatus.PARTIALLY_REFUNDED,
+          );
+
+          if (settledRemainingPayment) {
             throw new AppError(
-              "Remaining payment has already been recorded",
+              "Group Purchase remaining payment has already been completed",
               409,
             );
           }
 
+          const pendingStripePayment = existingPayments.find(
+            (payment) =>
+              payment.provider === PaymentProvider.STRIPE &&
+              payment.status === PaymentStatus.PENDING,
+          );
+
+          if (pendingStripePayment) {
+            throw new AppError(
+              "STRIPE_GROUP_PURCHASE_REMAINING_PAYMENT_PENDING",
+              409,
+            );
+          }
+
+          const otherPendingPayment = existingPayments.find(
+            (payment) => payment.status === PaymentStatus.PENDING,
+          );
+
+          if (otherPendingPayment) {
+            throw new AppError(
+              "GROUP_PURCHASE_REMAINING_PAYMENT_ATTEMPT_PENDING",
+              409,
+            );
+          }
           // =============================================
           // 12. ATOMIC PURCHASE STATUS CLAIM
           // =============================================

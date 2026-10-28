@@ -69,7 +69,7 @@ export async function runGroupSafety(db) {
       const a = current.appointments[0];
       check(current.paymentStatus === (method === 'DEPOSIT' ? 'PARTIALLY_PAID' : 'PAID'), `${method} Stripe purchase status`);
       check(a.appointmentStatus === (method === 'DEPOSIT' ? 'RESERVED' : 'CONFIRMED'), `${method} Stripe initial appointment status`);
-      check(method === 'DEPOSIT' ? !!a.qrToken : a.qrToken === null, `${method} QR policy`);
+      check(!!a.qrToken, `${method} paid booking has QR`);
       await rejects(() => paymentService.createGroupPurchaseStripeIntent(customer.id, { purchaseId: p.id }), 'Book Now Stripe intent guard remains disabled');
       if (method === 'DEPOSIT') {
         await rejects(() => groupPurchaseService.createGroupPurchaseAppointment(customer.id, p.id, { branchId: branch.id, date, startTime: '15:00' }), 'Partial purchase cannot redeem');

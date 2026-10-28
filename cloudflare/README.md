@@ -4,6 +4,8 @@ The existing Express routes and services have a separate Cloudflare build. The N
 
 ## Runtime
 
+Remaining-payment APIs are included in the Worker Express build: `POST /api/v1/payments/appointments/:appointmentId/remaining-payment/stripe`, `POST /api/v1/payments/group-purchases/:purchaseId/remaining-payment/stripe`, `POST /api/v1/wallet/:appointmentId/remaining-payment/wallet`, and `POST /api/v1/wallet/group-purchases/:purchaseId/remaining-payment/wallet`. They require customer authentication. Wallet requests require `{ "useBonus": boolean }`; Stripe requests use the resource ID. Existing Stripe secrets and webhook endpoint handle the new intents. No additional binding or schema migration is needed. `npm run test:cloudflare:api` covers successful remaining payments, intent reuse, webhook replay, wallet debit amounts, role restrictions and duplicate-payment rejection.
+
 The minute Cron Trigger in both production and staging runs appointment expiry, group-purchase expiry, automatic appointment completion, reminders and session cleanup through the same Durable Object queue. Workers invokes `completeEligibleAppointments()` directly; the Node `node-cron` file is used only by `src/server.ts`. Completion requires CONFIRMED status, full payment, QR verification and elapsed service duration. Transactions include the customer notification and system audit log; repeat runs do not complete an appointment twice. No additional Cron Trigger or schema migration is required for this job.
 
 | Component | Cloudflare implementation |

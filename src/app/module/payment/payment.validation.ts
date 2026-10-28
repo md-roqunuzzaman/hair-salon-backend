@@ -42,9 +42,23 @@ const createGroupPurchaseStripeIntentValidationSchema = z.object({
   }),
 });
 
+const createAppointmentRemainingStripeIntentValidationSchema = z.object({
+  params: z.object({
+    appointmentId: z.string().uuid("Invalid appointment ID"),
+  }),
+});
+
+const createGroupPurchaseRemainingStripeIntentValidationSchema = z.object({
+  params: z.object({
+    purchaseId: z.string().uuid("Invalid group purchase ID"),
+  }),
+});
+
 export const paymentValidation = {
   createStripeIntentValidationSchema,
   getMyPaymentsValidationSchema,
   refundPaymentValidationSchema,
   createGroupPurchaseStripeIntentValidationSchema,
+  createAppointmentRemainingStripeIntentValidationSchema,
+  createGroupPurchaseRemainingStripeIntentValidationSchema,
 };

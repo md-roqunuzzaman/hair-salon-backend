@@ -6191,261 +6191,312 @@ const recordRemainingPayment = async (
   userId: string,
 ) => {
   // =====================================================
-  // 1. FIND APPOINTMENT
+  // SERIALIZABLE TRANSACTION WITH RETRY
   // =====================================================
 
-  const appointment = await prisma.appointment.findUnique({
-    where: {
-      id: appointmentId,
-    },
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          // =====================================================
+          // 1. LOCK APPOINTMENT
+          // =====================================================
 
-    include: {
-      payments: true,
-      branch: true,
-    },
-  });
+          const locked = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM "Appointment"
+            WHERE "id" = ${appointmentId}
+            FOR UPDATE
+          `;
 
-  if (!appointment) {
-    throw new AppError("Appointment not found", httpStatus.NOT_FOUND);
-  }
+          if (locked.length !== 1) {
+            throw new AppError("Appointment not found", httpStatus.NOT_FOUND);
+          }
 
-  if (appointment.groupPurchaseId) {
-    throw new AppError(
-      "Use the group purchase remaining-payment endpoint for this appointment",
-      409,
-    );
-  }
+          // =====================================================
+          // 2. FIND APPOINTMENT
+          // =====================================================
 
-  // =====================================================
-  // 2. VALIDATE BOOKING METHOD
-  // =====================================================
+          const appointment = await tx.appointment.findUniqueOrThrow({
+            where: {
+              id: appointmentId,
+            },
+            include: {
+              payments: true,
+              branch: true,
+            },
+          });
 
-  if (appointment.bookingMethod !== BookingMethod.DEPOSIT) {
-    throw new AppError(
-      "Remaining payment is only available for deposit appointments",
-      httpStatus.BAD_REQUEST,
-    );
-  }
+          // =====================================================
+          // 3. BLOCK GROUP PURCHASE
+          // =====================================================
 
-  // =====================================================
-  // 3. VALIDATE PAYMENT STATUS
-  // =====================================================
+          if (appointment.groupPurchaseId !== null) {
+            throw new AppError(
+              "Use the group purchase remaining-payment endpoint for this appointment",
+              409,
+            );
+          }
 
-  if (appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID) {
-    throw new AppError(
-      "Appointment does not have an outstanding remaining payment",
-      httpStatus.BAD_REQUEST,
-    );
-  }
+          // =====================================================
+          // 4. VALIDATE BOOKING METHOD
+          // =====================================================
 
-  // =====================================================
-  // 4. VALIDATE APPOINTMENT STATUS
-  // =====================================================
+          if (appointment.bookingMethod !== BookingMethod.DEPOSIT) {
+            throw new AppError(
+              "Remaining payment is only available for deposit appointments",
+              httpStatus.BAD_REQUEST,
+            );
+          }
 
-  if (appointment.appointmentStatus !== AppointmentStatus.CONFIRMED) {
-    throw new AppError(
-      "Appointment must be confirmed before recording remaining payment",
-      httpStatus.BAD_REQUEST,
-    );
-  }
+          // =====================================================
+          // 5. VALIDATE APPOINTMENT STATE
+          // =====================================================
 
-  // =====================================================
-  // 5. CHECK EXISTING REMAINING PAYMENT
-  // =====================================================
+          if (appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID) {
+            throw new AppError(
+              "Appointment does not have an outstanding remaining payment",
+              409,
+            );
+          }
 
-  const existingRemainingPayment = appointment.payments.find(
-    (payment) =>
-      payment.purpose === PaymentPurpose.APPOINTMENT_REMAINING &&
-      payment.status === PaymentStatus.PAID,
-  );
+          if (appointment.appointmentStatus !== AppointmentStatus.CONFIRMED) {
+            throw new AppError(
+              "Appointment must be confirmed before recording remaining payment",
+              409,
+            );
+          }
 
-  if (existingRemainingPayment) {
-    throw new AppError(
-      "Remaining payment has already been recorded",
-      httpStatus.BAD_REQUEST,
-    );
-  }
+          if (!appointment.qrVerifiedAt) {
+            throw new AppError("Appointment QR verification is required", 409);
+          }
 
-  // =====================================================
-  // 6. CALCULATE REMAINING AMOUNT
-  // =====================================================
+          // =====================================================
+          // 6. CHECK EXISTING REMAINING PAYMENTS
+          // =====================================================
 
-  const totalPrice = Number(appointment.price);
+          const existingRemainingPayments = appointment.payments.filter(
+            (payment) =>
+              payment.purpose === PaymentPurpose.APPOINTMENT_REMAINING &&
+              (payment.status === PaymentStatus.PENDING ||
+                payment.status === PaymentStatus.PAID ||
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED),
+          );
 
-  const depositAmount = Number(appointment.depositAmount ?? 0);
+          if (
+            existingRemainingPayments.some(
+              (payment) =>
+                payment.status === PaymentStatus.PAID ||
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED,
+            )
+          ) {
+            throw new AppError(
+              "Remaining payment has already been recorded",
+              409,
+            );
+          }
 
-  const remainingAmount = Number((totalPrice - depositAmount).toFixed(2));
+          // IMPORTANT:
+          // Do not allow salon payment while Stripe payment
+          // may still succeed asynchronously.
 
-  if (remainingAmount <= 0) {
-    throw new AppError("No remaining payment is due", httpStatus.BAD_REQUEST);
-  }
+          if (
+            existingRemainingPayments.some(
+              (payment) =>
+                payment.provider === PaymentProvider.STRIPE &&
+                payment.status === PaymentStatus.PENDING,
+            )
+          ) {
+            throw new AppError("STRIPE_REMAINING_PAYMENT_PENDING", 409);
+          }
 
-  // =====================================================
-  // 7. TRANSACTION
-  // =====================================================
+          if (
+            existingRemainingPayments.some(
+              (payment) => payment.status === PaymentStatus.PENDING,
+            )
+          ) {
+            throw new AppError("REMAINING_PAYMENT_ATTEMPT_PENDING", 409);
+          }
 
-  const result = await prisma.$transaction(async (tx) => {
-    // ===================================================
-    // 7.1 ATOMIC PAYMENT STATUS CLAIM
-    // ===================================================
+          // =====================================================
+          // 7. CALCULATE REMAINING AMOUNT
+          // =====================================================
 
-    const claimResult = await tx.appointment.updateMany({
-      where: {
-        id: appointmentId,
+          const totalPrice = appointment.price;
 
-        bookingMethod: BookingMethod.DEPOSIT,
+          const depositAmount =
+            appointment.depositAmount ?? new Prisma.Decimal(0);
 
-        appointmentStatus: AppointmentStatus.CONFIRMED,
+          if (
+            !totalPrice.isFinite() ||
+            !depositAmount.isFinite() ||
+            depositAmount.lte(0)
+          ) {
+            throw new AppError("Invalid appointment deposit amount", 409);
+          }
 
-        paymentStatus: PaymentStatus.PARTIALLY_PAID,
-      },
+          const remainingAmount = totalPrice.minus(depositAmount);
 
-      data: {
-        paymentStatus: PaymentStatus.PAID,
-      },
-    });
+          if (!remainingAmount.isFinite() || remainingAmount.lte(0)) {
+            throw new AppError("No remaining payment is due", 409);
+          }
 
-    if (claimResult.count !== 1) {
-      throw new AppError(
-        "Remaining payment has already been recorded or appointment state changed",
-        409,
-      );
-    }
+          if (
+            appointment.remainingAmount !== null &&
+            !appointment.remainingAmount.equals(remainingAmount)
+          ) {
+            throw new AppError("Appointment remaining amount mismatch", 409);
+          }
 
-    // ===================================================
-    // 7.2 CREATE SALON REMAINING PAYMENT
-    // ===================================================
+          if (appointment.currency !== "HKD") {
+            throw new AppError("Unsupported appointment currency", 409);
+          }
 
-    const payment = await tx.payment.create({
-      data: {
-        customerId: appointment.customerId,
+          // =====================================================
+          // 8. GUARDED APPOINTMENT SETTLEMENT
+          // =====================================================
 
-        appointmentId: appointment.id,
+          const claimResult = await tx.appointment.updateMany({
+            where: {
+              id: appointmentId,
+              groupPurchaseId: null,
+              bookingMethod: BookingMethod.DEPOSIT,
+              appointmentStatus: AppointmentStatus.CONFIRMED,
+              paymentStatus: PaymentStatus.PARTIALLY_PAID,
+              qrVerifiedAt: {
+                not: null,
+              },
+            },
+            data: {
+              paymentStatus: PaymentStatus.PAID,
+            },
+          });
 
-        purpose: PaymentPurpose.APPOINTMENT_REMAINING,
+          if (claimResult.count !== 1) {
+            throw new AppError(
+              "Remaining payment has already been recorded or appointment state changed",
+              409,
+            );
+          }
 
-        provider: PaymentProvider.SALON,
+          // =====================================================
+          // 9. CREATE SALON PAYMENT
+          // =====================================================
 
-        salonPaymentMethod: payload.paymentMethod,
+          const now = new Date();
 
-        amount: remainingAmount,
+          const payment = await tx.payment.create({
+            data: {
+              customerId: appointment.customerId,
+              appointmentId: appointment.id,
+              purpose: PaymentPurpose.APPOINTMENT_REMAINING,
+              provider: PaymentProvider.SALON,
+              salonPaymentMethod: payload.paymentMethod,
+              amount: remainingAmount,
+              currency: appointment.currency,
+              status: PaymentStatus.PAID,
+              paidAt: now,
+            },
+          });
 
-        currency: "HKD",
+          // =====================================================
+          // 10. GET UPDATED APPOINTMENT
+          // =====================================================
 
-        status: PaymentStatus.PAID,
+          const updatedAppointment = await tx.appointment.findUniqueOrThrow({
+            where: {
+              id: appointmentId,
+            },
+          });
 
-        paidAt: new Date(),
-      },
-    });
+          // =====================================================
+          // 11. MULTILINGUAL NOTIFICATION
+          // =====================================================
 
-    // ===================================================
-    // 7.3 GET UPDATED APPOINTMENT
-    // ===================================================
+          const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
+            Number(remainingAmount),
+            appointment.currency,
+          );
 
-    const updatedAppointment = await tx.appointment.findUniqueOrThrow({
-      where: {
-        id: appointmentId,
-      },
-    });
+          await notificationService.createNotification(
+            {
+              appointmentId: updatedAppointment.id,
+              userId: updatedAppointment.customerId,
+              type: "REMAINING_PAYMENT_RECEIVED",
+              title: translations.en!.title!,
+              message: translations.en!.message!,
+              translations,
+            },
+            tx,
+          );
 
-    // ===================================================
-    // 8. MULTILINGUAL CUSTOMER NOTIFICATION
-    // ===================================================
+          // =====================================================
+          // 12. AUDIT LOG
+          // =====================================================
 
-    const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
-      Number(payment.amount),
-      payment.currency,
-    );
+          await auditLogService.createAuditLog(
+            {
+              userId,
+              action: "REMAINING_PAYMENT_RECORDED",
+              entityType: "APPOINTMENT",
+              entityId: appointment.id,
+              metadata: {
+                paymentId: payment.id,
+                previousPaymentStatus: PaymentStatus.PARTIALLY_PAID,
+                newPaymentStatus: PaymentStatus.PAID,
+                bookingMethod: appointment.bookingMethod,
+                totalPrice: Number(totalPrice),
+                depositAmount: Number(depositAmount),
+                remainingAmount: Number(remainingAmount),
+                paymentMethod: payload.paymentMethod,
+                provider: PaymentProvider.SALON,
+              },
+            },
+            tx,
+          );
 
-    await notificationService.createNotification(
-      {
-        appointmentId: updatedAppointment.id,
-        userId: updatedAppointment.customerId,
+          // =====================================================
+          // 13. RESPONSE
+          // =====================================================
 
-        type: "REMAINING_PAYMENT_RECEIVED",
-
-        title: translations.en!.title!,
-
-        message: translations.en!.message!,
-
-        translations,
-      },
-      tx,
-    );
-
-    // ===================================================
-    // 9. AUDIT LOG
-    // ===================================================
-
-    await auditLogService.createAuditLog(
-      {
-        userId,
-
-        action: "REMAINING_PAYMENT_RECORDED",
-
-        entityType: "APPOINTMENT",
-
-        entityId: appointment.id,
-
-        metadata: {
-          paymentId: payment.id,
-
-          previousPaymentStatus: appointment.paymentStatus,
-
-          newPaymentStatus: updatedAppointment.paymentStatus,
-
-          bookingMethod: appointment.bookingMethod,
-
-          totalPrice,
-
-          depositAmount,
-
-          remainingAmount,
-
-          paymentMethod: payload.paymentMethod,
-
-          provider: PaymentProvider.SALON,
+          return {
+            appointmentId: updatedAppointment.id,
+            bookingMethod: updatedAppointment.bookingMethod,
+            appointmentStatus: updatedAppointment.appointmentStatus,
+            paymentStatus: updatedAppointment.paymentStatus,
+            price: Number(updatedAppointment.price),
+            depositAmount: Number(updatedAppointment.depositAmount ?? 0),
+            remainingAmount: Number(remainingAmount),
+            remainingPayment: {
+              id: payment.id,
+              amount: Number(payment.amount),
+              paymentMethod: payment.salonPaymentMethod,
+              provider: payment.provider,
+              status: payment.status,
+              paidAt: payment.paidAt,
+            },
+          };
         },
-      },
-      tx,
-    );
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 15000,
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034" &&
+        attempt < 3
+      ) {
+        continue;
+      }
 
-    // ===================================================
-    // 10. RESPONSE
-    // ===================================================
+      throw error;
+    }
+  }
 
-    return {
-      appointmentId: updatedAppointment.id,
-
-      bookingMethod: updatedAppointment.bookingMethod,
-
-      appointmentStatus: updatedAppointment.appointmentStatus,
-
-      paymentStatus: updatedAppointment.paymentStatus,
-
-      price: Number(updatedAppointment.price),
-
-      depositAmount: Number(updatedAppointment.depositAmount ?? 0),
-
-      remainingAmount,
-
-      remainingPayment: {
-        id: payment.id,
-
-        amount: Number(payment.amount),
-
-        paymentMethod: payment.salonPaymentMethod,
-
-        provider: payment.provider,
-
-        status: payment.status,
-
-        paidAt: payment.paidAt,
-      },
-    };
-  });
-
-  return result;
+  throw new AppError("Remaining payment transaction conflict", 409);
 };
 
 const completeEligibleAppointments = async (): Promise<{
@@ -6773,6 +6824,344 @@ const completeEligibleAppointments = async (): Promise<{
     completedCount,
   };
 };
+
+const recordGroupPurchaseRemainingPayment = async (
+  purchaseId: string,
+  payload: TRecordRemainingPayment,
+  userId: string,
+) => {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          // =====================================================
+          // 1. LOCK GROUP PURCHASE
+          // =====================================================
+
+          const locked = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM "GroupPurchase"
+            WHERE "id" = ${purchaseId}
+            FOR UPDATE
+          `;
+
+          if (locked.length !== 1) {
+            throw new AppError("Group Purchase not found", 404);
+          }
+
+          // =====================================================
+          // 2. FETCH GROUP PURCHASE
+          // =====================================================
+
+          const purchase = await tx.groupPurchase.findUniqueOrThrow({
+            where: { id: purchaseId },
+            include: {
+              appointments: true,
+              payments: true,
+            },
+          });
+
+          // =====================================================
+          // 3. VALIDATE PURCHASE FLOW
+          // =====================================================
+
+          if (
+            purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK ||
+            purchase.bookingMethod !== BookingMethod.DEPOSIT
+          ) {
+            throw new AppError(
+              "Remaining payment is only available for Group Purchase DEPOSIT bookings",
+              409,
+            );
+          }
+
+          if (purchase.paymentStatus !== PaymentStatus.PARTIALLY_PAID) {
+            throw new AppError(
+              "Group Purchase does not have an outstanding remaining payment",
+              409,
+            );
+          }
+
+          // =====================================================
+          // 4. VERIFY LINKED APPOINTMENT
+          // =====================================================
+
+          if (purchase.appointments.length !== 1) {
+            throw new AppError("Invalid Group Purchase appointment state", 409);
+          }
+
+          const appointment = purchase.appointments[0];
+
+          if (
+            appointment.groupPurchaseId !== purchaseId ||
+            appointment.customerId !== purchase.customerId ||
+            appointment.bookingMethod !== BookingMethod.DEPOSIT ||
+            appointment.appointmentStatus !== AppointmentStatus.CONFIRMED ||
+            appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID ||
+            !appointment.qrVerifiedAt
+          ) {
+            throw new AppError(
+              "Group Purchase appointment must be QR verified and confirmed",
+              409,
+            );
+          }
+
+          // =====================================================
+          // 5. CALCULATE PURCHASE-LEVEL REMAINING AMOUNT
+          // =====================================================
+
+          const totalAmount = purchase.amount;
+          const depositAmount = purchase.depositAmount ?? new Prisma.Decimal(0);
+
+          const remainingAmount = totalAmount.minus(depositAmount);
+
+          if (
+            !totalAmount.isFinite() ||
+            !depositAmount.isFinite() ||
+            depositAmount.lte(0) ||
+            remainingAmount.lte(0)
+          ) {
+            throw new AppError("Invalid Group Purchase remaining amount", 409);
+          }
+
+          if (
+            purchase.remainingAmount !== null &&
+            purchase.remainingAmount !== undefined &&
+            !purchase.remainingAmount.equals(remainingAmount)
+          ) {
+            throw new AppError("Group Purchase remaining amount mismatch", 409);
+          }
+
+          // =====================================================
+          // 6. VERIFY INITIAL DEPOSIT PAYMENT
+          // =====================================================
+
+          const initialDepositPaid = purchase.payments.some(
+            (payment) =>
+              payment.id === purchase.settledPaymentId &&
+              payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
+              payment.status === PaymentStatus.PAID &&
+              payment.amount.equals(depositAmount),
+          );
+
+          if (!initialDepositPaid) {
+            throw new AppError(
+              "Initial Group Purchase deposit payment not found",
+              409,
+            );
+          }
+
+          // =====================================================
+          // 7. CHECK EXISTING REMAINING PAYMENTS
+          // =====================================================
+
+          const existingRemainingPayments = purchase.payments.filter(
+            (payment) =>
+              payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
+              payment.id !== purchase.settledPaymentId &&
+              payment.amount.equals(remainingAmount) &&
+              (payment.status === PaymentStatus.PENDING ||
+                payment.status === PaymentStatus.PAID ||
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED),
+          );
+
+          if (
+            existingRemainingPayments.some(
+              (payment) =>
+                payment.status === PaymentStatus.PAID ||
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED,
+            )
+          ) {
+            throw new AppError(
+              "Group Purchase remaining payment already completed",
+              409,
+            );
+          }
+
+          if (
+            existingRemainingPayments.some(
+              (payment) =>
+                payment.provider === PaymentProvider.STRIPE &&
+                payment.status === PaymentStatus.PENDING,
+            )
+          ) {
+            throw new AppError(
+              "STRIPE_GROUP_PURCHASE_REMAINING_PAYMENT_PENDING",
+              409,
+            );
+          }
+
+          if (
+            existingRemainingPayments.some(
+              (payment) => payment.status === PaymentStatus.PENDING,
+            )
+          ) {
+            throw new AppError(
+              "GROUP_PURCHASE_REMAINING_PAYMENT_ATTEMPT_PENDING",
+              409,
+            );
+          }
+
+          // =====================================================
+          // 8. GUARDED GROUP PURCHASE UPDATE
+          // =====================================================
+
+          const updatedPurchase = await tx.groupPurchase.updateMany({
+            where: {
+              id: purchaseId,
+              purchaseFlow: GroupPurchaseFlow.DIRECT_BOOK,
+              bookingMethod: BookingMethod.DEPOSIT,
+              paymentStatus: PaymentStatus.PARTIALLY_PAID,
+            },
+            data: {
+              paymentStatus: PaymentStatus.PAID,
+            },
+          });
+
+          if (updatedPurchase.count !== 1) {
+            throw new AppError(
+              "Group Purchase remaining payment conflict",
+              409,
+            );
+          }
+
+          // =====================================================
+          // 9. GUARDED APPOINTMENT UPDATE
+          // =====================================================
+
+          const updatedAppointment = await tx.appointment.updateMany({
+            where: {
+              id: appointment.id,
+              groupPurchaseId: purchaseId,
+              bookingMethod: BookingMethod.DEPOSIT,
+              appointmentStatus: AppointmentStatus.CONFIRMED,
+              paymentStatus: PaymentStatus.PARTIALLY_PAID,
+              qrVerifiedAt: { not: null },
+            },
+            data: {
+              paymentStatus: PaymentStatus.PAID,
+            },
+          });
+
+          if (updatedAppointment.count !== 1) {
+            throw new AppError(
+              "Group Purchase appointment remaining payment conflict",
+              409,
+            );
+          }
+
+          // =====================================================
+          // 10. CREATE SALON PAYMENT
+          // =====================================================
+
+          const payment = await tx.payment.create({
+            data: {
+              customerId: purchase.customerId,
+              groupPurchaseId: purchaseId,
+              appointmentId: appointment.id,
+              purpose: PaymentPurpose.GROUP_PURCHASE,
+              provider: PaymentProvider.SALON,
+              salonPaymentMethod: payload.paymentMethod,
+              amount: remainingAmount,
+              currency: "HKD",
+              status: PaymentStatus.PAID,
+              paidAt: new Date(),
+            },
+          });
+
+          // =====================================================
+          // 11. MULTILINGUAL NOTIFICATION
+          // =====================================================
+
+          const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
+            Number(remainingAmount),
+            "HKD",
+          );
+
+          await notificationService.createNotification(
+            {
+              appointmentId: appointment.id,
+              userId: purchase.customerId,
+              type: "REMAINING_PAYMENT_RECEIVED",
+              title: translations.en!.title!,
+              message: translations.en!.message!,
+              translations,
+            },
+            tx,
+          );
+
+          // =====================================================
+          // 12. AUDIT LOG
+          // =====================================================
+
+          await auditLogService.createAuditLog(
+            {
+              userId,
+              action: "GROUP_PURCHASE_REMAINING_PAYMENT_RECORDED",
+              entityType: "GROUP_PURCHASE",
+              entityId: purchaseId,
+              metadata: {
+                paymentId: payment.id,
+                appointmentId: appointment.id,
+                provider: PaymentProvider.SALON,
+                paymentMethod: payload.paymentMethod,
+                totalAmount: Number(totalAmount),
+                depositAmount: Number(depositAmount),
+                remainingAmount: Number(remainingAmount),
+                previousPaymentStatus: PaymentStatus.PARTIALLY_PAID,
+                newPaymentStatus: PaymentStatus.PAID,
+              },
+            },
+            tx,
+          );
+
+          // =====================================================
+          // 13. RESPONSE
+          // =====================================================
+
+          return {
+            purchaseId,
+            appointmentId: appointment.id,
+            bookingMethod: BookingMethod.DEPOSIT,
+            appointmentStatus: AppointmentStatus.CONFIRMED,
+            paymentStatus: PaymentStatus.PAID,
+            totalAmount: Number(totalAmount),
+            depositAmount: Number(depositAmount),
+            remainingAmount: Number(remainingAmount),
+            remainingPayment: {
+              id: payment.id,
+              amount: Number(payment.amount),
+              paymentMethod: payment.salonPaymentMethod,
+              provider: payment.provider,
+              status: payment.status,
+              paidAt: payment.paidAt,
+            },
+          };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 15000,
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034" &&
+        attempt < 3
+      ) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError(
+    "Group Purchase remaining payment transaction conflict",
+    409,
+  );
+};
 export const appointmentService = {
   createPayNowAppointment,
   createDepositAppointment,
@@ -6791,4 +7180,5 @@ export const appointmentService = {
   expirePendingAppointmentIfNeeded,
   expirePendingAppointments,
   completeEligibleAppointments,
+  recordGroupPurchaseRemainingPayment,
 };

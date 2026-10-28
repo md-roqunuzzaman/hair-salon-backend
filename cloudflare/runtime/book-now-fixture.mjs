@@ -1,5 +1,6 @@
 // Included only in the integration build. Public purchase/payment APIs remain real.
 import { stripe } from '../../src/app/lib/stripe.ts';
+import { generateOrderNumber } from '../../src/app/utils/generateOrderNumber.ts';
 
 const intents = new Map();
 const intentKeys = new Map();
@@ -39,6 +40,18 @@ export async function bookNowFixture(db, customerId) {
 }
 
 export async function policyTestControl(db,body){
+  if (body.remainingDeposit) {
+    const { customerId, branchId, staffId, serviceId, date } = body.remainingDeposit;
+    const appointment = await db.appointment.create({ data: {
+      customerId, branchId, staffId, serviceId, orderNumber: generateOrderNumber(),
+      bookingMethod: 'DEPOSIT', appointmentStatus: 'CONFIRMED', paymentStatus: 'PARTIALLY_PAID',
+      date: new Date(date), startTime: '06:00', endTime: '06:30', durationMinutes: 30,
+      itemName: 'Remaining payment test', price: 300, depositPercentage: 30, depositAmount: 90,
+      remainingAmount: 210, qrVerifiedAt: new Date(),
+    } });
+    await db.payment.create({ data: { customerId, appointmentId: appointment.id, purpose: 'APPOINTMENT_DEPOSIT', provider: 'WALLET', status: 'PAID', amount: 90, paidAt: new Date() } });
+    return { appointmentId: appointment.id };
+  }
   if(body.packageId&&body.validDays!==undefined)await db.package.update({where:{id:body.packageId},data:{validDays:body.validDays}});
   if(body.refundMode)refundMode=body.refundMode;
   if(body.appointmentId){
