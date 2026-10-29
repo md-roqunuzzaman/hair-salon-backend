@@ -1,5 +1,4 @@
 import { snapshotData } from "../cancellation-refund/policy.snapshot.js";
-import { enqueueAppointmentEmail } from '../brand-email-setting/brand-email-setting.events.js';
 import { isSnapshot } from "../cancellation-refund/policy.calculation.js";
 import {
   cancelWithPolicy,
@@ -491,6 +490,7 @@ export const resolveAvailableStaff = async ({
     endB: number,
   ) => startA < endB && endA > startB;
 
+  const availableStaffIds: string[] = [];
   for (const staff of eligibleStaff) {
     // Check schedule covers the complete booking.
     const hasValidSchedule = schedules.some((schedule) => {
@@ -533,7 +533,38 @@ export const resolveAvailableStaff = async ({
     if (hasAppointmentConflict) continue;
 
     // Staff is eligible and available.
-    return staff.id;
+    if (staffId) return staff.id;
+    availableStaffIds.push(staff.id);
+  }
+
+  if (availableStaffIds.length === 1) return availableStaffIds[0]!;
+  if (availableStaffIds.length > 1) {
+    // Fairness uses the existing booking calendar date, across services/packages.
+    // Active payment holds still block slots above, but do not count as workload.
+    const dailyAppointments = await tx.appointment.findMany({
+      where: {
+        staffId: { in: availableStaffIds },
+        date: dateOnly,
+        appointmentStatus: {
+          in: [
+            AppointmentStatus.RESERVED,
+            AppointmentStatus.CONFIRMED,
+            AppointmentStatus.COMPLETED,
+          ],
+        },
+      },
+      select: { staffId: true },
+    });
+    const counts = new Map(availableStaffIds.map((id) => [id, 0]));
+    for (const appointment of dailyAppointments) {
+      counts.set(
+        appointment.staffId,
+        (counts.get(appointment.staffId) ?? 0) + 1,
+      );
+    }
+    const minimum = Math.min(...counts.values());
+    const tied = availableStaffIds.filter((id) => counts.get(id) === minimum);
+    return tied.length === 1 ? tied[0]! : tied[crypto.randomInt(tied.length)]!;
   }
 
   // =====================================================
@@ -2069,7 +2100,6 @@ const createReserveAppointment = async (
           );
 
           console.log("[RESERVE_NOW] Booking notification created");
-          await enqueueAppointmentEmail(tx, appointment.id, 'RESERVE_NOW_RESERVED');
 
           // =================================================
           // 12. RETURN APPOINTMENT FROM TRANSACTION
@@ -2197,35 +2227,120 @@ const getMyAppointments = async (
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 2. APPOINTMENT TYPE FILTER
+  // 2. HONG KONG DATE AND TIME — H01 FIX
   // =====================================================
 
-  const statusFilter =
-    query.type === "UPCOMING"
-      ? {
-          in: [
-            AppointmentStatus.PENDING_PAYMENT,
-            AppointmentStatus.RESERVED,
-            AppointmentStatus.CONFIRMED,
-          ],
-        }
-      : {
-          in: [
-            AppointmentStatus.COMPLETED,
-            AppointmentStatus.CANCELLED,
-            AppointmentStatus.NO_SHOW,
-            AppointmentStatus.EXPIRED,
-          ],
-        };
+  const now = new Date();
+
+  const hkParts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+
+  const getPart = (type: string): string =>
+    hkParts.find((part) => part.type === type)?.value ?? "";
+
+  const hkToday = [getPart("year"), getPart("month"), getPart("day")].join("-");
+
+  const hkTime = `${getPart("hour")}:${getPart("minute")}`;
+
+  // Assumes Appointment.date is stored as a calendar date
+  // normalized to UTC midnight.
+
+  const todayDate = new Date(`${hkToday}T00:00:00.000Z`);
 
   // =====================================================
-  // 3. FETCH CUSTOMER APPOINTMENTS
+  // 3. APPOINTMENT STATUS GROUPS
+  // =====================================================
+
+  const activeStatuses: AppointmentStatus[] = [
+    AppointmentStatus.PENDING_PAYMENT,
+    AppointmentStatus.RESERVED,
+    AppointmentStatus.CONFIRMED,
+  ];
+
+  const historyStatuses: AppointmentStatus[] = [
+    AppointmentStatus.COMPLETED,
+    AppointmentStatus.CANCELLED,
+    AppointmentStatus.NO_SHOW,
+    AppointmentStatus.EXPIRED,
+  ];
+
+  // =====================================================
+  // 4. APPOINTMENT TYPE FILTER — H01 FIX
   // =====================================================
 
   const where: Prisma.AppointmentWhereInput = {
     customerId,
-    appointmentStatus: statusFilter,
+
+    ...(query.type === "UPCOMING"
+      ? {
+          AND: [
+            {
+              appointmentStatus: {
+                in: activeStatuses,
+              },
+            },
+            {
+              OR: [
+                {
+                  date: {
+                    gt: todayDate,
+                  },
+                },
+                {
+                  date: todayDate,
+                  endTime: {
+                    gt: hkTime,
+                  },
+                },
+              ],
+            },
+          ],
+        }
+      : {
+          OR: [
+            {
+              appointmentStatus: {
+                in: historyStatuses,
+              },
+            },
+            {
+              AND: [
+                {
+                  appointmentStatus: {
+                    in: activeStatuses,
+                  },
+                },
+                {
+                  OR: [
+                    {
+                      date: {
+                        lt: todayDate,
+                      },
+                    },
+                    {
+                      date: todayDate,
+                      endTime: {
+                        lte: hkTime,
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
   };
+
+  // =====================================================
+  // 5. FETCH CUSTOMER APPOINTMENTS
+  // =====================================================
 
   const [appointments, total] = await prisma.$transaction([
     prisma.appointment.findMany({
@@ -2319,7 +2434,7 @@ const getMyAppointments = async (
   ]);
 
   // =====================================================
-  // 4. RESPONSE DTO WITH LOCALIZATION
+  // 6. RESPONSE DTO WITH LOCALIZATION
   // =====================================================
 
   const items = appointments.map((appointment) => {
@@ -2344,7 +2459,7 @@ const getMyAppointments = async (
       : null;
 
     // =====================================================
-    // 5. QR STATE - ALL BOOKING METHODS
+    // 7. QR STATE — ALL BOOKING METHODS
     // =====================================================
 
     const qrEligibleStatuses: AppointmentStatus[] = [
@@ -2358,7 +2473,7 @@ const getMyAppointments = async (
       !appointment.qrVerifiedAt;
 
     // =====================================================
-    // 6. PAYMENT SUMMARY
+    // 8. PAYMENT SUMMARY
     // =====================================================
 
     const price = Number(appointment.price);
@@ -2379,7 +2494,7 @@ const getMyAppointments = async (
       : price;
 
     // =====================================================
-    // 7. ACTUAL SUCCESSFUL PAYMENTS
+    // 9. ACTUAL SUCCESSFUL PAYMENTS
     // =====================================================
 
     const successfulPaymentStatuses: PaymentStatus[] = [
@@ -2408,7 +2523,7 @@ const getMyAppointments = async (
     const netPaid = Math.max(0, Number((grossPaid - totalRefunded).toFixed(2)));
 
     // =====================================================
-    // 8. VERIFY ACTUAL DEPOSIT PAYMENT
+    // 10. VERIFY ACTUAL DEPOSIT PAYMENT
     // =====================================================
 
     const depositPaid =
@@ -2439,7 +2554,7 @@ const getMyAppointments = async (
       });
 
     // =====================================================
-    // 9. PAYMENT DISPLAY STATUS
+    // 11. PAYMENT DISPLAY STATUS
     // =====================================================
 
     const paymentDisplayStatus = getPaymentDisplayStatus(
@@ -2449,7 +2564,7 @@ const getMyAppointments = async (
     );
 
     // =====================================================
-    // 10. APPOINTMENT COLLECTION STATE
+    // 12. APPOINTMENT COLLECTION STATE
     // =====================================================
 
     const closedStatuses: AppointmentStatus[] = [
@@ -2482,7 +2597,7 @@ const getMyAppointments = async (
     }
 
     // =====================================================
-    // 11. REMAINING BALANCE
+    // 13. REMAINING BALANCE
     // =====================================================
 
     let remainingAmount = amountDue;
@@ -2507,7 +2622,7 @@ const getMyAppointments = async (
     }
 
     // =====================================================
-    // 12. FINAL RESPONSE DTO
+    // 14. FINAL RESPONSE DTO
     // =====================================================
 
     return {
@@ -2563,7 +2678,7 @@ const getMyAppointments = async (
   });
 
   // =====================================================
-  // 13. PAGINATION RESPONSE
+  // 15. PAGINATION RESPONSE
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
@@ -3483,7 +3598,6 @@ const cancelAppointment = async (
           // =============================================
 
           const translations = notificationTemplates.BOOKING_CANCELLED();
-          await enqueueAppointmentEmail(tx, current.id, 'BOOKING_CANCELLED');
 
           await notificationService.createNotification(
             {
@@ -3683,8 +3797,6 @@ const rescheduleAppointment = async (
   // 6. RESOLVE STAFF
   // =====================================================
 
-  const resolvedStaffId = staffId ?? selectedSlot.staffId;
-
   const newDateOnly = new Date(`${date}T00:00:00.000Z`);
 
   const requestedStart = timeToMinutes(startTime);
@@ -3749,6 +3861,20 @@ const rescheduleAppointment = async (
           const now = new Date();
 
           // final staff check
+          const resolvedStaffId =
+            staffId ??
+            (await resolveAvailableStaff({
+              tx,
+              branchId: appointment.branchId,
+              serviceId: appointment.serviceId,
+              packageId: appointment.packageId,
+              date,
+              dateOnly: newDateOnly,
+              requestedStart,
+              requestedEnd,
+              now,
+              excludeAppointmentId: appointmentId,
+            }));
           await assertStaffSlotAvailable(
             tx,
             resolvedStaffId,
@@ -3817,7 +3943,6 @@ const rescheduleAppointment = async (
             tx,
           );
 
-          await enqueueAppointmentEmail(tx, current.id, 'BOOKING_RESCHEDULED', current);
           return updatedAppointment;
         },
 

@@ -107,6 +107,7 @@
       "date": "DateTime",
       "startTime": "String",
       "endTime": "String",
+      "emailScheduleRevision": "Int",
       "price": "Decimal",
       "currency": "String",
       "durationMinutes": "Int",
@@ -367,7 +368,9 @@
   },
   "EmailOutbox": {
     "money": {},
-    "relations": {},
+    "relations": {
+      "history": "EmailOutboxHistory"
+    },
     "arrays": [],
     "scalars": {
       "id": "String",
@@ -387,12 +390,33 @@
       "claimToken": "String",
       "attemptedAt": "DateTime",
       "text": "String",
+      "validationData": "Json",
+      "skipReason": "String",
+      "terminalAt": "DateTime",
       "sentAt": "DateTime",
       "lastError": "String",
       "provider": "String",
       "providerMessageId": "String",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
+    }
+  },
+  "EmailOutboxHistory": {
+    "money": {},
+    "relations": {
+      "outbox": "EmailOutbox"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "outboxId": "String",
+      "status": "String",
+      "sequence": "Int",
+      "attempt": "Int",
+      "code": "String",
+      "provider": "String",
+      "actorId": "String",
+      "createdAt": "DateTime"
     }
   },
   "GroupPurchase": {

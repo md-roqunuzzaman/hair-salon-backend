@@ -1,5 +1,9 @@
 # Merchant email provider configuration
 
+**Current v24 policy:** all automatic business-email triggers and processing are retired, even if the outbox flag is accidentally true. Platform OTP/reset email and explicit owner provider tools remain. See [current retirement documentation](transactional-email-system.md). Earlier automatic-delivery guidance below is historical and does not authorize activation.
+
+Permanent v23 outbox management, freshness rules, owner audit/history APIs and deployment gates are documented in [transactional-email-system.md](transactional-email-system.md#permanent-outbox-management-upgrade-v23-local-candidate). Delivery remains disabled; historical test evidence below predates this upgrade.
+
 The subsequent approved transactional-email task is documented in [transactional-email-system.md](transactional-email-system.md), including the additive v22 delivery-fence migration, event hooks, disabled-by-default scheduler, operations and final test evidence. Earlier provider-only test counts below are historical. Staging API access must remain online while implementation/build checks run locally.
 
 ## Audit and Gmail diagnosis

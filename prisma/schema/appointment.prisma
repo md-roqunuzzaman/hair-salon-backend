@@ -16,6 +16,7 @@ model Appointment {
   date      DateTime
   startTime String
   endTime   String
+  emailScheduleRevision Int @default(0)
 
   price           Decimal @db.Decimal(10, 2)
   currency        String  @default("HKD")

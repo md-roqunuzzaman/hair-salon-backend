@@ -4,7 +4,6 @@ import config from "../../config/index.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
-import { enqueueAppointmentEmail } from '../brand-email-setting/brand-email-setting.events.js';
 import { notificationService } from "../notification/notification.service.js";
 import { confirmationBody } from "./cancellation-refund.validation.js";
 import {
@@ -601,7 +600,6 @@ export async function cancelWithPolicy(
       if (changed.count !== 1) {
         throw new AppError("CANCELLATION_CONFLICT", 409);
       }
-      await enqueueAppointmentEmail(tx, id, 'BOOKING_CANCELLED');
 
       await auditLogService.createAuditLog(
         {

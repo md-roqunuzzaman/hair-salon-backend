@@ -16,7 +16,7 @@ import { logUnexpectedError } from '../src/app/utils/normalize-error.ts';
 import { retryIdempotentDatabaseOperation } from '../src/app/utils/retry-database.ts';
 
 import { sendAppointmentReminders } from '../src/app/module/notification/notification-reminder.service.ts';
-import { processBusinessEmailBatch } from '../src/app/module/brand-email-setting/brand-email-setting.outbox-processor.ts';
+import { runCronTasks } from './runtime/cron.mjs';
 
 app.listen(3000);
 const http = httpServerHandler({ port: 3000 });
@@ -50,13 +50,13 @@ export class SalonDatabase {
       return await this.enqueue(async () => {
       const path = new URL(request.url).pathname;
       if (path === '/__internal/cron') {
-        await appointmentService.expirePendingAppointments();
-        await groupPurchaseExpiryService.expirePendingGroupPurchases();
-        await retryIdempotentDatabaseOperation(() => appointmentService.completeEligibleAppointments());
-        await sendAppointmentReminders();
-        this.sessions.cleanup();
-        try { await processBusinessEmailBatch(2); }
-        catch { console.error('[Email Outbox]', { code: 'EMAIL_BATCH_STORAGE_FAILED' }); }
+        await runCronTasks([
+          ['appointment-expiry', () => appointmentService.expirePendingAppointments()],
+          ['group-expiry', () => groupPurchaseExpiryService.expirePendingGroupPurchases()],
+          ['completion', () => retryIdempotentDatabaseOperation(() => appointmentService.completeEligibleAppointments())],
+          ['reminders', () => sendAppointmentReminders()],
+          ['session-cleanup', () => this.sessions.cleanup()],
+        ]);
         return new Response('OK');
       }
       if (path === '/__internal/seed') {

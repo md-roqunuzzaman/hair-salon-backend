@@ -1,7 +1,5 @@
-import { Prisma } from "../../../../generated/prisma/client.js";
-import { prisma } from "../../lib/prisma.js";
-import { EMAIL_EVENTS, type BusinessEmailEvent } from './brand-email-setting.templates.js';
-import { z } from 'zod';
+import type { Prisma } from "../../../../generated/prisma/client.js";
+import type { BusinessEmailEvent } from './brand-email-setting.templates.js';
 
 type TEnqueueBusinessEmail = {
   brandId: string;
@@ -13,55 +11,12 @@ type TEnqueueBusinessEmail = {
   subject: string;
   html: string;
   text?: string;
+  validationData?: Prisma.InputJsonValue;
 };
 
+// Retired at the storage boundary too: no insert/upsert/history, even when the
+// environment flag is accidentally true. Preserve the public helper signature.
 export const enqueueBusinessEmail = async (
-  payload: TEnqueueBusinessEmail,
-  tx: Prisma.TransactionClient = prisma,
-) => {
-  const {
-    brandId,
-    userId,
-    appointmentId,
-    eventType,
-    idempotencyKey,
-    recipientEmail,
-    subject,
-    html,
-    text,
-  } = payload;
-
-  const email = recipientEmail.trim().toLowerCase();
-
-  if (!z.email().safeParse(email).success || !EMAIL_EVENTS.includes(eventType)) {
-    return null;
-  }
-
-  if (!idempotencyKey.trim()) {
-    throw new Error("Email idempotency key is required");
-  }
-
-  const outbox = await tx.emailOutbox.upsert({
-    where: {
-      idempotencyKey,
-    },
-    update: {},
-    create: {
-      brandId,
-      userId: userId ?? null,
-      appointmentId: appointmentId ?? null,
-      eventType,
-      idempotencyKey,
-      recipientEmail: email,
-      subject,
-      html,
-      text,
-      status: "PENDING",
-      attempts: 0,
-      maxAttempts: 3,
-      nextAttemptAt: new Date(),
-    },
-  });
-
-  return outbox;
-};
+  _payload: TEnqueueBusinessEmail,
+  _tx?: Prisma.TransactionClient,
+) => null;

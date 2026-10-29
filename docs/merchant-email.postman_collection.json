@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Merchant Email Configuration - Manual Only",
-    "description": "Do not run the entire collection. Read merchant-email-provider-guide.md. Real sends require confirmation and are restricted to the designated recipient.",
+    "description": "Automatic business email retired (v24). Owner inspection/configuration and explicit manual provider tests only. Never run this collection as a batch: some requests send real emails, change configuration, or skip jobs. No customer operation should call test-email.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -77,6 +77,10 @@
     },
     {
       "key": "resendDomain",
+      "value": ""
+    },
+    {
+      "key": "outboxJobId",
       "value": ""
     }
   ],
@@ -399,8 +403,62 @@
             "outbox"
           ]
         },
-        "description": "Owner-only latest 100 job metadata. Does not process, retry, enable, or send email. See transactional-email-system.md."
+        "description": "Owner-only latest 100 job metadata. Does not process, retry, enable, or send email. See transactional-email-system.md. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available."
       }
+    },
+    {
+      "name": "17 Read-only paginated backlog audit",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/outbox/audit?status=PENDING&page=1&limit=100",
+        "description": "Traverse all pages; eligibility applies to the current page only. No emails or database writes. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available."
+      },
+      "response": []
+    },
+    {
+      "name": "18 Outbox safe job detail",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/outbox/{{outboxJobId}}",
+        "description": "Safe metadata only. Non-pending eligibility does not authorize replay. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available."
+      },
+      "response": []
+    },
+    {
+      "name": "19 Outbox delivery history",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/outbox/{{outboxJobId}}/history?page=1&limit=100",
+        "description": "Recorded transitions only; legacy attempts are not reconstructed. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available."
+      },
+      "response": []
+    },
+    {
+      "name": "20 OWNER ACTION - permanently skip pending job",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/outbox/{{outboxJobId}}/skip",
+        "description": "MANUAL OWNER ACTION: terminal suppression; never sends. Do not run the entire collection. Requires a pending job without an active lease. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"reason\": \"TEST_ONLY\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": []
     }
   ]
 }

@@ -8,6 +8,7 @@ import worker, { SalonDatabase } from '../worker.mjs';
 import { failureResponse } from './errors.mjs';
 import bcrypt from 'bcryptjs';
 import { sendAppointmentReminders } from '../../src/app/module/notification/notification-reminder.service.ts';
+import { appointmentService } from '../../src/app/module/appointment/appointment.service.ts';
 // Existing services print detailed traces; keep test output focused on failures.
 console.log = () => {};
 export class SalonTestDatabase extends SalonDatabase {
@@ -49,6 +50,12 @@ export class SalonTestDatabase extends SalonDatabase {
       }
       return Response.json({ success: true });
     });
+    if (url.pathname === '/__email-cron-failure') {
+      const original = appointmentService.expirePendingAppointments;
+      appointmentService.expirePendingAppointments = async () => { throw new Error('synthetic expiry failure'); };
+      try { return await super.fetch(new Request('https://internal/__internal/cron')); }
+      finally { appointmentService.expirePendingAppointments = original; }
+    }
     if (url.pathname === '/__do-error') {
       const original = this.db;
       this.db = new Proxy(original, { get(target, key) {

@@ -26,7 +26,6 @@ import {
   IWalletTransactionsQuery,
 } from "./wallet.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
-import { enqueueAppointmentEmail, enqueueGroupPurchaseEmail } from '../brand-email-setting/brand-email-setting.events.js';
 import { notificationTemplates } from "../notification/notification.templates.js";
 
 const getMyWallet = async (customerId: string): Promise<IWalletResponse> => {
@@ -726,7 +725,6 @@ const payAppointmentWithWallet = async (
           // ==========================================
           // 10. BOOKING CONFIRMED NOTIFICATION
           // ==========================================
-          await enqueueAppointmentEmail(tx, appointment.id, 'PAY_NOW_CONFIRMED');
 
           await notificationService.createNotification(
             {
@@ -1087,7 +1085,6 @@ const payGroupPurchaseWithWallet = async (
           // =====================================================
           // 14. RETURN RESULT
           // =====================================================
-          await enqueueGroupPurchaseEmail(tx, purchase.id);
 
           return {
             purchaseId: purchase.id,

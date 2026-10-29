@@ -191,9 +191,44 @@ export class MigrationFixture {
     if (!orphanEmailBrand) throw new Error('Email settings brand foreign key missing');
     applyMigrations(storage, migrations.slice(0,21));
     storage.sql.exec("INSERT INTO EmailOutbox (id,brandId,eventType,idempotencyKey,recipientEmail,subject,html,status,attempts,updatedAt) VALUES ('legacy-send','banner-brand','TEST','legacy-send','test@example.com','test','test','PROCESSING',1,1),('legacy-retry','banner-brand','TEST','legacy-retry','test@example.com','test','test','PENDING',1,1),('never-attempted','banner-brand','TEST','never-attempted','test@example.com','test','test','PENDING',0,1)");
-    applyMigrations(storage, migrations);
+    applyMigrations(storage, migrations.slice(0,23));
     const oldJobs = storage.sql.exec('SELECT id,status,claimToken,attemptedAt,text FROM EmailOutbox ORDER BY id').toArray();
     if (oldJobs.some(j => j.status !== (j.id === 'never-attempted' ? 'PENDING' : 'DELIVERY_UNCERTAIN') || j.claimToken !== null || j.attemptedAt !== null || j.text !== null)) throw new Error('Legacy outbox upgrade could replay an ambiguous attempt');
+    if (storage.sql.exec('SELECT COUNT(*) AS n FROM EmailOutboxHistory').one().n !== 0) throw new Error('Upgrade fabricated delivery history');
+    if (storage.sql.exec('SELECT validationData,skipReason,terminalAt FROM EmailOutbox LIMIT 1').one().validationData !== null) throw new Error('Upgrade invented a legacy snapshot');
+    let historyFk = false;
+    try { storage.sql.exec("INSERT INTO EmailOutboxHistory (id,outboxId,status,sequence,attempt) VALUES ('orphan-history','missing','SENT',0,1)"); } catch { historyFk = true; }
+    if (!historyFk) throw new Error('History foreign key missing');
+    const retiredEvents = ['PAY_NOW_CONFIRMED','RESERVE_NOW_RESERVED','DEPOSIT_RECEIVED','GROUP_PURCHASE_SUCCESSFUL','BOOKING_CANCELLED','BOOKING_RESCHEDULED','REFUND_COMPLETED'];
+    for (const [i,event] of retiredEvents.entries()) storage.sql.exec("INSERT INTO EmailOutbox (id,brandId,eventType,idempotencyKey,recipientEmail,subject,html,status,attempts,updatedAt) VALUES (?,?,?,?,?,?,?,'PENDING',?,1)",`retire-${i}`,'banner-brand',event,`retire-key-${i}`,'synthetic@example.com','preserved subject','preserved body',i);
+    for (const status of ['PROCESSING','SENDING','DELIVERY_UNCERTAIN','SENT','FAILED','SKIPPED']) {
+      const id=`state-${status}`;
+      storage.sql.exec("INSERT INTO EmailOutbox (id,brandId,eventType,idempotencyKey,recipientEmail,subject,html,status,attempts,provider,claimToken,lockedUntil,updatedAt) VALUES (?,?,?,?,?,?,?,?,2,'GMAIL','old-fence',9999999999999,1)",id,'banner-brand','RESERVE_NOW_RESERVED',id,'synthetic@example.com','keep','keep',status);
+      storage.sql.exec("INSERT INTO EmailOutboxHistory (id,outboxId,status,sequence,attempt,code) VALUES (?,?,?,5,2,'EMAIL_PREVIOUS_STATE')",`history-${status}`,id,status);
+    }
+    const retainedBefore=JSON.stringify(storage.sql.exec("SELECT * FROM EmailOutbox WHERE id IN ('state-DELIVERY_UNCERTAIN','state-SENT','state-FAILED','state-SKIPPED','never-attempted') ORDER BY id").toArray());
+    const priorHistory=JSON.stringify(storage.sql.exec('SELECT * FROM EmailOutboxHistory ORDER BY id').toArray());
+    // Fail after history insertion: the migration and ledger must roll back together.
+    storage.sql.exec("CREATE TRIGGER test_retirement_failure BEFORE UPDATE ON EmailOutbox WHEN OLD.id='retire-0' BEGIN SELECT RAISE(ABORT,'synthetic retirement failure'); END");
+    let failed=false;try{applyMigrations(storage,migrations);}catch{failed=true;}
+    if(!failed || storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==23 || JSON.stringify(storage.sql.exec('SELECT * FROM EmailOutboxHistory ORDER BY id').toArray())!==priorHistory || storage.sql.exec("SELECT status FROM EmailOutbox WHERE id='retire-0'").one().status!=='PENDING')throw new Error('Retirement migration was not atomic');
+    storage.sql.exec('DROP TRIGGER test_retirement_failure');
+    applyMigrations(storage,migrations);
+    for(const [i]of retiredEvents.entries()) {
+      const job=storage.sql.exec('SELECT * FROM EmailOutbox WHERE id=?',`retire-${i}`).one();
+      if(job.status!=='SKIPPED'||job.skipReason!=='EMAIL_BUSINESS_EMAILS_RETIRED'||job.attempts!==i||job.subject!=='preserved subject'||job.html!=='preserved body'||job.terminalAt===null)throw new Error('Retirement changed records or failed to suppress pending mail');
+    }
+    for(const status of ['PROCESSING','SENDING']) {
+      const job=storage.sql.exec('SELECT * FROM EmailOutbox WHERE id=?',`state-${status}`).one();
+      if(job.status!=='DELIVERY_UNCERTAIN'||job.claimToken!==null||job.lockedUntil!==null||job.attempts!==2)throw new Error('Retirement could replay an abandoned send');
+      if(storage.sql.exec('SELECT sequence FROM EmailOutboxHistory WHERE outboxId=? ORDER BY sequence DESC LIMIT 1',job.id).one().sequence!==6)throw new Error('Retirement history sequence lost');
+    }
+    if(JSON.stringify(storage.sql.exec("SELECT * FROM EmailOutbox WHERE id IN ('state-DELIVERY_UNCERTAIN','state-SENT','state-FAILED','state-SKIPPED','never-attempted') ORDER BY id").toArray())!==retainedBefore)throw new Error('Retirement modified historical or unrelated records');
+    for(const row of JSON.parse(priorHistory)) if(JSON.stringify(storage.sql.exec('SELECT * FROM EmailOutboxHistory WHERE id=?',row.id).one())!==JSON.stringify(row))throw new Error('Prior history modified');
+    const afterRetirement=JSON.stringify(storage.sql.exec('SELECT * FROM EmailOutboxHistory ORDER BY id').toArray());
+    applyMigrations(storage,migrations);
+    storage.transactionSync(()=>storage.sql.exec(migrations[23].sql));
+    if(JSON.stringify(storage.sql.exec('SELECT * FROM EmailOutboxHistory ORDER BY id').toArray())!==afterRetirement)throw new Error('Repeated retirement duplicated history');
     const emailSetting = storage.sql.exec("SELECT * FROM BrandEmailSetting WHERE id='email-setting'").one();
     if (emailSetting.isEnabled !== 0 || emailSetting.isVerified !== 0 || emailSetting.encryptedCredential !== 'test-ciphertext') throw new Error('Email settings defaults/persistence failed');
     if (emailSetting.configurationVersion !== 1 || emailSetting.providerData !== null) throw new Error('Email provider configuration upgrade defaults failed');

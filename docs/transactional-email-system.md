@@ -1,4 +1,138 @@
-# Transactional email implementation
+# Email system: automatic business email retired
+
+## Current product policy - v24 local candidate
+
+The seven automatic business email integrations are retired: PAY_NOW_CONFIRMED, RESERVE_NOW_RESERVED, DEPOSIT_RECEIVED, GROUP_PURCHASE_SUCCESSFUL, BOOKING_CANCELLED, BOOKING_RESCHEDULED and REFUND_COMPLETED. Existing in-app notifications remain authoritative. Frontends keep using the existing business APIs; they must not call email test endpoints for customer notifications or claim inbox delivery.
+
+OTP/password-reset requests and reset-success confirmations continue to use PLATFORM SMTP independently of merchant configuration and the retired outbox. Merchant configuration and explicit owner diagnostic tools remain available. Those manual test endpoints can send real email when explicitly invoked; they are not customer-operation integrations and were not executed against a live provider during implementation.
+
+Customer service imports/calls for automatic enqueueing are removed. Retained event/enqueue helpers return null without storage access. Node startup no longer schedules the email job, the Worker cron no longer calls the email batch, and retained processor/recovery functions return the fixed EMAIL_BUSINESS_EMAILS_RETIRED reason without database or provider access. EMAIL_OUTBOX_ENABLED=true cannot reactivate them. Both checked-in environment flags remain false; no live settings, secrets or databases were changed.
+
+Owner list/detail/history/skip APIs remain protected by BRAND_OWNER and single-brand access. Pending audit rows show disposition RETIRED and reason EMAIL_BUSINESS_EMAILS_RETIRED; terminal rows remain NOT_PENDING. Existing data-array pagination compatibility and sensitive-field redaction are retained. Inspection does not send or automatically alter jobs.
+
+## v24 archival migration
+
+New files: cloudflare/migrations/0024_retire_business_email_events.sql and prisma/migrations/20261028120000_retire_business_email_events/migration.sql. No schema/table removal or edits to v1-v23 are required. SQL targets only the seven event types:
+
+| Existing state | v24 behavior |
+| --- | --- |
+| PENDING | SKIPPED; skipReason EMAIL_BUSINESS_EMAILS_RETIRED |
+| PROCESSING / SENDING | Conservatively DELIVERY_UNCERTAIN; never reclaimed for resend |
+| DELIVERY_UNCERTAIN / SENT / FAILED / SKIPPED | Remain unchanged, including existing metadata/history |
+| Other event types | Untouched by the migration; all automatic runtime processing is nevertheless retired |
+
+Affected jobs retain content, recipient, attempts, provider and existing timestamps where possible. Existing lastError is retained; otherwise a canonical retirement code is set. Claim tokens and leases on newly archived/quarantined rows are cleared to fence stale state writes. Each affected row receives one retirement history entry, with deterministic migration-entry ID and MAX(sequence)+1. History records preserve the prior attempt count and selected provider. Existing history is never deleted or rewritten.
+
+SQLite atomicity is supplied by the existing applyMigrations/storage.transactionSync wrapper, including the ledger insert. PostgreSQL uses explicit BEGIN/COMMIT plus an exclusive outbox-table lock. The version ledger prevents repeated application; SQL is also idempotent on a second execution because affected rows are terminal and deterministic history IDs cannot duplicate. No provider I/O occurs during migration.
+
+A migration cannot recall SMTP/API submissions already in flight. Before a separately approved rollout, verify delivery is off and no old sender remains active. A rolled-back pre-retirement binary could still enqueue; only retain schema-compatible retirement artifacts for rollback. Do not revert flags or drop migration history to make old binaries start.
+
+## Retained infrastructure safety fix
+
+safeEmailError now preserves explicit deliveryUncertain=true through TLS/SSL and all other error classifications, including the confirmed SEND-stage SSL failure. Definite pre-send TLS errors with false uncertainty remain definite. This protects retained merchant diagnostic infrastructure without reviving automatic processing.
+
+## Local verification and future rollout
+
+All tests use mocked providers and disposable local databases. Coverage includes customer booking/payment/wallet/reschedule/cancellation flows with zero email jobs, preserved notifications, group-purchase/refund workflows, accidental-true flag behavior, owner management, platform OTP/reset routing and v24 archival/history atomicity. Validation evidence is appended after the final checks below.
+
+No deployment or live migration is approved by local implementation approval. A later staging rollout requires: current non-disruptive backup/recovery verification; current ledger and identity checks; delivery false and no in-flight sender; explicit deployment approval; then npm run cloudflare:deploy:staging. Pending versioned SQLite migrations initialize normally. Do not reset/seed/recreate the database or run PostgreSQL migrations against Workers. Verify frontend/API availability, owner archival/history views, in-app notifications and unchanged security-email routing afterward. No business-email activation step exists for this retired product feature.
+
+## Final retirement verification - 2026-10-28
+
+- Full npm run test:regression: exit 0, 220 TAP tests passed, zero failed/skipped. Includes 8 Node merchant/security/template/retirement tests, 4 mocked merchant-provider tests, 4 dedicated retirement/in-app/security-email/owner-management integration tests, and all existing financial/booking/policy regressions.
+- TypeScript no-emit validation and Prisma PostgreSQL schema validation passed. No PostgreSQL migration was executed; the PostgreSQL data migration has not been exercised against a running PostgreSQL server.
+- v23 -> v24 populated SQLite test passed for all seven pending event types, PROCESSING/SENDING quarantine, preservation of existing uncertain/sent/failed/skipped and unrelated rows, prior history, attempts/content, and correct MAX(sequence)+1 ordering.
+- Failure injected after archival history insertion proved state, history and migration ledger roll back together. Repeated initialization and a second direct SQL execution created no duplicate history.
+- All 23 previous migration checksums match the saved v23 release manifest. No applied SQL was edited. Current schema parity, foreign keys and migration checks passed.
+- Historical saved-backup hash/integrity verified; disposable local restore/upgrade through v24 preserved 13,319 original cells and repeated initialization. This is rehearsal evidence, not a current live backup or live backlog audit.
+- Six customer business-service files were compared against HEAD after removing only email hook imports/calls: exact match; notification calls and financial/business logic retained. The prior email-only reschedule revision increment was removed. All 148 historical route contracts passed with the two previously approved pre-existing exceptions.
+- npm run cloudflare:check:staging passed, dry-run only: 7424.75 KiB upload / gzip 2044.42 KiB, flag false. Production source flag remains false. The production Worker excludes the automatic outbox processor, Node email job, test fixtures and native Node merchant SMTP.
+- Current ignored evidence: cloudflare/.build/business-email-retirement-release-manifest.json; node_modules/.cloudflare-test/business-email-retirement-regression.log; business-email-retirement-staging-dry-run.log. Older v23/v22 manifests are historical.
+- No live deployment, database mutation, environment/secret change or real email occurred. Live retirement protection requires a later separately approved rollout; until then the existing deployed application remains unchanged.
+
+## Historical v23/v22 implementation notes - superseded
+
+The material below records earlier implementation and test evidence. Its instructions for business delivery activation or automatic enqueueing no longer apply.
+
+
+## Permanent outbox management upgrade (v23, local candidate)
+
+This section supersedes the v22-only inspection/release details below. No deployment, live database migration, email activation or real send is included in this upgrade. Both Wrangler environments retain `EMAIL_OUTBOX_ENABLED=false`. The previous live backlog audit was incomplete; the current live pending jobs have not been certified safe.
+
+### Freshness and historical records
+
+New reservation/reschedule events capture a versioned JSON snapshot: appointment calendar date, start/end time, staff, branch and `emailScheduleRevision`. The revision increments only for a material change inside the existing reschedule transaction, including A -> B -> A changes. Event enqueueing and its initial history row remain in the existing business transaction; duplicate idempotency keys do not create duplicate events/history.
+
+Delivery checks the snapshot before claiming and again in the short fenced transaction immediately before SENDING. It suppresses missing/changed recipients, closed/checked-in/past appointments, changed reservation state, and superseded schedules. No network call occurs inside these transactions. Legacy reservation/reschedule jobs without trustworthy structured snapshots fail closed as `SKIPPED` with `EMAIL_LEGACY_SNAPSHOT_UNVERIFIABLE`; the system never guesses identity or schedule by parsing message HTML.
+
+`SKIPPED` is terminal, with `skipReason` and `terminalAt`; skipped rows and content remain stored. Initial freshness rejection consumes zero attempts. A job invalidated after claiming retains that consumed claim attempt and records the skip. Existing attempts count claims, not proof of network submission. Valid historical PAY_NOW, deposit, purchase, cancellation and refund notifications retain their original snapshots and are not expired merely because their appointment changed or their creation date is old. Existing recipient/brand/provider safeguards remain in force.
+
+Delivery has a defined submission boundary: an appointment may change after validation and SENDING commit or after SMTP submission starts. An already submitted email cannot be recalled. Serialized Worker requests, schedule revisions and PostgreSQL serializable transactions protect the validation boundary; this is not a claim of exactly-once delivery or zero races after submission.
+
+### Owner APIs
+
+All paths below are under `/api/v1/brand-email-settings/:brandId`, require an active BRAND_OWNER token, and enforce the existing single-brand access check. API responses never contain email subject/body, encrypted credentials, OAuth data or claim tokens. Recipient addresses are masked; an exact `recipientEmail` filter supports designated-recipient audits. Do not log/share authenticated request URLs containing recipient filters.
+
+| Method/path | Behavior |
+| --- | --- |
+| GET `/outbox` | Existing `data` array retained; adds `pagination` and safe metadata. Default page 1/limit 100; maximum limit 100. Stable ordering by createdAt and ID. |
+| GET `/outbox/audit` | Same pagination/filters plus each page's eligibility reason, disposition and ageSeconds; reports status counts for the other selected filters. Read-only; does not claim, skip or send. |
+| GET `/outbox/:jobId` | Safe detail and validation reason. A non-pending row's validation result does not authorize replay. |
+| GET `/outbox/:jobId/history` | Paginated recorded transitions, attempt number, canonical code, provider, actor ID where applicable, and timestamps. |
+| POST `/outbox/:jobId/skip` | Body `{"reason":"OWNER_REQUEST"}` (also OUTDATED/TEST_ONLY). Conditional PENDING-only suppression with no active lease, audited in the same transaction. Races/non-pending/uncertain jobs return 409. |
+
+List/audit filters: `page`, `limit`, `status`, `eventType`, `provider`, exact `recipientEmail`, `createdFrom`, `createdTo`. Dates use ISO UTC timestamps. Allowed statuses: PENDING, PROCESSING, SENDING, SENT, FAILED, DELIVERY_UNCERTAIN, SKIPPED. History supports page/limit only. Invalid/unknown queries return 400; foreign-brand access 403; unknown job 404. No force-send, generic retry, or uncertain-job reset API exists.
+
+Example read-only backlog requests:
+
+```text
+GET /outbox/audit?status=PENDING&page=1&limit=100
+GET /outbox/audit?status=PENDING&recipientEmail=khanrokon571%40gmail.com&page=1&limit=100
+GET /outbox?status=DELIVERY_UNCERTAIN&page=1&limit=100
+```
+
+Traverse every page. Compare total pending count against the exact test-recipient count and inspect event types. Eligibility is assessed for the returned page (`eligibilityScope=CURRENT_PAGE`), not silently extrapolated to all records. These are point-in-time reads, not a frozen cross-page export; recheck totals and latest rows immediately before any separately approved activation. No automatic TTL is applied to historical receipts.
+
+### Delivery history and recovery
+
+`EmailOutboxHistory` records enqueue, claim, send start, acceptance, failures/retries, lease recovery, uncertainty and owner skips. Conditional state changes and history commit/roll back together. A per-job unique sequence preserves transition order even when timestamps tie. Old attempts are not reconstructed; an empty legacy history is not evidence that an email was never sent. Owner skips record the acting owner and a fixed reason code without free-form sensitive prose. History is append-only through the application APIs; ordinary database administrators retain database-level authority.
+
+Accepted-send/history persistence failure remains uncertain, not retryable. Stale SENDING records are quarantined, never automatically resent. Stale PROCESSING recovery preserves the existing retry semantics; recovery is bounded to 100 jobs per state per batch invocation. Repeated processing cannot replay SENT/SKIPPED/DELIVERY_UNCERTAIN records. Existing merchant-provider pinning and no-fallback-after-attempt behavior are retained.
+
+### Cron isolation
+
+Workers still use the existing minute trigger, `scheduled()` handler, singleton namespace and serialized queue; no second scheduler was added. Each existing task is attempted in order under `runCronTasks`; one failure cannot prevent later tasks, including email. After all tasks are attempted, any failure is reported so cron monitoring does not claim success. Worker email batch limit stays two, Node limit stays ten, and both honor the exact true flag. Processing jobs can still add provider latency to the shared Worker queue after separately approved activation.
+
+### Migration and deployment procedure
+
+SQLite v23: `cloudflare/migrations/0023_email_outbox_management.sql`.
+PostgreSQL: `prisma/migrations/20261028100000_email_outbox_management/migration.sql`.
+Both add appointment revision, nullable outbox validation/skip/terminal metadata, and the indexed history table with a restrictive outbox foreign key. No existing records are deleted or rewritten, and v1-v22 checksums remain immutable. Runtime delivery evaluation handles legacy snapshots; the migration itself sends/skips nothing. There is no new status enum migration because outbox status is already text.
+
+Exact staging sequence, only after separate deployment approval:
+
+1. Keep the frontend staging API online; do not deploy the maintenance Worker. Verify staging account, active version, SALON_DB namespace/class and salon-v1 identity using a non-disruptive approved read path.
+2. Obtain a current usable backup/recovery point and rehearse recovery locally. The saved historical v19 backup is migration rehearsal evidence only, not a current backlog audit or current recovery point.
+3. Verify the live migration ledger/checksums against this candidate. Apply only pending versioned SQLite migrations through normal Durable Object initialization. Do not run PostgreSQL migrate commands against Workers, reset/seed the database, or recreate the namespace.
+4. Confirm production and staging Wrangler flags are false and preserve existing secret values. Keep a schema-compatible v23 rollback artifact with delivery off; older v22/v19 bundles reject the newer ledger.
+5. Run `npm run test:regression`, `npm run typecheck`, `npx prisma validate --config prisma.config.ts`, and `npm run cloudflare:check:staging`.
+6. After explicit deployment approval, run `npm run cloudflare:deploy:staging`. This uploads only staging and initializes any pending migrations on first Durable Object invocation; it does not approve email activation.
+7. Verify `/`, public catalog endpoints, existing frontend authentication/CORS, owner APIs and unauthorized/cross-brand denials. Read the complete paginated backlog audit with delivery still false. Preserve SENT/uncertain rows and review all recipients/event types. Classify legacy booking messages as unverifiable; any manual skips require an explicit owner action.
+8. Report the current backlog and safe classifications. Keep delivery disabled until separate backlog/activation approval. Real provider tests remain separately approved, recipient-restricted, at most once per available provider without retry approval, with independent inbox confirmation.
+
+Local automated tests use mocked Gmail/provider I/O and disposable SQLite, including actual scheduled-handler dispatch, unrelated cron failure, stale events, A-B-A changes, owner API access/filtering/redaction, history atomicity, retries/concurrency and uncertain-send protection. Live Gmail reachability, inbox receipt and current live backlog remain external release gates.
+
+
+### Final v23 local verification - 2026-10-28
+
+- `npm run test:regression`: exit 0; **224 TAP tests passed, zero failed/skipped**. Includes 7 Node merchant/security/template/eligibility tests, 4 mocked provider integration tests, 9 transactional outbox tests, and existing business regressions. All 148 historical route contracts retained with the two previously approved exceptions.
+- `npm run typecheck` and `npx prisma validate --config prisma.config.ts`: passed. No live PostgreSQL upgrade was run.
+- SQLite migration upgrade through v23, repeated initialization, foreign keys/checksum guards and fresh schema parity: passed.
+- Saved historical staging backup: hash verified, local SQLite integrity passed; disposable restore/upgrade through v23 preserved 13,319 existing cells and repeated initialization. This is not a current live-backlog audit.
+- `npm run cloudflare:check:staging`: passed, dry-run only. Artifact 7440.72 KiB / gzip 2049.03 KiB; EMAIL_OUTBOX_ENABLED false. Production bundle excludes test fixtures and native Node merchant SMTP.
+- Postman collection: valid JSON, 20 requests. Full-collection execution remains inappropriate because it includes real-send/configuration/skip actions.
+- Current build evidence: ignored `cloudflare/.build/outbox-v23-release-manifest.json`; local logs `node_modules/.cloudflare-test/outbox-final-regression.log` and `outbox-staging-dry-run.log`. The earlier v22 release manifest/evidence below is historical.
+- No live database, deployment, secret update or real email operation occurred. Current staging backlog eligibility and inbox/provider sign-off remain unverified. Both production/staging delivery flags remain false.
 
 ## Audit: authoritative event sources
 

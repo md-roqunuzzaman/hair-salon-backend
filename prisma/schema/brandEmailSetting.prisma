@@ -57,6 +57,10 @@ model EmailOutbox {
     claimToken    String?
     attemptedAt   DateTime?
     text          String?
+    validationData Json?
+    skipReason String?
+    terminalAt DateTime?
+    history EmailOutboxHistory[]
 
     sentAt            DateTime?
     lastError         String?
@@ -69,4 +73,20 @@ model EmailOutbox {
     @@index([status, nextAttemptAt])
     @@index([brandId, createdAt])
     @@index([appointmentId])
+}
+
+model EmailOutboxHistory {
+    id String @id @default(uuid())
+    outboxId String
+    outbox EmailOutbox @relation(fields: [outboxId], references: [id], onDelete: Restrict)
+    status String
+    sequence Int
+    attempt Int
+    code String?
+    provider String?
+    actorId String?
+    createdAt DateTime @default(now())
+
+    @@index([outboxId, createdAt, id])
+    @@unique([outboxId, sequence])
 }

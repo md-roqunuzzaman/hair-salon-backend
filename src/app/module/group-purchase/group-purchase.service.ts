@@ -38,7 +38,6 @@ import { uploadService } from "../upload/upload.service.js";
 
 import { ICreateGroupPurchasePayload } from "./group-purchase.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
-import { enqueueAppointmentEmail, enqueueGroupPurchaseEmail } from '../brand-email-setting/brand-email-setting.events.js';
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { presentGroupPurchase } from "./group-purchase.presentation.js";
 import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
@@ -654,7 +653,6 @@ const createGroupPurchase = async (
               },
             });
 
-            if (isReserveNow) await enqueueAppointmentEmail(tx, appointment.id, 'RESERVE_NOW_RESERVED');
             firstAppointment = {
               appointmentId: appointment.id,
               appointmentStatus: appointment.appointmentStatus,
@@ -1494,8 +1492,6 @@ const createGroupPurchaseAppointment = async (
     throw new AppError("The selected time slot is no longer available", 409);
   }
 
-  const resolvedStaffId = staffId ?? requestedSlot.staffId;
-
   const dateOnly = new Date(`${date}T00:00:00.000Z`);
 
   // =====================================================
@@ -1640,6 +1636,16 @@ const createGroupPurchaseAppointment = async (
           // 7. FINAL AVAILABILITY CHECKS
           // =============================================
 
+          const resolvedStaffId = staffId ?? (await resolveAvailableStaff({
+            tx,
+            branchId,
+            packageId: currentPurchase.packageId,
+            date,
+            dateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+          }));
           await assertStaffSlotAvailable(
             tx,
             resolvedStaffId,
@@ -2207,7 +2213,6 @@ export const recordGroupPurchaseRemainingPayment = async (
           // =============================================
           // 15. CUSTOMER NOTIFICATION
           // =============================================
-          if (expectedPaymentStatus === PaymentStatus.UNPAID) await enqueueGroupPurchaseEmail(tx, purchase.id);
 
           const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
             Number(payment.amount),

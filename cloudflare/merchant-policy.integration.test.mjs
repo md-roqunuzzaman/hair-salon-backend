@@ -156,12 +156,12 @@ test('merchant policies: real Worker APIs, snapshots, cancellation, approval and
     const unused=await buy(2);const appointment=await redeem(unused);await control({appointmentId:appointment.appointmentId,status:'COMPLETED'});
     assert.equal((await api(`${root}/group-purchases/${unused}/refund-preview`)).data.reason,'USED_GROUP_PURCHASE_NOT_REFUNDABLE');
   });
-  await t.test('successful refund records each own one outbox event; pending/failed refunds own none',async()=>{
+  await t.test('refund and cancellation flows retain in-app notifications but enqueue no business email',async()=>{
     const rows=(await api('/__business-email-test',{body:{}})).jobs;
     const refunds=(await state()).refunds;
     assert.ok(refunds.some(r=>r.status==='SUCCEEDED'));
-    for(const r of refunds)assert.equal(rows.filter(j=>j.eventType==='REFUND_COMPLETED'&&j.idempotencyKey.endsWith(`:${r.id}`)).length,r.status==='SUCCEEDED'?1:0);
+    for(const r of refunds)assert.equal(rows.filter(j=>j.eventType==='REFUND_COMPLETED'&&j.idempotencyKey.endsWith(`:${r.id}`)).length,0);
     assert.equal(new Set(rows.map(j=>j.idempotencyKey)).size,rows.length);
-    assert.ok(rows.some(j=>j.eventType==='BOOKING_CANCELLED'));
+    assert.equal(rows.length,0,'All automatic email integrations are retired');
   });
 });

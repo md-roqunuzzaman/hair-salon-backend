@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
+import crypto from 'node:crypto';
 
 // Synthetic configuration: this suite must never connect to production services.
 Object.assign(process.env, {
@@ -13,7 +14,7 @@ Object.assign(process.env, {
 const { prisma } = await import('../src/app/lib/prisma.ts');
 const { Prisma } = await import('../generated/prisma/client.ts');
 const { AvailabilityService } = await import('../src/app/module/availability/availability.service.ts');
-const { assertStaffSlotAvailable, assertBranchHourlyCapacityAvailable, appointmentService } =
+const { resolveAvailableStaff, assertStaffSlotAvailable, assertBranchHourlyCapacityAvailable, appointmentService } =
   await import('../src/app/module/appointment/appointment.service.ts');
 const { walletService } = await import('../src/app/module/wallet/wallet.service.ts');
 const { jwtUtils } = await import('../src/app/utils/jwt.ts');
@@ -356,4 +357,200 @@ test('HTTP requests run all three real booking services through controller and v
     else assert.ok(!Number.isNaN(Date.parse(result.data.holdExpiresAt)));
   }
   assert.equal(create.mock.calls.length, 3);
+});
+
+
+function autoStaffFixture(t, ids = ['alex','james','saikat']) {
+  const day = new Date(`${date}T00:00:00.000Z`);
+  const now = new Date(day.getTime()-86400000);
+  const data = { staff: ids.map(id=>({id,status:'ACTIVE',branches:[branchId],services:[serviceId],packages:['package']})),
+    schedules: ids.map(staffId=>({staffId,startTime:'10:00',endTime:'13:00'})), leave: [], rows: [] };
+  const queries=[];
+  const tx={
+    branchBusinessHour:{findFirst:async()=>({isClosed:false,openTime:'10:00',closeTime:'13:00'})},
+    staff:{findMany:async({where})=>data.staff.filter(s=>s.status===where.status&&(!where.id||s.id===where.id)&&s.branches.includes(where.branches.some.branchId)&&(where.services?s.services.includes(where.services.some.serviceId):s.packages.includes(where.packages.some.packageId))).map(({id})=>({id}))},
+    staffSchedule:{findMany:async()=>data.schedules},staffUnavailability:{findMany:async()=>data.leave},
+    appointment:{findMany:async args=>{
+      queries.push(args);
+      return data.rows.filter(a=>args.where.staffId.in.includes(a.staffId)&&a.date.getTime()===args.where.date.getTime()&&a.id!==args.where.id?.not&&
+        (args.where.OR ? ['RESERVED','CONFIRMED'].includes(a.appointmentStatus)||(a.appointmentStatus==='PENDING_PAYMENT'&&a.holdExpiresAt>now) : args.where.appointmentStatus.in.includes(a.appointmentStatus)));
+    }},
+  };
+  const params={tx,branchId,serviceId,date,dateOnly:day,requestedStart:600,requestedEnd:660,now};
+  const add=(staffId,count,patch={})=>{for(let i=0;i<count;i++)data.rows.push({id:`row-${data.rows.length}`,staffId,date:day,startTime:'08:00',endTime:'08:30',appointmentStatus:'RESERVED',...patch});};
+  return {data,params,add,queries};
+}
+
+test('AUTO zero daily counts: deterministic random can select every candidate, not just ASC first',async t=>{
+ const {params}=autoStaffFixture(t);let index=0;
+ const random=t.mock.method(crypto,'randomInt',size=>{assert.equal(size,3);return index++;});
+ assert.equal(await resolveAvailableStaff(params),'alex');assert.equal(await resolveAvailableStaff(params),'james');assert.equal(await resolveAvailableStaff(params),'saikat');assert.equal(random.mock.calls.length,3);
+});
+
+test('AUTO unique minimum is always chosen without random selection',async t=>{
+ const {params,add}=autoStaffFixture(t);add('alex',3);add('james',1);add('saikat',2);
+ t.mock.method(crypto,'randomInt',()=>{throw Error('Unique minimum must not use random');});
+ for(let i=0;i<3;i++)assert.equal(await resolveAvailableStaff(params),'james');
+});
+
+test('AUTO tied minimum randomizes only among the minimum-count candidates',async t=>{
+ const {params,add}=autoStaffFixture(t);add('alex',4);add('james',2);add('saikat',2);let index=0;
+ t.mock.method(crypto,'randomInt',size=>{assert.equal(size,2);return index++;});
+ assert.equal(await resolveAvailableStaff(params),'james');assert.equal(await resolveAvailableStaff(params),'saikat');
+});
+
+test('AUTO filters unavailable minimum before comparing daily workload',async t=>{
+ for(const type of ['leave','shortSchedule','conflict'])await t.test(type,async t=>{
+  const {params,data,add,queries}=autoStaffFixture(t);add('james',2);add('saikat',3);
+  if(type==='leave')data.leave.push({staffId:'alex',startTime:'10:30',endTime:'11:30'});
+  if(type==='shortSchedule')data.schedules[0].endTime='10:30';
+  if(type==='conflict')add('alex',1,{startTime:'10:30',endTime:'11:00',appointmentStatus:'CONFIRMED'});
+  assert.equal(await resolveAvailableStaff(params),'james');
+  assert.deepEqual(queries.find(q=>q.where.appointmentStatus).where.staffId.in,['james','saikat']);
+ });
+});
+
+test('AUTO excludes inactive, other-branch and ineligible-service/package minimum candidates',async t=>{
+ for(const type of ['inactive','branch','service','package'])await t.test(type,async t=>{
+  const {params,data,add}=autoStaffFixture(t);add('james',2);add('saikat',3);
+  if(type==='inactive')data.staff[0].status='INACTIVE';if(type==='branch')data.staff[0].branches=[];
+  if(type==='service')data.staff[0].services=[];if(type==='package'){delete params.serviceId;params.packageId='package';data.staff[0].packages=[];}
+  assert.equal(await resolveAvailableStaff(params),'james');
+ });
+});
+
+test('AUTO workload uses only selected date and all services/packages and assignment methods',async t=>{
+ const {params,add,queries}=autoStaffFixture(t,['alex','james']);
+ add('alex',1,{appointmentStatus:'COMPLETED',serviceId:'other-service',packageId:'other-package',bookingMethod:'GROUP_PURCHASE'});
+ add('james',5,{date:new Date(params.dateOnly.getTime()-86400000)});add('james',5,{date:new Date(params.dateOnly.getTime()+86400000)});
+ assert.equal(await resolveAvailableStaff(params),'james');
+ const where=queries.find(q=>q.where.appointmentStatus).where;
+ assert.equal(where.date.getTime(),params.dateOnly.getTime());
+ for(const field of ['serviceId','packageId','bookingMethod','branchId'])assert.equal(where[field],undefined);
+ assert.deepEqual(where.appointmentStatus.in,['RESERVED','CONFIRMED','COMPLETED']);
+});
+
+test('AUTO counts each qualifying status and excludes holds/cancelled/expired/no-show',async t=>{
+ for(const status of ['RESERVED','CONFIRMED','COMPLETED'])await t.test(status,async t=>{
+  const {params,add}=autoStaffFixture(t,['alex','james']);add('alex',1,{appointmentStatus:status});assert.equal(await resolveAvailableStaff(params),'james');
+ });
+ for(const status of ['PENDING_PAYMENT','CANCELLED','EXPIRED','NO_SHOW'])await t.test(status,async t=>{
+  const {params,add}=autoStaffFixture(t,['alex','james']);add('james',1,{appointmentStatus:'COMPLETED'});add('alex',5,{appointmentStatus:status,holdExpiresAt:new Date(params.now.getTime()+60000)});assert.equal(await resolveAvailableStaff(params),'alex');
+ });
+});
+
+test('AUTO active PENDING_PAYMENT hold blocks the full slot while expired hold does not',async t=>{
+ const {params,add,data}=autoStaffFixture(t,['alex','james']);add('james',2,{appointmentStatus:'COMPLETED'});
+ add('alex',1,{appointmentStatus:'PENDING_PAYMENT',startTime:'10:30',endTime:'11:30',holdExpiresAt:new Date(params.now.getTime()+60000)});
+ assert.equal(await resolveAvailableStaff(params),'james');
+ data.rows.at(-1).holdExpiresAt=new Date(params.now.getTime()-1);assert.equal(await resolveAvailableStaff(params),'alex');
+});
+
+test('manual staff ignores fairness/randomness and retains existing unavailable error',async t=>{
+ const {params,add,queries,data}=autoStaffFixture(t);add('alex',8);params.staffId='alex';
+ t.mock.method(crypto,'randomInt',()=>{throw Error('Manual selection must not randomize');});
+ assert.equal(await resolveAvailableStaff(params),'alex');assert.equal(queries.some(q=>q.where.appointmentStatus),false);
+ data.leave.push({staffId:'alex',startTime:'10:30',endTime:'11:00'});
+ await assert.rejects(resolveAvailableStaff(params),{message:'Selected staff is no longer available for this time slot',statusCode:409});
+});
+
+test('consecutive AUTO RESERVE_NOW bookings recalculate counts inside existing serializable transactions',async t=>{
+ const {data,tx,create}=transactionFixture(t);const ids=['alex','james','saikat'];const rows=[];
+ data.eligible=ids.map(id=>({id}));data.schedules=ids.map(staffId=>({staffId,startTime:'10:00',endTime:'13:00'}));
+ tx.appointment.findMany=async args=>args.where.appointmentStatus?rows.filter(a=>args.where.staffId.in.includes(a.staffId)&&a.date.getTime()===args.where.date.getTime()&&args.where.appointmentStatus.in.includes(a.appointmentStatus)):rows;
+ tx.appointment.create=async({data:row})=>{const result={id:`row-${rows.length}`,...row};rows.push(result);return result;};
+ t.mock.method(crypto,'randomInt',()=>0);
+ for(const time of ['10:00','11:00','12:00'])await appointmentService.createReserveAppointment('customer',{...query,startTime:time});
+ assert.deepEqual(rows.map(r=>r.staffId),ids);
+});
+
+// Exact reported request, through real HTTP validation/controllers and both services.
+// Only storage is mocked; availability and staff assignment are not stubbed.
+async function reportedAutoBookingFixture(t) {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-28T08:00:00.000Z') });
+  const state = transactionFixture(t);
+  const { data } = state;
+  const request = {
+    branchId: 'f7318524-db7c-49cf-8bc4-bfc6ff5c6b97',
+    serviceId: 'ddead693-8445-4cb2-a9f5-f824afd6d201',
+    date: '2026-11-15', startTime: '15:00', bookingMethod: 'RESERVE_NOW',
+  };
+  const david = '023605b9-8628-45aa-be31-82d56635ef6d';
+  const other = '33333333-3333-4333-8333-333333333334';
+  data.branch.id = request.branchId;
+  data.service.durationMinutes = 45;
+  data.service.branches = [{ branchId: request.branchId }];
+  data.hours = { isClosed: false, openTime: '10:00', closeTime: '20:00' };
+  data.capacity.maxBookingsPerHour = 4;
+  data.eligible = [{ id: david }, { id: other }];
+  data.schedules = data.eligible.map(({ id }) => ({ staffId: id, startTime: '10:00', endTime: '20:00' }));
+  data.staff = { ...data.staff, id: david, branches: [{ branchId: request.branchId }], services: [{ serviceId: request.serviceId }] };
+  stubDelegate(t, 'user', 'findUnique', async () => ({ id: 'customer', role: 'CUSTOMER', status: 'ACTIVE' }));
+  const token = jwtUtils.createToken({ userId: 'customer' }, process.env.JWT_ACCESS_SECRET, '5m');
+  const server = createServer(app);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}/api/v1`;
+  const availability = async () => {
+    const params = new URLSearchParams({ branchId: request.branchId, serviceId: request.serviceId, date: request.date, staff: 'ANY' });
+    const response = await fetch(`${base}/availability?${params}`);
+    assert.equal(response.status, 200);
+    const json = await response.json();
+    const slot = json.data.slots.find(slot => slot.startTime === '15:00');
+    assert.equal(slot.endTime, '15:45');
+    assert.equal(slot.staffId, david);
+    assert.equal(slot.available, true);
+    assert.deepEqual(slot.capacity, { maxBookingsPerHour: 4, used: 0, remaining: 4 });
+    return slot;
+  };
+  const post = (body = request, path = '/appointments/reserve') => fetch(base + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body),
+  });
+  return { ...state, request, david, other, availability, post };
+}
+
+test('reported AUTO slot remains bookable; preview staff is not the assigned staff', async t => {
+  const { availability, post, create, other } = await reportedAutoBookingFixture(t);
+  t.mock.method(crypto, 'randomInt', () => 1);
+  await availability();
+  const response = await post();
+  assert.equal(response.status, 201, await response.text());
+  const row = create.mock.calls[0].arguments[0].data;
+  assert.equal(row.staffId, other);
+  assert.equal(row.startTime, '15:00'); assert.equal(row.endTime, '15:45');
+  assert.equal(row.date.toISOString(), '2026-11-15T00:00:00.000Z');
+  assert.equal(row.appointmentStatus, 'RESERVED');
+});
+
+test('reported slot manual booking still selects the explicit staff; root POST is not a booking contract', async t => {
+  const { availability, post, create, request, david } = await reportedAutoBookingFixture(t);
+  t.mock.method(crypto, 'randomInt', () => { throw Error('Manual selection must not randomize'); });
+  await availability();
+  assert.equal((await post(request, '/appointments')).status, 404);
+  assert.equal(create.mock.calls.length, 0);
+  assert.equal((await post({ ...request, staffId: david })).status, 201);
+  assert.equal(create.mock.calls[0].arguments[0].data.staffId, david);
+});
+
+test('reported slot returns the exact 409 if availability changes before POST', async t => {
+  const { availability, post, create, data, transaction } = await reportedAutoBookingFixture(t);
+  await availability();
+  data.leave = data.eligible.map(({ id }) => ({ staffId: id, startTime: '15:00', endTime: '15:45' }));
+  const response = await post();
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).message, 'The selected time slot is no longer available');
+  assert.equal(create.mock.calls.length, 0); assert.equal(transaction.mock.calls.length, 0);
+});
+
+test('reported slot retains exact 409 on exhausted serializable retries', async t => {
+  const { availability, post, create } = await reportedAutoBookingFixture(t);
+  await availability();
+  const original = prisma.$transaction;
+  const attempts = t.mock.fn(async () => { throw new Prisma.PrismaClientKnownRequestError('Synthetic conflict', { code: 'P2034', clientVersion: 'test' }); });
+  prisma.$transaction = attempts;
+  t.after(() => { prisma.$transaction = original; });
+  const response = await post();
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).message, 'The selected time slot is no longer available');
+  assert.equal(attempts.mock.calls.length, 3); assert.equal(create.mock.calls.length, 0);
 });

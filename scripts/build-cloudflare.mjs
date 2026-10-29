@@ -67,7 +67,9 @@ const brandEmailSettings = await readFile('cloudflare/migrations/0019_brand_emai
 const emailOutbox = await readFile('cloudflare/migrations/0020_email_outbox.sql', 'utf8');
 const emailProviderConfiguration = await readFile('cloudflare/migrations/0021_email_provider_configuration.sql', 'utf8');
 const emailOutboxFence = await readFile('cloudflare/migrations/0022_email_outbox_delivery_fence.sql', 'utf8');
-const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+const emailOutboxManagement = await readFile('cloudflare/migrations/0023_email_outbox_management.sql', 'utf8');
+const businessEmailRetirement = await readFile('cloudflare/migrations/0024_retire_business_email_events.sql', 'utf8');
+const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence, emailOutboxManagement, businessEmailRetirement].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);

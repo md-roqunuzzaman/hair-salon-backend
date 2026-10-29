@@ -7,5 +7,5 @@ try {
   const response = await mf.dispatchFetch('https://test/');
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { preserved: true, repeatable: true, foreignKey: true, checksumProtected: true });
-  console.log('Existing databases upgrade to v22: legacy attempts quarantined; credentials, verification reset once, financial data, repeat startup and checksums pass.');
+  console.log('Existing databases upgrade to v24: legacy attempts quarantined; credentials, verification reset once, financial data, repeat startup and checksums pass.');
 } finally { await mf.dispose(); }

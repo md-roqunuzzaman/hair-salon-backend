@@ -1,5 +1,9 @@
 # Cloudflare deployment
 
+**v24 product policy:** automatic business emails are retired. Worker/Node schedulers no longer run email batches; retained enqueue/process helpers cannot be reactivated by EMAIL_OUTBOX_ENABLED. Keep both environment flags false. Preserve platform OTP/reset and in-app notifications. Use [the current v24 rollout gates](../docs/transactional-email-system.md); older activation instructions below are superseded.
+
+For the permanent v23 Email Outbox upgrade, follow the staging-only, delivery-disabled procedure in [transactional-email-system.md](../docs/transactional-email-system.md#permanent-outbox-management-upgrade-v23-local-candidate). This implementation does not authorize deployment, secret rotation, production rollout or real email delivery. Old generic deployment examples below are not activation approval.
+
 For the current merchant/transactional email candidate, follow [transactional-email-system.md](../docs/transactional-email-system.md). Keep the frontend staging API online: implementation checks and migration rehearsals are local; do not deploy maintenance or run live migrations to prepare the build. `EMAIL_OUTBOX_ENABLED=false` keeps business delivery inactive. The v22 candidate includes an additive delivery-fence migration; after it is applied, a historical v19 application is not a compatible rollback. Current restored staging status is in [staging-api-restoration-report.md](../docs/staging-api-restoration-report.md). Live deployment and delivery activation each require separate authorization.
 
 The existing Express routes and services have a separate Cloudflare build. The Node/PostgreSQL entry remains available. No Cloudflare account, production database, real payment or customer email was changed during implementation.

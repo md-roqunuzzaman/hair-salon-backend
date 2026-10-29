@@ -36,6 +36,7 @@ export async function setup(t, flag, emailOutboxEnabled = 'false') {
     assert.equal(response.status, 200, await response.text());
   };
   const cron = async () => { const namespace = await mf.getDurableObjectNamespace('SALON_DB'); const response = await namespace.get(namespace.idFromName('salon-v1')).fetch('https://internal/__internal/cron'); assert.equal(response.status, 200, await response.text()); };
-  return { api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron };
+  const scheduled = async () => { const worker = await mf.getWorker(); const event = await worker.scheduled({ cron: '* * * * *' }); assert.equal(event.outcome, 'ok'); };
+  return { api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron, scheduled };
 }
 

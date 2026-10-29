@@ -4,6 +4,12 @@ import { enqueueAppointmentEmail, enqueueRefundEmail } from '../../src/app/modul
 import { setEmailMockOnData } from './email-test-fixture.mjs';
 
 export async function businessEmailTestControl(db, storage, body) {
+  if (body.appointmentPatch) await db.appointment.update({where:{id:body.appointmentPatch.id},data:body.appointmentPatch.data});
+  if (body.failHistory !== undefined) {
+    storage.sql.exec('DROP TRIGGER IF EXISTS test_email_history_failure');
+    if (body.failHistory) storage.sql.exec("CREATE TRIGGER test_email_history_failure BEFORE INSERT ON EmailOutboxHistory WHEN NEW.status='SENT' BEGIN SELECT RAISE(ABORT,'synthetic history failure'); END");
+  }
+  if (body.enqueueAgain) await db.$transaction(tx => enqueueAppointmentEmail(tx,body.enqueueAgain,'RESERVE_NOW_RESERVED'));
   if (body.badRefund) {
     const a = await db.appointment.findFirstOrThrow();
     const owner = await db.user.findFirstOrThrow({where:{role:'BRAND_OWNER'}});

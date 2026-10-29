@@ -40,6 +40,23 @@ export async function bookNowFixture(db, customerId) {
 }
 
 export async function policyTestControl(db,body){
+  if (body.autoStaff) {
+    const { branchId, serviceId, packageId, date } = body.autoStaff;
+    const day = ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'][new Date(date).getUTCDay()];
+    if (body.autoStaff.durationMinutes) await db.service.update({ where: { id: serviceId }, data: { durationMinutes: body.autoStaff.durationMinutes } });
+    if (body.autoStaff.maxBookingsPerHour) await db.branchHourlyCapacity.update({ where: { branchId_day: { branchId, day } }, data: { maxBookingsPerHour: body.autoStaff.maxBookingsPerHour } });
+    const ids = [];
+    for (let i = 0; i < 2; i++) {
+      const email = `auto-${crypto.randomUUID()}@example.com`;
+      const staff = await db.staff.create({ data: {
+        name: 'AUTO fixture', email, roleTitle: 'Stylist', user: { create: { name: 'AUTO fixture', email, passwordHash: 'unused', role: 'STAFF' } },
+        branches: { create: { branchId } }, services: { create: { serviceId } }, packages: { create: { packageId } },
+        schedule: { create: { branchId, day, startTime: '00:00', endTime: '23:59' } },
+      } });
+      ids.push(staff.id);
+    }
+    return { staffIds: ids };
+  }
   if (body.remainingDeposit) {
     const { customerId, branchId, staffId, serviceId, date } = body.remainingDeposit;
     const appointment = await db.appointment.create({ data: {

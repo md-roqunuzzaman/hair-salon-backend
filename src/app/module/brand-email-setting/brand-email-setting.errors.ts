@@ -19,7 +19,9 @@ export function safeEmailError(error: unknown): EmailProviderError {
   const stage: EmailStage = e.stage && stages.includes(e.stage) ? e.stage : e.command?.startsWith('AUTH') || code === 'EAUTH' ? 'AUTH' : e.command === 'CONN' ? 'CONNECT' : 'SEND';
   const known = new Set(['ESOCKET','EAUTH','ETIMEDOUT','ECONNRESET','ECONNREFUSED','ENOTFOUND','EAI_AGAIN','EPIPE','CERT_HAS_EXPIRED','ERR_TLS_CERT_ALTNAME_INVALID','DEPTH_ZERO_SELF_SIGNED_CERT','UNABLE_TO_VERIFY_LEAF_SIGNATURE','SMTP_535']);
   const result = (name: string, status: number, at: EmailStage, uncertain = false) => {
-    const safe = new EmailProviderError(name, status, at, uncertain, Number.isInteger(e.responseCode) ? e.responseCode : undefined);
+    // Explicit submission uncertainty must survive all classification branches,
+    // including TLS/SSL errors that occur after DATA/request submission.
+    const safe = new EmailProviderError(name, status, at, uncertain || e.deliveryUncertain === true, Number.isInteger(e.responseCode) ? e.responseCode : undefined);
     safe.sourceCode = known.has(e.code ?? '') ? e.code : undefined;
     safe.causeCode = known.has(e.cause?.code ?? '') ? e.cause!.code : undefined;
     return safe;

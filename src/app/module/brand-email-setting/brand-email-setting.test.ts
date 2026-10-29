@@ -79,3 +79,35 @@ test('all approved templates have escaped HTML, plain text, default language, mo
   assert.match(emailMoney('1234.56','HKD','en'),/1,234\.56/);
   assert.equal(emailAppointmentTime(new Date('2026-10-28T00:00:00Z'),'00:30','01:00'),'2026-10-28 00:30–01:00 (Asia/Hong_Kong)');
 });
+
+
+import { assessOutboxDelivery } from './brand-email-setting.outbox-validation.js';
+import type { EmailOutbox, Prisma } from '../../../../generated/prisma/client.js';
+import { enqueueBusinessEmail } from './brand-email-setting.outbox.js';
+import { enqueueAppointmentEmail, enqueueGroupPurchaseEmail, enqueueRefundEmail } from './brand-email-setting.events.js';
+import { processOneBusinessEmail, processBusinessEmailBatch, recoverStaleBusinessEmails } from './brand-email-setting.outbox-processor.js';
+import { startEmailOutboxJob } from '../../jobs/email-outbox.job.js';
+
+test('retired helpers and scheduler are inert with accidental true flag and cannot access storage', async () => {
+ const prior=process.env.EMAIL_OUTBOX_ENABLED;process.env.EMAIL_OUTBOX_ENABLED='true';
+ const db=new Proxy({}, {get(){throw Error('Retired email touched database');}}) as Prisma.TransactionClient;
+ try {
+  for(const eventType of EMAIL_EVENTS){
+   assert.equal(await enqueueBusinessEmail({brandId:'brand',eventType,idempotencyKey:eventType,recipientEmail:'synthetic@example.com',subject:'Synthetic',html:'Synthetic'},db),null);
+   assert.equal(await assessOutboxDelivery(db,{eventType} as EmailOutbox),'EMAIL_BUSINESS_EMAILS_RETIRED');
+  }
+  assert.equal(await enqueueAppointmentEmail(db,'id','RESERVE_NOW_RESERVED'),null);
+  assert.equal(await enqueueGroupPurchaseEmail(db,'id'),null);assert.equal(await enqueueRefundEmail(db,'id'),null);
+  assert.equal((await processOneBusinessEmail('id')).processed,false);assert.equal((await processBusinessEmailBatch()).enabled,false);assert.equal((await recoverStaleBusinessEmails()).recovered,0);
+  assert.equal(startEmailOutboxJob(),undefined);
+ } finally {if(prior===undefined)delete process.env.EMAIL_OUTBOX_ENABLED;else process.env.EMAIL_OUTBOX_ENABLED=prior;}
+});
+
+test('explicit submission uncertainty survives TLS/SSL and other error classification', () => {
+ for(const code of ['ERR_SSL_PROTOCOL_ERROR','ERR_TLS_CERT_ALTNAME_INVALID','CERT_HAS_EXPIRED','ETIMEDOUT','ECONNRESET','ENOTFOUND','EAUTH']){
+  const result=safeEmailError({code,stage:'SEND',deliveryUncertain:true});assert.equal(result.deliveryUncertain,true,code);
+ }
+ assert.equal(safeEmailError({stage:'TLS',deliveryUncertain:true}).deliveryUncertain,true);
+ assert.equal(safeEmailError({code:'ERR_SSL_PROTOCOL_ERROR',stage:'CONNECT',deliveryUncertain:false}).deliveryUncertain,false);
+ assert.equal(safeEmailError({responseCode:550,stage:'SEND',deliveryUncertain:false}).deliveryUncertain,false);
+});

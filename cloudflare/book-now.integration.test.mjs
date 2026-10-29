@@ -141,9 +141,9 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
       assert.equal(inventory.soldQuantity, index * 2); assert.equal(inventory.reservedQuantity, 0);
       const emails = (await api('/__business-email-test', {body:{}})).jobs;
       const successEmails = emails.filter(j => j.eventType === 'GROUP_PURCHASE_SUCCESSFUL' && j.idempotencyKey.endsWith(`:${id}`));
-      assert.equal(successEmails.length, 1, 'Initial purchase settlement produces one email; QR/remaining payment produce no duplicate');
-      assert.equal(emails.filter(j => j.appointmentId === appointmentId && j.eventType === 'RESERVE_NOW_RESERVED').length, method === 'RESERVE_NOW' ? 1 : 0);
-      assert.equal(emails.filter(j => j.appointmentId === appointmentId && ['PAY_NOW_CONFIRMED','DEPOSIT_RECEIVED'].includes(j.eventType)).length, 0, 'Group purchases have one combined purchase event');
+      assert.equal(successEmails.length, 0, 'Business email integrations are retired');
+      assert.equal(emails.filter(j => j.appointmentId === appointmentId && j.eventType === 'RESERVE_NOW_RESERVED').length, 0);
+      assert.equal(emails.filter(j => j.appointmentId === appointmentId && ['PAY_NOW_CONFIRMED','DEPOSIT_RECEIVED'].includes(j.eventType)).length, 0, 'Group purchases never enqueue business email');
     });
   }
   await t.test('initial entitlement counts and redemption cannot exceed quantity', async () => {
@@ -241,4 +241,56 @@ test('Buy Later and policy-driven Direct Booking public regressions', async t =>
     assert.equal(balance(before.wallets[0]) - balance(after.wallets[0]), 10025);
     assert.equal(after.payments.filter(item => item.groupPurchaseId === created.purchaseId && item.status === 'PAID').length, 1);
   });
+});
+
+
+test('AUTO concurrent reservations avoid double-booking and holds block slots without counting as workload',async t=>{
+ const {api,fixture}=await setup(t,'true');
+ await api('/__policy-test',{body:{autoStaff:fixture}});
+ const book=(method,time,status=201)=>api(`/api/v1/appointments/${method}`,{body:{branchId:fixture.branchId,serviceId:fixture.serviceId,date:fixture.date,startTime:time},status});
+ const reserved=await Promise.all([book('reserve','10:00'),book('reserve','10:00')]);
+ let rows=(await api('/__snapshot')).appointments;
+ const reservationIds=reserved.map(r=>r.data.appointmentId);
+ const selected=rows.filter(r=>reservationIds.includes(r.id));assert.equal(new Set(selected.map(r=>r.staffId)).size,2);
+ const held=await book('pay-now','10:00');const heldId=held.data.appointmentId;
+ rows=(await api('/__snapshot')).appointments;const hold=rows.find(r=>r.id===heldId);
+ assert.ok(!selected.some(r=>r.staffId===hold.staffId));assert.equal(hold.appointmentStatus,'PENDING_PAYMENT');
+ await book('reserve','10:00',409);
+ const next=await book('reserve','11:00');rows=(await api('/__snapshot')).appointments;
+ assert.equal(rows.find(r=>r.id===next.data.appointmentId).staffId,hold.staffId,'Pending hold has zero fairness weight at non-overlapping time');
+ for(const appointment of selected){
+  await api('/api/v1/appointments/reserve',{body:{branchId:fixture.branchId,serviceId:fixture.serviceId,date:fixture.date,startTime:'12:00',staffId:appointment.staffId},status:201});
+ }
+ await api(`/api/v1/appointments/${selected[0].id}/reschedule`,{body:{date:fixture.date,startTime:'13:00'}});
+ rows=(await api('/__snapshot')).appointments;
+ assert.equal(rows.find(r=>r.id===selected[0].id).staffId,hold.staffId,'AUTO reschedule selects the daily minimum within its transaction');
+ const purchase=(await api('/api/v1/group-purchases',{body:{packageId:fixture.packageId,quantity:1,purchaseFlow:'BUY_NOW_BOOK_LATER'},status:201})).data;
+ await api(`/api/v1/group-purchases/${purchase.purchaseId}/pay-with-wallet`,{body:{useBonus:true}});
+ await api(`/api/v1/group-purchases/${purchase.purchaseId}/book-appointment`,{body:{branchId:fixture.branchId,date:fixture.date,startTime:'14:00'},status:201});
+ rows=(await api('/__snapshot')).appointments;
+ assert.equal(rows.find(r=>r.groupPurchaseId===purchase.purchaseId).staffId,selected[0].staffId,'AUTO package redemption counts all daily service bookings');
+ for(const staffId of new Set(rows.map(r=>r.staffId))){
+  const appointments=rows.filter(r=>r.staffId===staffId&&r.appointmentStatus!=='CANCELLED').sort((a,b)=>a.startTime.localeCompare(b.startTime));
+  for(let i=1;i<appointments.length;i++)assert.ok(appointments[i-1].endTime<=appointments[i].startTime,'No overlapping staff assignment');
+ }
+});
+
+test('45-minute AUTO availability preview stays bookable with a different fair staff on real Worker SQLite', async t => {
+ const { api, fixture } = await setup(t, 'true');
+ await api('/__policy-test', { body: { autoStaff: { ...fixture, durationMinutes: 45, maxBookingsPerHour: 4 } } });
+ const query = new URLSearchParams({ branchId: fixture.branchId, serviceId: fixture.serviceId, date: fixture.date, staff: 'ANY' });
+ const readSlot = async () => (await api(`/api/v1/availability?${query}`)).data.slots.find(slot => slot.startTime === '15:00');
+ const preview = await readSlot();
+ assert.equal(preview.endTime, '15:45'); assert.equal(preview.available, true);
+ assert.deepEqual(preview.capacity, { maxBookingsPerHour: 4, used: 0, remaining: 4 });
+ const body = { branchId: fixture.branchId, serviceId: fixture.serviceId, date: fixture.date, startTime: '15:00', bookingMethod: 'RESERVE_NOW' };
+ // Give the preview staff a non-overlapping booking so the daily minimum is elsewhere.
+ await api('/api/v1/appointments/reserve', { body: { ...body, startTime: '13:00', staffId: preview.staffId }, status: 201 });
+ assert.equal((await readSlot()).staffId, preview.staffId);
+ const created = await api('/api/v1/appointments/reserve', { body, status: 201 });
+ const detail = (await api(`/api/v1/appointments/${created.data.appointmentId}`)).data;
+ assert.notEqual(detail.staff.id, preview.staffId);
+ assert.equal(detail.startTime, '15:00'); assert.equal(detail.endTime, '15:45');
+ // Manual assignment remains available for the other, non-conflicting staff.
+ await api('/api/v1/appointments/reserve', { body: { ...body, staffId: preview.staffId }, status: 201 });
 });
