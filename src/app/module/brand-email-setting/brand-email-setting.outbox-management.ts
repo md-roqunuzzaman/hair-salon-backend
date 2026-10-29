@@ -7,14 +7,13 @@ import { assessOutboxDelivery } from './brand-email-setting.outbox-validation.js
 import { transitionOutbox } from './brand-email-setting.outbox-history.js';
 import { EMAIL_EVENTS } from './brand-email-setting.templates.js';
 import type { EmailOutbox } from '../../../../generated/prisma/client.js';
-import { BUSINESS_EMAIL_RETIREMENT_REASON } from './brand-email-setting.retirement.js';
 
 const statuses = ['PENDING','PROCESSING','SENDING','SENT','FAILED','DELIVERY_UNCERTAIN','SKIPPED'] as const;
 const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).max(100000).default(1), limit: z.coerce.number().int().min(1).max(100).default(100),
 }).strict();
 const querySchema = paginationSchema.extend({
-  status: z.enum(statuses).optional(), eventType: z.enum(EMAIL_EVENTS).optional(),
+  status: z.enum(statuses).optional(), eventType: z.enum([...EMAIL_EVENTS,'AUTH_PASSWORD_RESET_OTP','AUTH_PASSWORD_RESET_SUCCESS']).optional(),
   provider: z.enum(['GMAIL','QQ','NETEASE_163','MICROSOFT_365','RESEND','CUSTOM_SMTP','PLATFORM_SMTP']).optional(),
   recipientEmail: z.email().max(320).transform(v => v.toLowerCase()).optional(),
   createdFrom: z.iso.datetime().optional(), createdTo: z.iso.datetime().optional(),
@@ -55,7 +54,7 @@ export const listOutbox = (audit = false) => catchAsync(async (req, res) => {
       const item: any = safeJob(job);
       if (audit) {
         const reason = await assessOutboxDelivery(tx, job, now);
-        item.audit = { reason, disposition: job.status !== 'PENDING' ? 'NOT_PENDING' : 'RETIRED', ageSeconds: Math.max(0, Math.floor((now.getTime()-job.createdAt.getTime())/1000)) };
+        item.audit = { reason, disposition: job.status !== 'PENDING' ? 'NOT_PENDING' : !reason ? 'ELIGIBLE' : reason === 'EMAIL_BOOKING_OUTDATED' ? 'STALE' : 'BLOCKED', ageSeconds: Math.max(0, Math.floor((now.getTime()-job.createdAt.getTime())/1000)) };
       }
       data.push(item);
     }
@@ -65,7 +64,7 @@ export const listOutbox = (audit = false) => catchAsync(async (req, res) => {
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   res.json({ success: true, statusCode: 200, message: audit ? 'Read-only outbox eligibility audit' : 'Email outbox status retrieved', data: result.data,
     pagination: { page: q.page, limit: q.limit, total: result.total, totalPages: Math.ceil(result.total/q.limit) },
-    ...(audit ? { summary: { statusCounts: result.statusCounts, eligibilityScope: 'CURRENT_PAGE', assessedAt: new Date().toISOString(), automaticDeliveryEnabled: false, retirementReason: BUSINESS_EMAIL_RETIREMENT_REASON } } : {}) });
+    ...(audit ? { summary: { statusCounts: result.statusCounts, eligibilityScope: 'CURRENT_PAGE', assessedAt: new Date().toISOString(), automaticDeliveryEnabled: process.env.EMAIL_OUTBOX_ENABLED === 'true', retirementReason: null } } : {}) });
 });
 export const getOutboxDetail = catchAsync(async (req, res) => {
   const job = await getJob(String(req.params.brandId), req.params.jobId);

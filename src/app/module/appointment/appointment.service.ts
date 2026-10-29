@@ -3829,6 +3829,7 @@ const rescheduleAppointment = async (
               date: true,
               startTime: true,
               endTime: true,
+              emailScheduleRevision: true,
             },
           });
 
@@ -3907,6 +3908,7 @@ const rescheduleAppointment = async (
               date: newDateOnly,
               startTime,
               endTime,
+              ...(current.date.getTime() !== newDateOnly.getTime() || current.startTime !== startTime || current.endTime !== endTime || current.staffId !== resolvedStaffId ? { emailScheduleRevision: { increment: 1 } } : {}),
             },
 
             select: {
@@ -3930,6 +3932,11 @@ const rescheduleAppointment = async (
             {
               appointmentId: current.id,
               previousStaffId: current.staffId,
+              emailIntent: {
+                appointmentId: current.id,
+                previous: { date: current.date.toISOString(), startTime: current.startTime, endTime: current.endTime, staffId: current.staffId },
+                target: { date: newDateOnly.toISOString(), startTime, endTime, staffId: resolvedStaffId, revision: current.emailScheduleRevision + (current.date.getTime() !== newDateOnly.getTime() || current.startTime !== startTime || current.endTime !== endTime || current.staffId !== resolvedStaffId ? 1 : 0) },
+              },
               userId: current.customerId,
 
               type: "BOOKING_RESCHEDULED",

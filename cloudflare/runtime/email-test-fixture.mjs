@@ -38,7 +38,7 @@ export async function emailTestControl(db, sessions, body) {
       if (mock.mode.http === 'rate') return Response.json({ message: 'private provider body' }, { status: 429 });
       if (url.hostname === 'api.resend.com') {
         if (url.pathname === '/emails') {
-          if (mock.mode.rotateDuringSend) await db.brandEmailSetting.updateMany({ where: { provider: 'RESEND' }, data: { configurationVersion: { increment: 1 }, isEnabled: false, isVerified: false } });
+          if (mock.mode.rotateDuringSend) await db.brandEmailSetting.updateMany({ where: { provider: 'RESEND' }, data: { configurationVersion: { increment: 1 }, isVerified: false } });
           return Response.json({ id: 'email_mock_accepted' });
         }
         if (url.pathname === '/domains' && init.method === 'POST') return Response.json({ id: 'domain_mock' });
@@ -64,10 +64,18 @@ export async function emailTestControl(db, sessions, body) {
     await sessions.eval('return redis.call("SCAN")', { keys: [], arguments: ['merchant-email-rate:*'] });
   }
   if (body.expireOAuth) await sessions.eval('return redis.call("SCAN")', { keys: [], arguments: ['merchant-email-oauth:*'] });
+  if (body.resetAuth) await sessions.eval('return redis.call("SCAN")', { keys: [], arguments: ['password-reset-*'] });
+  if (body.addBrand) mock.extraBrand = (await db.brand.create({ data: { name:'Other synthetic tenant' } })).id;
+  if (body.removeBrand && mock.extraBrand) { await db.brand.delete({ where: { id:mock.extraBrand } }); mock.extraBrand = undefined; }
   const brand = await db.brand.findFirst();
+  if (body.flags) await db.brandEmailSetting.update({ where:{brandId:brand.id},data:body.flags });
+  const authKey = `password-reset-otp:${brand.id}:${body.authEmail ?? 'book-now-customer@example.com'}`;
+  if (body.clearAuthCooldown) await sessions.del(`password-reset-resend:${brand.id}:${body.authEmail ?? 'book-now-customer@example.com'}`);
+  if (body.expireAuthOtp) await sessions.del(authKey);
   const setting = await db.brandEmailSetting.findUnique({ where: { brandId: brand.id } });
   if (body.seedOutbox) await db.emailOutbox.create({ data: { brandId: brand.id, eventType: 'TEST_ONLY', idempotencyKey: 'email-config-pending', recipientEmail: 'mock@example.com', subject: 'Not sent', html: 'Not sent' } });
   return { brandId: brand.id, requests: mock.requests, smtp: mock.smtp,
+    auth: { otp:await sessions.get(authKey), ttl:await sessions.ttl(authKey) },
     encryptedAtRest: !setting || (!setting.encryptedCredential || setting.encryptedCredential.startsWith('v1:')) && (!setting.oauthDataEncrypted || setting.oauthDataEncrypted.startsWith('v1:')),
     outbox: await db.emailOutbox.findMany({ select: { status: true } }) };
 }

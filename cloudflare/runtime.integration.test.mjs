@@ -21,7 +21,7 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
       JWT_ACCESS_SECRET: 'test-access-secret-'.repeat(3), JWT_REFRESH_SECRET: 'test-refresh-secret-'.repeat(3),
       STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_WEBHOOK_SECRET: 'whsec_test', OPENAI_API_KEY: 'test-key',
       R2_ACCOUNT_ID: 'test-account', R2_ACCESS_KEY_ID: 'test-key', R2_SECRET_ACCESS_KEY: 'test-secret',
-      R2_BUCKET_NAME: 'test-bucket', EMAIL_SENDER: 'test@example.com',
+      R2_BUCKET_NAME: 'test-bucket', EMAIL_ENCRYPTION_KEY: 'ab'.repeat(32), EMAIL_OUTBOX_ENABLED: 'false',
       BOOTSTRAP_TOKEN: 'test-bootstrap-token-'.repeat(3),
       BRAND_OWNER_NAME: 'Owner', BRAND_OWNER_EMAIL: 'owner@example.com', BRAND_OWNER_PASSWORD: 'OwnerPassword123!',
     },
@@ -225,12 +225,20 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
   const rotated = await api('/api/v1/auth/refresh-token', { method: 'POST', body: {} });
   assert.notEqual(rotated.data.data.newRefreshToken, refresh);
   await api('/api/v1/auth/refresh-token', { method: 'POST', body: {}, status: 401 });
+  const merchantControl = body => api('/__email-test-control', { method:'POST', body });
+  const merchantBrand = (await merchantControl({})).data.brandId;
+  const merchantOwner = (await api('/api/v1/auth/login', {method:'POST',body:{email:'owner@example.com',password:'OwnerPassword123!'}})).data.data.accessToken;
+  const merchantRoot = '/api/v1/brand-email-settings/'+merchantBrand;
+  const merchantHeaders = {authorization:`Bearer ${merchantOwner}`,cookie:''};
+  await api(merchantRoot,{method:'PUT',headers:merchantHeaders,body:{provider:'GMAIL',fromName:'Synthetic merchant',fromEmail:'salon@gmail.com',smtpUsername:'salon@gmail.com',password:'abcdefghijklmnop'}});
+  await api(merchantRoot+'/test-email',{method:'POST',headers:merchantHeaders,body:{recipientEmail:'synthetic@example.com'}});
+  await api(merchantRoot+'/enable',{method:'PATCH',headers:merchantHeaders});
   await api('/api/v1/auth/forgot-password', { method: 'POST', body: { email: credentials.email } });
   const outbox = (await api('/__outbox')).data;
-  assert.equal(outbox.length, 1);
-  assert.match(outbox[0].html, /\d{6}/);
+  assert.equal(outbox.length, 0, 'No platform transport is used');
   await api('/api/v1/auth/forgot-password', { method: 'POST', body: { email: credentials.email }, status: 429 });
-  const otp = outbox[0].html.match(/class="otp">(\d{6})</)[1];
+  const otp = (await merchantControl({authEmail:credentials.email})).data.auth.otp;
+  assert.match(otp,/^\d{6}$/);
   const verified = await api('/api/v1/auth/verify-reset-otp', { method: 'POST', body: { email: credentials.email, otp } });
   const resetToken = verified.data.data.resetToken;
   const newPassword = 'DifferentPassword123!';

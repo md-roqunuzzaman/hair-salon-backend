@@ -845,6 +845,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
                 appointmentStatus: AppointmentStatus.CONFIRMED,
                 paymentStatus: PaymentStatus.PAID,
                 holdExpiresAt: null,
+                emailPaymentConfirmedAt: now,
 
                 // QR is generated only after successful payment.
                 qrToken,
@@ -942,6 +943,7 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
                 appointmentStatus: AppointmentStatus.RESERVED,
                 paymentStatus: PaymentStatus.PARTIALLY_PAID,
                 holdExpiresAt: null,
+                emailPaymentConfirmedAt: now,
                 qrToken,
                 qrVerifiedAt: null,
                 qrVerifiedBy: null,
@@ -2600,6 +2602,7 @@ async function handleGroupPurchaseStripeEvent(
             data: {
               paymentStatus: expectedPurchaseStatus,
               settledPaymentId: currentPayment.id,
+              emailPurchaseConfirmedAt: now,
               purchasedAt: now,
               reservationExpiresAt: null,
             },

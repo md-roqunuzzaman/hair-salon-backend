@@ -2,7 +2,7 @@ import app from "./app.js";
 import config from "./app/config/index.js";
 import { startAppointmentExpiryJob } from "./app/jobs/appointment-expiry.job.js";
 import { startGroupPurchaseExpiryJob } from "./app/jobs/group-purchase-expiry.job.js";
-import { verifyEmailConnection } from "./app/lib/nodemailer.js";
+import { startEmailOutboxJob } from "./app/jobs/email-outbox.job.js";
 import { prisma } from "./app/lib/prisma.js";
 import { connectRedis } from "./app/lib/redis.js";
 import { seedInitialData } from "./app/utils/seed.js";
@@ -21,7 +21,6 @@ const main = async () => {
     console.log("Connected to the database successfully.");
     await connectRedis();
     console.log("redis connected successfully");
-    await verifyEmailConnection();
     await seedInitialData();
     console.log("seed data created successfully");
     app.listen(PORT, () => {
@@ -30,6 +29,7 @@ const main = async () => {
       // New Group Purchase expiry job
       startGroupPurchaseExpiryJob();
       startAppointmentCompletionJob();
+      startEmailOutboxJob();
     });
   } catch (error) {
     logUnexpectedError(error, { source: "src/server.ts:39" });

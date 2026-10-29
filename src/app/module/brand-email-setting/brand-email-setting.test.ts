@@ -88,18 +88,13 @@ import { enqueueAppointmentEmail, enqueueGroupPurchaseEmail, enqueueRefundEmail 
 import { processOneBusinessEmail, processBusinessEmailBatch, recoverStaleBusinessEmails } from './brand-email-setting.outbox-processor.js';
 import { startEmailOutboxJob } from '../../jobs/email-outbox.job.js';
 
-test('retired helpers and scheduler are inert with accidental true flag and cannot access storage', async () => {
- const prior=process.env.EMAIL_OUTBOX_ENABLED;process.env.EMAIL_OUTBOX_ENABLED='true';
- const db=new Proxy({}, {get(){throw Error('Retired email touched database');}}) as Prisma.TransactionClient;
+test('legacy jobs remain blocked and disabled delivery cannot claim a job', async () => {
+ const prior=process.env.EMAIL_OUTBOX_ENABLED;process.env.EMAIL_OUTBOX_ENABLED='false';
+ const db=new Proxy({}, {get(){throw Error('Legacy eligibility accessed storage');}}) as Prisma.TransactionClient;
  try {
-  for(const eventType of EMAIL_EVENTS){
-   assert.equal(await enqueueBusinessEmail({brandId:'brand',eventType,idempotencyKey:eventType,recipientEmail:'synthetic@example.com',subject:'Synthetic',html:'Synthetic'},db),null);
-   assert.equal(await assessOutboxDelivery(db,{eventType} as EmailOutbox),'EMAIL_BUSINESS_EMAILS_RETIRED');
-  }
-  assert.equal(await enqueueAppointmentEmail(db,'id','RESERVE_NOW_RESERVED'),null);
-  assert.equal(await enqueueGroupPurchaseEmail(db,'id'),null);assert.equal(await enqueueRefundEmail(db,'id'),null);
-  assert.equal((await processOneBusinessEmail('id')).processed,false);assert.equal((await processBusinessEmailBatch()).enabled,false);assert.equal((await recoverStaleBusinessEmails()).recovered,0);
-  assert.equal(startEmailOutboxJob(),undefined);
+  for(const eventType of EMAIL_EVENTS) assert.equal(await assessOutboxDelivery(db,{eventType} as EmailOutbox),'EMAIL_LEGACY_SNAPSHOT_UNVERIFIABLE');
+  assert.equal((await processOneBusinessEmail('id')).processed,false);
+  assert.equal((await recoverStaleBusinessEmails()).recovered,0);
  } finally {if(prior===undefined)delete process.env.EMAIL_OUTBOX_ENABLED;else process.env.EMAIL_OUTBOX_ENABLED=prior;}
 });
 

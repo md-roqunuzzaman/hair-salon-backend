@@ -12,10 +12,12 @@ export interface ILoginUserPayload {
 
 export interface IForgotPasswordPayload {
   email: string;
+  brandId?: string;
 }
 
 export interface IVerifyResetOtpPayload {
   email: string;
+  brandId?: string;
   otp: string;
 }
 

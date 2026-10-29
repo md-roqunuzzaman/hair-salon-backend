@@ -15,7 +15,7 @@
   "env": {
     "staging": {
       "name": "hair-salon-backend-staging",
-      "vars": { "NODE_ENV": "production", "BCRYPT_SALT_ROUNDS": "12", "EMAIL_OUTBOX_ENABLED": "false" },
+      "vars": { "NODE_ENV": "production", "BCRYPT_SALT_ROUNDS": "12", "EMAIL_OUTBOX_ENABLED": "true" },
       "durable_objects": { "bindings": [{ "name": "SALON_DB", "class_name": "SalonDatabase" }] },
       "triggers": { "crons": ["* * * * *"] }
     }

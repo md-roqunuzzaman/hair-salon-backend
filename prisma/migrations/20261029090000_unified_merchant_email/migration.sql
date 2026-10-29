@@ -1,0 +1,14 @@
+BEGIN;
+ALTER TABLE "Notification" ADD COLUMN "emailIntent" JSONB;
+ALTER TABLE "Appointment" ADD COLUMN "emailPaymentConfirmedAt" TIMESTAMP(3);
+ALTER TABLE "GroupPurchase" ADD COLUMN "emailPurchaseConfirmedAt" TIMESTAMP(3);
+CREATE TABLE "EmailEventCursor" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "afterAt" TIMESTAMP(3),
+  "afterId" TEXT
+);
+INSERT INTO "EmailEventCursor" ("id") VALUES
+ ('RESERVATIONS'),('APPOINTMENT_PAYMENTS'),('GROUP_PAYMENTS'),
+ ('CANCELLATIONS'),('RESCHEDULES'),('REFUNDS');
+COMMIT;

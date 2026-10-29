@@ -21,20 +21,24 @@ test('merchant email configuration on Workers with mocked providers', async t =>
     await t.test(`${provider}: direct test, verify, enable, disable, rotation`, async () => {
       await mode({});
       const saved = await save({ provider, fromName: 'Salon', fromEmail: address, smtpUsername: address, password: provider === 'GMAIL' ? 'abcd efgh ijkl mnop' : 'synthetic-authorization-code' });
-      assert.equal(saved.data.isEnabled, false); assert.equal(saved.data.isVerified, false);
+      assert.equal(saved.data.isEnabled, true); assert.equal(saved.data.isVerified, false);
       assert.doesNotMatch(JSON.stringify(saved), /encryptedCredential|oauthDataEncrypted|abcdefghijklmnop|synthetic-authorization-code/);
       await owner(`${root}/enable`, { method: 'PATCH', status: 422 });
       const direct = await directTest(); assert.equal(direct.data.isVerified, true);
+      assert.equal((await read()).data.sendingStatus,'READY','Verified enabled SMTP becomes ready without a separate enable click');
       const latest = await control({}); assert.equal(latest.smtp.at(-1).host, host); assert.equal(latest.smtp.at(-1).port, 465); assert.equal(latest.smtp.at(-1).tls, 'on'); assert.equal(latest.encryptedAtRest, true);
       assert.match(latest.smtp.at(-1).from, new RegExp(address.replace('.', '\\.')));
       await owner(`${root}/enable`, { method: 'PATCH' });
       assert.equal((await business()).data.mode, 'MERCHANT');
       await owner(`${root}/disable`, { method: 'PATCH' });
       const socketsBefore = (await control({})).smtp.length;
-      assert.equal((await business()).data.mode, 'PLATFORM_DEFAULT');
+      assert.equal((await business(422)).message, 'EMAIL_DISABLED');
       assert.equal((await control({})).smtp.length, socketsBefore);
       await save({ provider, fromName: 'New sender name', fromEmail: address, smtpUsername: address });
-      assert.equal((await read()).data.setting.isVerified, false);
+      assert.equal((await read()).data.setting.isVerified, true);
+      assert.equal((await read()).data.setting.isEnabled, false,'Cosmetic edits preserve explicit disable');
+      await directTest();assert.equal((await read()).data.setting.isEnabled,false,'Successful tests cannot undo manual disable');
+      await owner(`${root}/enable`,{method:'PATCH'});
     });
   }
   await save({ provider: 'GMAIL', fromName: 'Salon', fromEmail: 'salon@gmail.com', smtpUsername: 'salon@gmail.com', password: 'abcdefghijklmnop' });
@@ -42,6 +46,8 @@ test('merchant email configuration on Workers with mocked providers', async t =>
     await mode({smtp});
     const before = (await api('/__outbox')).length;
     const error = await directTest(status); assert.equal(error.message, code); assert.doesNotMatch(JSON.stringify(error), /private|abcdefghijklmnop/);
+    assert.equal((await read()).data.setting.isEnabled,true,'Failed verification preserves enabled intent');
+    assert.equal((await read()).data.setting.isVerified,false);
     assert.equal((await api('/__outbox')).length, before);
   }
   await mode({}); await directTest(); await owner(`${root}/enable`, {method:'PATCH'});
@@ -50,7 +56,7 @@ test('merchant email configuration on Workers with mocked providers', async t =>
   await business(502);
   assert.equal((await api('/__outbox')).length, platformBeforeFailure, 'No fallback after merchant failure');
   await api('/api/v1/auth/forgot-password', { body: { email: 'book-now-customer@example.com' } });
-  assert.equal((await api('/__outbox')).length, platformBeforeFailure + 1, 'Password reset always uses platform transport');
+  assert.equal((await api('/__outbox')).length, platformBeforeFailure, 'Password reset never falls back to platform transport');
   await mode({});
   for (let i=0;i<5;i++) await directTest();
   await directTest(429);
@@ -71,7 +77,7 @@ test('merchant email configuration on Workers with mocked providers', async t =>
   await owner(`${root}/enable`, {method:'PATCH'});
   assert.equal((await business()).data.provider,'RESEND');
   await mode({domainVerified:true,http:'rate'}); await directTest(429);
-  assert.equal((await read()).data.setting.isEnabled,false);
+  assert.equal((await read()).data.setting.isEnabled,true);
   await mode({domainVerified:true,rotateDuringSend:true}); await directTest(409);
   assert.equal((await read()).data.setting.isVerified,false,'An old successful test cannot verify a changed configuration');
   await mode({});
@@ -100,5 +106,5 @@ test('merchant email configuration on Workers with mocked providers', async t =>
   await mode({}); const staleState=await start();
   await save({provider:'MICROSOFT_365',fromName:'Changed',fromEmail:'owner@tenant.example'}); await callback(staleState,409);
   await control({seedOutbox:true}); const sendsBefore=(await control({})).requests.length; await cron();
-  const final=await control({}); assert.equal(final.outbox[0].status,'PENDING'); assert.equal(final.requests.length,sendsBefore,'Outbox has no active schedule');
+  const final=await control({}); assert.ok(final.outbox.some(job=>job.status==='PENDING'),'The synthetic unsupported job remains untouched'); assert.equal(final.requests.length,sendsBefore,'Disabled delivery does not send queued mail');
 });

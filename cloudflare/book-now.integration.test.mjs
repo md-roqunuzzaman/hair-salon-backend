@@ -141,9 +141,9 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
       assert.equal(inventory.soldQuantity, index * 2); assert.equal(inventory.reservedQuantity, 0);
       const emails = (await api('/__business-email-test', {body:{}})).jobs;
       const successEmails = emails.filter(j => j.eventType === 'GROUP_PURCHASE_SUCCESSFUL' && j.idempotencyKey.endsWith(`:${id}`));
-      assert.equal(successEmails.length, 0, 'Business email integrations are retired');
+      assert.equal(successEmails.length, 0, 'Business APIs do not synchronously write email jobs; reconciliation runs separately');
       assert.equal(emails.filter(j => j.appointmentId === appointmentId && j.eventType === 'RESERVE_NOW_RESERVED').length, 0);
-      assert.equal(emails.filter(j => j.appointmentId === appointmentId && ['PAY_NOW_CONFIRMED','DEPOSIT_RECEIVED'].includes(j.eventType)).length, 0, 'Group purchases never enqueue business email');
+      assert.equal(emails.filter(j => j.appointmentId === appointmentId && ['PAY_NOW_CONFIRMED','DEPOSIT_RECEIVED'].includes(j.eventType)).length, 0, 'Group settlement does not create duplicate ordinary appointment receipts');
     });
   }
   await t.test('initial entitlement counts and redemption cannot exceed quantity', async () => {

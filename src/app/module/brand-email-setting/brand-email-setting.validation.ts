@@ -4,6 +4,8 @@ const email = z.email().max(320).transform(value => value.toLowerCase());
 const common = { fromName: z.string().trim().min(1).max(150).refine(v => !/[\r\n<>]/.test(v)), fromEmail: email };
 const password = z.string().min(1).max(4096).refine(value => !!value.trim()).optional();
 const smtpAccount = { ...common, smtpUsername: email, password };
+// Status fields are server-owned: save cannot override manual disable or forge
+// verification. Existing enable/disable endpoints remain the explicit controls.
 export const emailProviderConfigurationSchema = z.discriminatedUnion('provider', [
   z.object({ provider: z.literal('GMAIL'), ...smtpAccount }).strict(),
   z.object({ provider: z.literal('QQ'), ...smtpAccount }).strict(),

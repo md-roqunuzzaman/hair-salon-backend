@@ -1731,6 +1731,164 @@ const updateBannerMediaOrder = async (
     media: mediaWithUrls,
   };
 };
+
+const getBannerCarouselSettings = async (branchId: string) => {
+  // =====================================================
+  // 1. VERIFY BRANCH
+  // =====================================================
+
+  const branch = await prisma.branch.findUnique({
+    where: {
+      id: branchId,
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  // =====================================================
+  // 2. FETCH BRANCH CAROUSEL SETTINGS
+  // =====================================================
+
+  const settings = await prisma.bannerCarouselSetting.findUnique({
+    where: {
+      branchId,
+    },
+    select: {
+      imageIntervalMs: true,
+      videoIntervalMs: true,
+    },
+  });
+
+  // =====================================================
+  // 3. RETURN SETTINGS WITH DEFAULT FALLBACK
+  // =====================================================
+
+  return {
+    branchId: branch.id,
+    imageIntervalMs: settings?.imageIntervalMs ?? 5000,
+    videoIntervalMs: settings?.videoIntervalMs ?? 15000,
+  };
+};
+
+const updateBannerCarouselSettings = async (
+  branchId: string,
+  payload: {
+    imageIntervalMs?: number;
+    videoIntervalMs?: number;
+  },
+  actor: IBannerActor,
+) => {
+  // =====================================================
+  // 1. VERIFY USER ROLE
+  // =====================================================
+
+  if (actor.role !== Role.BRAND_OWNER && actor.role !== Role.BRANCH_MANAGER) {
+    throw new AppError(
+      "You are not authorized to update carousel settings",
+      403,
+    );
+  }
+
+  // =====================================================
+  // 2. VALIDATE PAYLOAD
+  // =====================================================
+
+  const { imageIntervalMs, videoIntervalMs } = payload;
+
+  if (imageIntervalMs === undefined && videoIntervalMs === undefined) {
+    throw new AppError("At least one carousel interval is required", 400);
+  }
+
+  for (const [field, value] of Object.entries(payload)) {
+    if (
+      value !== undefined &&
+      (!Number.isInteger(value) || value < 1000 || value > 120000)
+    ) {
+      throw new AppError(
+        `${field} must be an integer between 1000 and 120000 milliseconds`,
+        400,
+      );
+    }
+  }
+
+  // =====================================================
+  // 3. VERIFY BRANCH
+  // =====================================================
+
+  const branch = await prisma.branch.findUnique({
+    where: {
+      id: branchId,
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  // =====================================================
+  // 4. VERIFY BRANCH MANAGER ASSIGNMENT
+  // =====================================================
+
+  if (actor.role === Role.BRANCH_MANAGER) {
+    const assignment = await prisma.branchManagerBranch.findFirst({
+      where: {
+        userId: actor.userId,
+        branchId,
+      },
+      select: {
+        branchId: true,
+      },
+    });
+
+    if (!assignment) {
+      throw new AppError(
+        "You can only update carousel settings for your assigned branches",
+        403,
+      );
+    }
+  }
+
+  // =====================================================
+  // 5. CREATE OR UPDATE CAROUSEL SETTINGS
+  // =====================================================
+
+  const settings = await prisma.bannerCarouselSetting.upsert({
+    where: {
+      branchId,
+    },
+    create: {
+      branchId,
+      imageIntervalMs: imageIntervalMs ?? 5000,
+      videoIntervalMs: videoIntervalMs ?? 15000,
+    },
+    update: {
+      ...(imageIntervalMs !== undefined ? { imageIntervalMs } : {}),
+      ...(videoIntervalMs !== undefined ? { videoIntervalMs } : {}),
+    },
+  });
+
+  // =====================================================
+  // 6. RETURN UPDATED SETTINGS
+  // =====================================================
+
+  return {
+    branchId: settings.branchId,
+    imageIntervalMs: settings.imageIntervalMs,
+    videoIntervalMs: settings.videoIntervalMs,
+    updatedAt: settings.updatedAt,
+  };
+};
+
 export const bannerService = {
   createBanner,
   attachBannerMedia,
@@ -1742,4 +1900,6 @@ export const bannerService = {
   deleteBanner,
   getActiveBanners,
   updateBannerMediaOrder,
+  getBannerCarouselSettings,
+  updateBannerCarouselSettings,
 };

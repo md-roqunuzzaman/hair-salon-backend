@@ -6,6 +6,8 @@ model Notification {
   message      String
   isRead       Boolean @default(false)
   translations Json?
+  // Internal reschedule snapshot; excluded from notification API responses.
+  emailIntent  Json?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

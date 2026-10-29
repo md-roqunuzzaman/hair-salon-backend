@@ -49,7 +49,7 @@ export async function manageResendDomain(brandId: string, action: 'create' | 'ch
     capabilities: { sending: result.capabilities?.sending }, records: result.records.map(r => ({ record: r.record, name: r.name, type: r.type, value: r.value, priority: r.priority, status: r.status, ttl: r.ttl })) };
   const ready = isResendReady({ ...setting, providerData: safe as unknown as Prisma.JsonValue });
   const updated = await prisma.brandEmailSetting.updateMany({ where: { id: setting.id, configurationVersion: setting.configurationVersion, encryptedCredential: setting.encryptedCredential }, data: {
-    providerData: safe as unknown as Prisma.InputJsonValue, ...(!ready ? { isEnabled: false, isVerified: false } : {}),
+    providerData: safe as unknown as Prisma.InputJsonValue, ...(!ready ? { isVerified: false } : {}),
   } });
   if (updated.count !== 1) throw new EmailProviderError('EMAIL_CONFIGURATION_CHANGED', 409, 'CONFIGURATION');
   return { ...safe, productionReady: ready };

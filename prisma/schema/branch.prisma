@@ -1,13 +1,15 @@
 model Branch {
-  id                              String                           @id @default(uuid())
-  name                            String
-  address                         String
-  phone                           String?
-  description                     String?
-  imageObjectKey                  String?
-  translations                    Json?
-  latitude                        Float?
-  longitude                       Float?
+  id             String  @id @default(uuid())
+  name           String
+  address        String
+  phone          String?
+  description    String?
+  imageObjectKey String?
+  translations   Json?
+  latitude       Float?
+  longitude      Float?
+
+  bannerCarouselSettings          BannerCarouselSetting[]
   status                          BranchStatus                     @default(ACTIVE)
   bookingPolicy                   BranchBookingPolicy?
   businessHours                   BranchBusinessHour[]
@@ -24,9 +26,10 @@ model Branch {
   cancellationPolicy              BranchCancellationPolicy?
   groupPurchaseRefundPolicy       GroupPurchaseRefundPolicy?
   groupPurchaseCancellationPolicy GroupPurchaseCancellationPolicy?
-  policyPurchases                 GroupPurchase[]                  @relation("PurchasePolicyBranch")
-  createdAt                       DateTime                         @default(now())
-  updatedAt                       DateTime                         @updatedAt
+
+  policyPurchases GroupPurchase[] @relation("PurchasePolicyBranch")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 }
 
 model BranchBusinessHour {

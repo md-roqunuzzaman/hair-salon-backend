@@ -38,7 +38,7 @@ export class DatabaseFixture {
         smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecure: true,
         encryptedCredential: 'test-ciphertext', oauthDataEncrypted: 'test-oauth-ciphertext',
       } });
-      if (emailSetting.isEnabled || emailSetting.isVerified || emailSetting.smtpUsername !== null) throw new Error('Brand email defaults failed');
+      if (!emailSetting.isEnabled || emailSetting.isVerified || emailSetting.smtpUsername !== null) throw new Error('Brand email defaults failed');
       for (const provider of ['GMAIL', 'MICROSOFT_365', 'QQ', 'NETEASE_163', 'CUSTOM_SMTP', 'RESEND']) {
         await db.brandEmailSetting.update({ where: { brandId: emailBrand.id }, data: { provider } });
         const roundtrip = await db.brand.findUnique({ where: { id: emailBrand.id }, include: { emailSetting: true } });

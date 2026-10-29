@@ -1,6 +1,6 @@
 # Cloudflare deployment
 
-**v24 product policy:** automatic business emails are retired. Worker/Node schedulers no longer run email batches; retained enqueue/process helpers cannot be reactivated by EMAIL_OUTBOX_ENABLED. Keep both environment flags false. Preserve platform OTP/reset and in-app notifications. Use [the current v24 rollout gates](../docs/transactional-email-system.md); older activation instructions below are superseded.
+**Current v26 local candidate:** [unified merchant-only email](../docs/unified-merchant-email-system.md) adds enabled/unverified defaults for new configurations while preserving existing owner choices. All authentication and business mail uses the single merchant without platform fallback; sending still requires enabled, verified and provider/runtime readiness. Old skipped/uncertain records never replay. Staging's outbox flag was separately approved true; production remains false. This v26 defaults update is local only and is not deployment or real-send approval. See the dated activation/default sections in the linked guide; older false-flag/retirement instructions below are historical.
 
 For the permanent v23 Email Outbox upgrade, follow the staging-only, delivery-disabled procedure in [transactional-email-system.md](../docs/transactional-email-system.md#permanent-outbox-management-upgrade-v23-local-candidate). This implementation does not authorize deployment, secret rotation, production rollout or real email delivery. Old generic deployment examples below are not activation approval.
 

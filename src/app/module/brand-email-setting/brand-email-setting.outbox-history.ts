@@ -5,7 +5,8 @@ export async function transitionOutbox(tx: Prisma.TransactionClient, where: Pris
   const changed = await tx.emailOutbox.updateMany({ where, data });
   if (!changed.count) return false;
   const job = await tx.emailOutbox.findUniqueOrThrow({ where: { id: String(where.id) } });
-  const sequence = await tx.emailOutboxHistory.count({ where: { outboxId: job.id } });
+  const last = await tx.emailOutboxHistory.findFirst({ where: { outboxId: job.id }, orderBy: { sequence: 'desc' }, select: { sequence: true } });
+  const sequence = (last?.sequence ?? -1) + 1;
   await tx.emailOutboxHistory.create({ data: { outboxId: job.id, sequence, status: job.status, attempt: job.attempts, provider: job.provider, code, actorId } });
   return true;
 }

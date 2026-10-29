@@ -693,6 +693,7 @@ const payAppointmentWithWallet = async (
               paymentStatus: PaymentStatus.PAID,
               appointmentStatus: AppointmentStatus.CONFIRMED,
               holdExpiresAt: null,
+              emailPaymentConfirmedAt: now,
 
               // QR is available only after successful payment.
               qrToken,
@@ -1009,6 +1010,7 @@ const payGroupPurchaseWithWallet = async (
             data: {
               paymentStatus: nextPurchaseStatus,
               settledPaymentId: payment.id,
+              emailPurchaseConfirmedAt: now,
               purchasedAt: now,
               reservationExpiresAt: null,
             },

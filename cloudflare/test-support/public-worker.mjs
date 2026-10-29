@@ -37,6 +37,7 @@ export async function setup(t, flag, emailOutboxEnabled = 'false') {
   };
   const cron = async () => { const namespace = await mf.getDurableObjectNamespace('SALON_DB'); const response = await namespace.get(namespace.idFromName('salon-v1')).fetch('https://internal/__internal/cron'); assert.equal(response.status, 200, await response.text()); };
   const scheduled = async () => { const worker = await mf.getWorker(); const event = await worker.scheduled({ cron: '* * * * *' }); assert.equal(event.outcome, 'ok'); };
-  return { api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron, scheduled };
+  const direct = async (path,body) => {const namespace=await mf.getDurableObjectNamespace('SALON_DB');const response=await namespace.get(namespace.idFromName('salon-v1')).fetch('https://internal'+path,{method:'POST',body:JSON.stringify(body)});return response.json();};
+  return { api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron, scheduled, direct };
 }
 

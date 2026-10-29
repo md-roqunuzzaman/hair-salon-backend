@@ -13,10 +13,11 @@ model Appointment {
   appointmentStatus AppointmentStatus
   paymentStatus     PaymentStatus
 
-  date      DateTime
-  startTime String
-  endTime   String
-  emailScheduleRevision Int @default(0)
+  date                    DateTime
+  startTime               String
+  endTime                 String
+  emailScheduleRevision   Int       @default(0)
+  emailPaymentConfirmedAt DateTime?
 
   price           Decimal @db.Decimal(10, 2)
   currency        String  @default("HKD")

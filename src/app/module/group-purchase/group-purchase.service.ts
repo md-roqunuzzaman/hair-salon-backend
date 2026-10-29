@@ -2158,6 +2158,7 @@ export const recordGroupPurchaseRemainingPayment = async (
             },
             data: {
               paymentStatus: PaymentStatus.PAID,
+              ...(expectedPaymentStatus === PaymentStatus.UNPAID ? { emailPurchaseConfirmedAt: now } : {}),
             },
           });
 

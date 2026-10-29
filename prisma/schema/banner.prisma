@@ -56,3 +56,19 @@ model BannerMedia {
 
   @@index([bannerId, sortOrder])
 }
+
+model BannerCarouselSetting {
+  id String @id @default(uuid())
+
+  branchId String @unique
+
+  imageIntervalMs Int @default(5000)
+  videoIntervalMs Int @default(15000)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch  Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  brand   Brand?  @relation(fields: [brandId], references: [id])
+  brandId String?
+}

@@ -69,7 +69,9 @@ const emailProviderConfiguration = await readFile('cloudflare/migrations/0021_em
 const emailOutboxFence = await readFile('cloudflare/migrations/0022_email_outbox_delivery_fence.sql', 'utf8');
 const emailOutboxManagement = await readFile('cloudflare/migrations/0023_email_outbox_management.sql', 'utf8');
 const businessEmailRetirement = await readFile('cloudflare/migrations/0024_retire_business_email_events.sql', 'utf8');
-const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence, emailOutboxManagement, businessEmailRetirement].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+const unifiedMerchantEmail = await readFile('cloudflare/migrations/0025_unified_merchant_email.sql', 'utf8');
+const emailEnabledDefault = await readFile('cloudflare/migrations/0026_email_enabled_default.sql', 'utf8');
+const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence, emailOutboxManagement, businessEmailRetirement, unifiedMerchantEmail, emailEnabledDefault].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);

@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Merchant Email Configuration - Manual Only",
-    "description": "Automatic business email retired (v24). Owner inspection/configuration and explicit manual provider tests only. Never run this collection as a batch: some requests send real emails, change configuration, or skip jobs. No customer operation should call test-email.",
+    "description": "Unified merchant-only mail (v25): authentication and seven new business events use the single deployment merchant without platform fallback. Business delivery remains disabled. Owner inspection/configuration and explicit manual provider tests only. Never run as a batch: requests can send real emails, change configuration or skip jobs. Customer operations never call test-email. See unified-merchant-email-system.md.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -403,7 +403,7 @@
             "outbox"
           ]
         },
-        "description": "Owner-only latest 100 job metadata. Does not process, retry, enable, or send email. See transactional-email-system.md. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available."
+        "description": "Owner-only paginated metadata, including AUTH_PASSWORD_RESET_OTP and AUTH_PASSWORD_RESET_SUCCESS filters. Does not process, retry, enable or send. Bodies and credentials are excluded. See unified-merchant-email-system.md."
       }
     },
     {
@@ -412,7 +412,7 @@
         "method": "GET",
         "header": [],
         "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/outbox/audit?status=PENDING&page=1&limit=100",
-        "description": "Traverse all pages; eligibility applies to the current page only. No emails or database writes. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available."
+        "description": "Traverse all pages; eligibility applies to the current page only. ELIGIBLE/STALE/BLOCKED is current business-record validation, not provider readiness or inbox proof. No emails or database writes. Legacy snapshots stay blocked; old terminal records never replay."
       },
       "response": []
     },
@@ -422,7 +422,7 @@
         "method": "GET",
         "header": [],
         "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/outbox/{{outboxJobId}}",
-        "description": "Safe metadata only. Non-pending eligibility does not authorize replay. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available."
+        "description": "Safe metadata only. Non-pending eligibility never authorizes replay. Direct security jobs are not eligible for automatic business processing."
       },
       "response": []
     },
@@ -432,7 +432,7 @@
         "method": "GET",
         "header": [],
         "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/outbox/{{outboxJobId}}/history?page=1&limit=100",
-        "description": "Recorded transitions only; legacy attempts are not reconstructed. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available."
+        "description": "Recorded transitions only; legacy attempts are not reconstructed. SENT means provider acceptance, not inbox delivery. No request retries or sends a message."
       },
       "response": []
     },
@@ -447,7 +447,7 @@
           }
         ],
         "url": "{{baseUrl}}/api/v1/brand-email-settings/{{brandId}}/outbox/{{outboxJobId}}/skip",
-        "description": "MANUAL OWNER ACTION: terminal suppression; never sends. Do not run the entire collection. Requires a pending job without an active lease. Current v24 policy: automatic delivery is retired; pending audit disposition is RETIRED, not send-eligible. History and records remain available.",
+        "description": "MANUAL OWNER ACTION: terminal suppression; never sends. Requires PENDING with matching attempt count and no active lease. Uncertain deliveries cannot be skipped or replayed by this endpoint. Do not run the entire collection.",
         "body": {
           "mode": "raw",
           "raw": "{\n  \"reason\": \"TEST_ONLY\"\n}",

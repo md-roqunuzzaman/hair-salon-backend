@@ -286,6 +286,26 @@ const updateBannerMediaOrderValidationSchema = z.object({
     })
     .strict(),
 });
+
+const updateBannerCarouselSettingsValidationSchema = z.object({
+  params: z.object({
+    branchId: z.uuid(),
+  }),
+  body: z
+    .object({
+      imageIntervalMs: z.number().int().min(1000).max(120000).optional(),
+      videoIntervalMs: z.number().int().min(1000).max(120000).optional(),
+    })
+    .strict()
+    .refine(
+      (data) =>
+        data.imageIntervalMs !== undefined ||
+        data.videoIntervalMs !== undefined,
+      {
+        message: "At least one carousel interval is required",
+      },
+    ),
+});
 export const bannerValidation = {
   createBannerValidationSchema,
   attachBannerMediaValidationSchema,
@@ -297,4 +317,5 @@ export const bannerValidation = {
   deleteBannerValidationSchema,
   getActiveBannersValidationSchema,
   updateBannerMediaOrderValidationSchema,
+  updateBannerCarouselSettingsValidationSchema,
 };

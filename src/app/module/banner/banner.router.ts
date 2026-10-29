@@ -108,4 +108,27 @@ router.patch(
   validateRequest(bannerValidation.updateBannerMediaOrderValidationSchema),
   bannerController.updateBannerMediaOrder,
 );
+
+// =====================================================
+// API 11 — GET BRANCH CAROUSEL SETTINGS
+// =====================================================
+
+router.get(
+  "/carousel-settings/:branchId",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  bannerController.getBannerCarouselSettings,
+);
+
+// =====================================================
+// API 12 — UPDATE BRANCH CAROUSEL SETTINGS
+// =====================================================
+
+router.patch(
+  "/carousel-settings/:branchId",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  validateRequest(
+    bannerValidation.updateBannerCarouselSettingsValidationSchema,
+  ),
+  bannerController.updateBannerCarouselSettings,
+);
 export const BannerRoutes = router;

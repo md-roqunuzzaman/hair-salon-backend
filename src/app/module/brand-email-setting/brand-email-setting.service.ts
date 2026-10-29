@@ -1,7 +1,7 @@
 import { Prisma } from '../../../../generated/prisma/client.js';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../utils/app-error.js';
-import { encryptEmailCredential } from '../../utils/email-credential-crypto.js';
+import { encryptEmailCredential, decryptEmailCredential } from '../../utils/email-credential-crypto.js';
 import type { TEmailProviderConfiguration } from './brand-email-setting.validation.js';
 import { emailProviderConfigurationSchema } from './brand-email-setting.validation.js';
 import { SMTP_HOSTS } from './brand-email-setting.transport.js';
@@ -48,22 +48,38 @@ export const saveBrandEmailSetting = async (brandId: string, raw: TEmailProvider
     } else if (sameProvider && existing?.encryptedCredential) encryptedCredential = existing.encryptedCredential;
     else throw new AppError('New provider credentials are required', 422);
   }
+  let credentialChanged = !!secret;
+  if (secret && sameProvider && existing?.encryptedCredential) {
+    try { credentialChanged = decryptEmailCredential(existing.encryptedCredential) !== secret; }
+    catch { credentialChanged = true; }
+  }
+  const deliveryChanged = !existing || !sameProvider || credentialChanged ||
+    existing.fromEmail !== payload.fromEmail || existing.smtpHost !== smtpHost ||
+    existing.smtpPort !== smtpPort || existing.smtpSecure !== smtpSecure || existing.smtpUsername !== smtpUsername;
   const fields = {
     provider: payload.provider, fromName: payload.fromName, fromEmail: payload.fromEmail,
-    smtpHost, smtpPort, smtpSecure, smtpUsername, encryptedCredential, oauthDataEncrypted: null,
-    isEnabled: false, isVerified: false, providerData: Prisma.DbNull, lastTestAt: null, lastErrorCode: null,
+    smtpHost, smtpPort, smtpSecure, smtpUsername, encryptedCredential,
+    // Enabled is owner intent, verification is transport readiness. Only explicit
+    // enable/disable controls change an existing merchant's intent.
+    isEnabled: existing?.isEnabled ?? true,
+    ...(deliveryChanged ? { oauthDataEncrypted: null, isVerified: false, providerData: Prisma.DbNull, lastTestAt: null, lastErrorCode: null } : {}),
   };
   // Compare versions so concurrent credential rotations never overwrite each other.
   if (existing) {
-    const changed = await prisma.brandEmailSetting.updateMany({ where: { id: existing.id, configurationVersion: existing.configurationVersion }, data: { ...fields, configurationVersion: { increment: 1 } } });
+    const changed = await prisma.brandEmailSetting.updateMany({ where: { id: existing.id, configurationVersion: existing.configurationVersion, isEnabled: existing.isEnabled }, data: { ...fields, configurationVersion: { increment: 1 } } });
     if (changed.count !== 1) throw new AppError('Email configuration changed. Please retry.', 409);
     return prisma.brandEmailSetting.findUnique({ where: { brandId }, select: safeEmailSettingSelect });
   }
   return prisma.brandEmailSetting.create({ data: { brandId, ...fields }, select: safeEmailSettingSelect });
 };
 export const getBrandEmailSetting = async (brandId: string) => {
-  const setting = await prisma.brandEmailSetting.findUnique({ where: { brandId }, select: safeEmailSettingSelect });
+  const current = await prisma.brandEmailSetting.findUnique({ where: { brandId } });
+  // Read credential presence internally for readiness, but return only the
+  // existing public allowlist. Never serialize tokens or encrypted credentials.
+  const setting = current ? Object.fromEntries(Object.keys(safeEmailSettingSelect).map(key => [key, current[key as keyof typeof current]])) : null;
   return { configurationMode: setting ? 'MERCHANT' : 'PLATFORM_DEFAULT', isConfigured: !!setting, provider: setting?.provider ?? null, setting,
+    defaults: { isEnabled: true, isVerified: false },
+    sendingStatus: !current ? 'EMAIL_NOT_CONFIGURED' : !current.isEnabled ? 'EMAIL_DISABLED' : !current.isVerified ? 'EMAIL_NOT_VERIFIED' : isProductionReady(current) ? 'READY' : 'EMAIL_PROVIDER_NOT_READY',
     runtimeCapabilities: { customSmtp: customSmtpSupported, fixedProviderSmtp: true, microsoftGraph: true, resend: true } };
 };
 export const enableBrandEmailSetting = async (brandId: string) => {

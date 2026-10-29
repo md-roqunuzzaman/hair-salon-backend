@@ -1,34 +1,14 @@
-import { logUnexpectedError } from "../utils/normalize-error.js";
-import nodemailer from "nodemailer";
-import config from "../config/index.js";
+import { resolveEmailBrand, sendBusinessEmail, resolveBusinessEmailDelivery } from '../module/brand-email-setting/brand-email-setting.sender.js';
 
-export const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.gmail.com",
-  port: Number(process.env.SMTP_PORT || 465),
-  secure: Number(process.env.SMTP_PORT || 465) === 465,
-
-  requireTLS: true,
-
-  auth: {
-    user: config.smtp_user,
-    pass: config.smtp_password,
+// Compatibility adapter for old imports. It cannot use platform SMTP credentials.
+export const transporter = {
+  async sendMail(message: { to: string; subject: string; html?: string; text?: string; from?: unknown }) {
+    const result = await sendBusinessEmail({ ...message, brandId: await resolveEmailBrand() });
+    return { ...result, accepted: [message.to] };
   },
-
-  connectionTimeout: 30000,
-  greetingTimeout: 15000,
-  socketTimeout: 30000,
-});
-
-export const verifyEmailConnection = async () => {
-  try {
-    await transporter.verify();
-
-    console.log("SMTP connected successfully");
-
-    return true;
-  } catch (error) {
-    logUnexpectedError(error, { source: "src/app/lib/nodemailer.ts:29" });
-
-    return false;
-  }
 };
+// Configuration readiness only; not a claim of remote SMTP connectivity/delivery.
+export async function verifyEmailConnection() {
+  try { await resolveBusinessEmailDelivery({ brandId: await resolveEmailBrand(), to:'readiness@example.com', subject:'Readiness only' }); return true; }
+  catch { return false; }
+}

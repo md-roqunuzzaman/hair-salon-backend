@@ -1,9 +1,17 @@
 // Disposable integration fixtures only; no production entry imports this file.
 import { processOneBusinessEmail, processBusinessEmailBatch, recoverStaleBusinessEmails } from '../../src/app/module/brand-email-setting/brand-email-setting.outbox-processor.ts';
-import { enqueueAppointmentEmail, enqueueRefundEmail } from '../../src/app/module/brand-email-setting/brand-email-setting.events.ts';
+import { enqueueAppointmentEmail, enqueueRefundEmail, collectBusinessEmailEvents } from '../../src/app/module/brand-email-setting/brand-email-setting.events.ts';
 import { setEmailMockOnData } from './email-test-fixture.mjs';
 
 export async function businessEmailTestControl(db, storage, body) {
+  if (body.collect) return collectBusinessEmailEvents();
+  if (body.failSettingRead !== undefined) storage.sql.exec(body.failSettingRead
+    ? 'ALTER TABLE BrandEmailSetting RENAME TO _TestUnavailableBrandEmailSetting'
+    : 'ALTER TABLE _TestUnavailableBrandEmailSetting RENAME TO BrandEmailSetting');
+  if (body.failEmailStorage !== undefined) {
+    storage.sql.exec('DROP TRIGGER IF EXISTS test_email_insert_failure');
+    if (body.failEmailStorage) storage.sql.exec("CREATE TRIGGER test_email_insert_failure BEFORE INSERT ON EmailOutbox BEGIN SELECT RAISE(ABORT,'synthetic email storage failure'); END");
+  }
   if (body.appointmentPatch) await db.appointment.update({where:{id:body.appointmentPatch.id},data:body.appointmentPatch.data});
   if (body.failHistory !== undefined) {
     storage.sql.exec('DROP TRIGGER IF EXISTS test_email_history_failure');

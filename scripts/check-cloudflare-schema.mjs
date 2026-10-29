@@ -45,6 +45,8 @@ try {
   await apply(actual, await readFile('cloudflare/migrations/0022_email_outbox_delivery_fence.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0023_email_outbox_management.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0024_retire_business_email_events.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0025_unified_merchant_email.sql', 'utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0026_email_enabled_default.sql', 'utf8'));
   // v16 enforces this required field with triggers to retain the referenced table.
   // Verify both exact definitions before treating their enforcement as NOT NULL.
   for (const trigger of requiredTriggers) {

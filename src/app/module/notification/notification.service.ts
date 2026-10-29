@@ -70,6 +70,7 @@ const createNotification = async (
       type: payload.type,
       title: payload.title,
       message: payload.message,
+      ...(payload.emailIntent ? { emailIntent: payload.emailIntent as Prisma.InputJsonObject } : {}),
 
       ...(payload.translations !== undefined && {
         translations: {

@@ -78,10 +78,10 @@ export async function finishMicrosoftAuthorization(state: string, code?: string,
   const account = await identity(data.access_token, setting.fromEmail);
   const tokens: Tokens = { ...account, accessToken: data.access_token, refreshToken: data.refresh_token, expiresAt: Date.now() + data.expires_in * 1000 };
   const updated = await prisma.brandEmailSetting.updateMany({ where: { id: setting.id, configurationVersion: setting.configurationVersion, provider: 'MICROSOFT_365' }, data: {
-    oauthDataEncrypted: encryptEmailCredential(JSON.stringify(tokens)), isEnabled: false, isVerified: true, lastErrorCode: null, configurationVersion: { increment: 1 },
+    oauthDataEncrypted: encryptEmailCredential(JSON.stringify(tokens)), isVerified: true, lastErrorCode: null, configurationVersion: { increment: 1 },
   } });
   if (updated.count !== 1) throw new EmailProviderError('EMAIL_CONFIGURATION_CHANGED', 409, 'CONFIGURATION');
-  return { provider: 'MICROSOFT_365', isVerified: true, isEnabled: false, accountEmail: account.email };
+  return { provider: 'MICROSOFT_365', isVerified: true, isEnabled: setting.isEnabled, accountEmail: account.email };
 }
 const refreshing = new Map<string, Promise<Tokens>>();
 async function refresh(setting: BrandEmailSetting): Promise<Tokens> {
@@ -100,7 +100,7 @@ async function refresh(setting: BrandEmailSetting): Promise<Tokens> {
       return next;
     } catch (error) {
       if (error instanceof EmailProviderError && (error.code === 'EMAIL_MICROSOFT_REAUTHORIZE' || error.code === 'EMAIL_PROVIDER_AUTHORIZATION_FAILED' || error.code === 'EMAIL_MICROSOFT_IDENTITY_MISMATCH')) {
-        await prisma.brandEmailSetting.updateMany({ where: { id: setting.id, configurationVersion: setting.configurationVersion, oauthDataEncrypted: setting.oauthDataEncrypted }, data: { isEnabled: false, isVerified: false, lastErrorCode: 'EMAIL_MICROSOFT_REAUTHORIZE' } });
+        await prisma.brandEmailSetting.updateMany({ where: { id: setting.id, configurationVersion: setting.configurationVersion, oauthDataEncrypted: setting.oauthDataEncrypted }, data: { isVerified: false, lastErrorCode: 'EMAIL_MICROSOFT_REAUTHORIZE' } });
       }
       throw error;
     }
@@ -119,7 +119,7 @@ export async function sendMicrosoftEmail(setting: BrandEmailSetting, message: Em
   let response: Response;
   try { response = await emailProviderRequest('https://graph.microsoft.com/v1.0/me/sendMail', { method: 'POST', headers: { Authorization: `Bearer ${tokens.accessToken}`, 'Content-Type': 'text/plain' }, body: mime.toString('base64') }, true); } catch (error) {
     if (error instanceof EmailProviderError && (error.providerStatus === 401 || error.providerStatus === 403)) {
-      await prisma.brandEmailSetting.updateMany({ where: { id: setting.id, configurationVersion: setting.configurationVersion }, data: { isEnabled: false, isVerified: false, lastErrorCode: 'EMAIL_MICROSOFT_REAUTHORIZE' } });
+      await prisma.brandEmailSetting.updateMany({ where: { id: setting.id, configurationVersion: setting.configurationVersion }, data: { isVerified: false, lastErrorCode: 'EMAIL_MICROSOFT_REAUTHORIZE' } });
     }
     throw error;
   }

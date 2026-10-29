@@ -48,12 +48,14 @@ const LoginZodSchema = z.object({
 const forgotPasswordValidationSchema = z.object({
   body: z.object({
     email: z.email("Invalid email address"),
+    brandId: z.uuid().optional(),
   }),
 });
 
 const verifyResetOtpValidationSchema = z.object({
   body: z.object({
     email: z.email("Invalid email address"),
+    brandId: z.uuid().optional(),
 
     otp: z.string().regex(/^\d{6}$/, "OTP must be exactly 6 digits"),
   }),

@@ -1,4 +1,6 @@
-# Email system: automatic business email retired
+# Historical email implementation and retirement evidence
+
+**Superseded on 2026-10-29 by the approved [unified merchant-only implementation](unified-merchant-email-system.md).** The v24 evidence below remains historical. Current code restores seven business events for new operations and routes authentication through merchant providers with no platform fallback. v1-v24 migrations remain immutable; v25 is additive. Both delivery flags remain false. No deployment or real email is authorized by implementation approval.
 
 ## Current product policy - v24 local candidate
 

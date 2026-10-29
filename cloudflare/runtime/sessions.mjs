@@ -15,6 +15,7 @@ export class Sessions {
   }
   async get(key) { return this.read(key)?.value ?? null; }
   async set(key, value, options = {}) {
+    if (options.NX && this.read(key)) return null;
     const seconds = options.EX ?? (options.expiration?.type === 'EX' ? options.expiration.value : undefined);
     if (seconds !== undefined && (!Number.isInteger(seconds) || seconds <= 0)) throw new Error('Invalid session expiry');
     const expires = seconds === undefined ? null : Date.now() + seconds * 1000;

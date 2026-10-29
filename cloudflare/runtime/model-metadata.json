@@ -108,6 +108,7 @@
       "startTime": "String",
       "endTime": "String",
       "emailScheduleRevision": "Int",
+      "emailPaymentConfirmedAt": "DateTime",
       "price": "Decimal",
       "currency": "String",
       "durationMinutes": "Int",
@@ -419,6 +420,17 @@
       "createdAt": "DateTime"
     }
   },
+  "EmailEventCursor": {
+    "money": {},
+    "relations": {},
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "startedAt": "DateTime",
+      "afterAt": "DateTime",
+      "afterId": "String"
+    }
+  },
   "GroupPurchase": {
     "money": {
       "unitPrice": {
@@ -452,6 +464,7 @@
     },
     "arrays": [],
     "scalars": {
+      "emailPurchaseConfirmedAt": "DateTime",
       "id": "String",
       "customerId": "String",
       "packageId": "String",
@@ -492,6 +505,7 @@
       "message": "String",
       "isRead": "Boolean",
       "translations": "Json",
+      "emailIntent": "Json",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }

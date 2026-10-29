@@ -7,16 +7,18 @@ model Brand {
   logoObjectKey String?
   translations  Json?
   banners       Banner[]
+  // Banner carousel override settings
 
-  primaryColor    String             @default("#0F766E")
-  secondaryColor  String             @default("#B45309")
-  backgroundColor String             @default("#F3F1EA")
-  surfaceColor    String             @default("#FBFAF6")
-  textColor       String             @default("#1A1813")
-  mutedTextColor  String             @default("#8B8676")
-  lineColor       String             @default("#E2DED3")
-  onPrimaryColor  String             @default("#FFFFFF")
-  emailSetting    BrandEmailSetting?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  primaryColor           String                  @default("#0F766E")
+  secondaryColor         String                  @default("#B45309")
+  backgroundColor        String                  @default("#F3F1EA")
+  surfaceColor           String                  @default("#FBFAF6")
+  textColor              String                  @default("#1A1813")
+  mutedTextColor         String                  @default("#8B8676")
+  lineColor              String                  @default("#E2DED3")
+  onPrimaryColor         String                  @default("#FFFFFF")
+  emailSetting           BrandEmailSetting?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  bannerCarouselSettings BannerCarouselSetting[]
 }

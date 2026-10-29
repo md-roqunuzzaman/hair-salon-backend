@@ -1,40 +1,40 @@
 import { prisma } from '../../lib/prisma.js';
-import { transporter } from '../../lib/nodemailer.js';
-import config from '../../config/index.js';
 import { sendConfiguredEmail, isProductionReady } from './brand-email-setting.providers.js';
 import { logEmailFailure, EmailProviderError } from './brand-email-setting.errors.js';
 import { z } from 'zod';
 
-type TBusinessEmailPayload = { brandId: string; to: string; subject: string; html: string; text?: string; previousProvider?: string | null };
-export const sendBusinessEmail = async (payload: TBusinessEmailPayload) => {
-  return (await resolveBusinessEmailDelivery(payload)).send();
-};
-
-export const resolveBusinessEmailDelivery = async (payload: TBusinessEmailPayload) => {
+// This deployment/database is the tenant boundary, never the recipient address.
+export async function resolveEmailBrand(requestedBrandId?: string) {
+  const brands = await prisma.brand.findMany({ select: { id: true }, take: 2 });
+  if (brands.length !== 1 || (requestedBrandId && requestedBrandId !== brands[0]!.id)) throw new EmailProviderError('EMAIL_BRAND_CONTEXT_INVALID', 422, 'CONFIGURATION');
+  return brands[0]!.id;
+}
+type Payload = { brandId: string; to: string; subject: string; html?: string; text?: string; previousProvider?: string | null };
+export const resolveBusinessEmailDelivery = async (payload: Payload, configurationTest = false) => {
   const recipient = z.email().safeParse(payload.to);
   if (!recipient.success) throw new EmailProviderError('EMAIL_RECIPIENT_INVALID', 422, 'CONFIGURATION');
-  const to = recipient.data;
-  const brands = await prisma.brand.findMany({ select: { id: true }, take: 2 });
-  if (brands.length !== 1 || brands[0]!.id !== payload.brandId) throw new EmailProviderError('EMAIL_BRAND_CONTEXT_INVALID', 422, 'CONFIGURATION');
+  await resolveEmailBrand(payload.brandId);
   const setting = await prisma.brandEmailSetting.findUnique({ where: { brandId: payload.brandId } });
-  const message = { to, subject: payload.subject, html: payload.html, text: payload.text };
-  const merchantReady = !!setting && setting.isEnabled && setting.isVerified && isProductionReady(setting);
-  const provider = merchantReady ? setting.provider : 'PLATFORM_SMTP';
-  if (payload.previousProvider && payload.previousProvider !== provider) throw new EmailProviderError('EMAIL_RETRY_PROVIDER_CHANGED', 422, 'CONFIGURATION');
-  if (!merchantReady) {
-    return { provider: 'PLATFORM_SMTP', send: async () => {
-      const result = await transporter.sendMail({ ...message, from: config.email_sender });
-      return { success: true, mode: 'PLATFORM_DEFAULT' as const, provider: 'PLATFORM_SMTP', messageId: result.messageId };
-    } };
+  if (!setting) throw new EmailProviderError('EMAIL_NOT_CONFIGURED', 422, 'CONFIGURATION');
+  // The owner-only configuration test must be able to verify a disabled setting.
+  if (!configurationTest) {
+    if (!setting.isEnabled) throw new EmailProviderError('EMAIL_DISABLED', 422, 'CONFIGURATION');
+    if (!setting.isVerified) throw new EmailProviderError('EMAIL_NOT_VERIFIED', 422, 'CONFIGURATION');
+    if (!isProductionReady(setting)) throw new EmailProviderError('EMAIL_PROVIDER_NOT_READY', 422, 'CONFIGURATION');
   }
-  return { provider: setting.provider, send: async () => { try {
-    const result = await sendConfiguredEmail(setting, message);
-    return { success: true, mode: 'MERCHANT' as const, provider: setting.provider, messageId: result.messageId };
-  } catch (error) {
-    const safe = logEmailFailure(setting.provider, error, setting);
-    if (safe.code === 'EMAIL_PROVIDER_AUTHORIZATION_FAILED' || safe.code === 'EMAIL_AUTHENTICATION_FAILED') {
-      await prisma.brandEmailSetting.updateMany({ where: { id: setting.id, configurationVersion: setting.configurationVersion }, data: { isEnabled: false, isVerified: false, lastErrorCode: safe.code } });
+  if (payload.previousProvider && payload.previousProvider !== setting.provider) throw new EmailProviderError('EMAIL_RETRY_PROVIDER_CHANGED', 422, 'CONFIGURATION');
+  const message = { to: recipient.data, subject: payload.subject, html: payload.html, text: payload.text };
+  return { provider: setting.provider, setting, send: async () => {
+    const current = await prisma.brandEmailSetting.findUnique({ where: { brandId: payload.brandId } });
+    if (!current || current.configurationVersion !== setting.configurationVersion || (!configurationTest && (!current.isEnabled || !current.isVerified))) throw new EmailProviderError('EMAIL_CONFIGURATION_CHANGED', 409, 'CONFIGURATION');
+    try {
+      const result = await sendConfiguredEmail(setting, message, configurationTest);
+      return { success: true, mode: 'MERCHANT' as const, provider: setting.provider, messageId: result.messageId };
+    } catch (error) {
+      const safe = logEmailFailure(setting.provider, error, setting);
+      if (safe.code === 'EMAIL_PROVIDER_AUTHORIZATION_FAILED' || safe.code === 'EMAIL_AUTHENTICATION_FAILED') await prisma.brandEmailSetting.updateMany({ where: { id: setting.id, configurationVersion: setting.configurationVersion }, data: { isVerified: false, lastErrorCode: safe.code } });
+      throw safe;
     }
-    throw safe; // Never fall back after an attempted merchant send.
-  } } };
+  } };
 };
+export const sendBusinessEmail = async (payload: Payload) => (await resolveBusinessEmailDelivery(payload)).send();

@@ -33,4 +33,5 @@ export interface ICreateNotificationPayload {
   // Internal event context; never persisted as customer notification content.
   appointmentId?: string;
   previousStaffId?: string;
+  emailIntent?: { appointmentId: string; previous: { date: string; startTime: string; endTime: string; staffId: string }; target: { date: string; startTime: string; endTime: string; staffId: string; revision: number } };
 }

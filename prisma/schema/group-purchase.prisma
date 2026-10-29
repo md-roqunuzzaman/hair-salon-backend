@@ -1,9 +1,10 @@
 model GroupPurchase {
-  id               String  @id @default(uuid())
-  customerId       String
-  packageId        String
-  purchaseBranchId String?
-  purchaseBranch   Branch? @relation("PurchasePolicyBranch", fields: [purchaseBranchId], references: [id], onDelete: Restrict)
+  emailPurchaseConfirmedAt DateTime?
+  id                       String    @id @default(uuid())
+  customerId               String
+  packageId                String
+  purchaseBranchId         String?
+  purchaseBranch           Branch?   @relation("PurchasePolicyBranch", fields: [purchaseBranchId], references: [id], onDelete: Restrict)
 
   quantity  Int
   unitPrice Decimal @db.Decimal(10, 2)

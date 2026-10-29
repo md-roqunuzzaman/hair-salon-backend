@@ -53,7 +53,11 @@ export class SalonTestDatabase extends SalonDatabase {
     if (url.pathname === '/__email-cron-failure') {
       const original = appointmentService.expirePendingAppointments;
       appointmentService.expirePendingAppointments = async () => { throw new Error('synthetic expiry failure'); };
-      try { return await super.fetch(new Request('https://internal/__internal/cron')); }
+      try {
+        const response = await super.fetch(new Request('https://internal/__internal/cron'));
+        await response.text();
+        return Response.json({ cronStatus: response.status });
+      }
       finally { appointmentService.expirePendingAppointments = original; }
     }
     if (url.pathname === '/__do-error') {

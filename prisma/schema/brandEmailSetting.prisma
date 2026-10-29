@@ -1,92 +1,101 @@
 model BrandEmailSetting {
-    id       String        @id @default(uuid())
-    brandId  String        @unique
-    provider EmailProvider
+  id       String        @id @default(uuid())
+  brandId  String        @unique
+  provider EmailProvider
 
-    // Sender information
-    fromName  String
-    fromEmail String
+  // Sender information
+  fromName  String
+  fromEmail String
 
-    // SMTP configuration
-    smtpHost     String?
-    smtpPort     Int?
-    smtpSecure   Boolean?
-    smtpUsername String?
+  // SMTP configuration
+  smtpHost     String?
+  smtpPort     Int?
+  smtpSecure   Boolean?
+  smtpUsername String?
 
-    // Encrypted SMTP password / authorization code
-    encryptedCredential String?
+  // Encrypted SMTP password / authorization code
+  encryptedCredential String?
 
-    // Microsoft 365 OAuth credentials/tokens
-    oauthDataEncrypted String?
+  // Microsoft 365 OAuth credentials/tokens
+  oauthDataEncrypted String?
 
-    // Configuration status
-    isEnabled  Boolean @default(false)
-    isVerified Boolean @default(false)
-    configurationVersion Int @default(1)
-    providerData Json?
-    lastTestAt DateTime?
-    lastErrorCode String?
+  // Configuration status
+  isEnabled            Boolean   @default(true)
+  isVerified           Boolean   @default(false)
+  configurationVersion Int       @default(1)
+  providerData         Json?
+  lastTestAt           DateTime?
+  lastErrorCode        String?
 
-    // Relations
-    brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  // Relations
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
 
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model EmailOutbox {
-    id String @id @default(uuid())
+  id String @id @default(uuid())
 
-    brandId       String
-    userId        String?
-    appointmentId String?
+  brandId       String
+  userId        String?
+  appointmentId String?
 
-    eventType      String
-    idempotencyKey String @unique
+  eventType      String
+  idempotencyKey String @unique
 
-    recipientEmail String
-    subject        String
-    html           String
+  recipientEmail String
+  subject        String
+  html           String
 
-    status      String @default("PENDING")
-    attempts    Int    @default(0)
-    maxAttempts Int    @default(3)
+  status      String @default("PENDING")
+  attempts    Int    @default(0)
+  maxAttempts Int    @default(3)
 
-    nextAttemptAt DateTime  @default(now())
-    lockedUntil   DateTime?
-    claimToken    String?
-    attemptedAt   DateTime?
-    text          String?
-    validationData Json?
-    skipReason String?
-    terminalAt DateTime?
-    history EmailOutboxHistory[]
+  nextAttemptAt  DateTime             @default(now())
+  lockedUntil    DateTime?
+  claimToken     String?
+  attemptedAt    DateTime?
+  text           String?
+  validationData Json?
+  skipReason     String?
+  terminalAt     DateTime?
+  history        EmailOutboxHistory[]
 
-    sentAt            DateTime?
-    lastError         String?
-    provider          String?
-    providerMessageId String?
+  sentAt            DateTime?
+  lastError         String?
+  provider          String?
+  providerMessageId String?
 
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-    @@index([status, nextAttemptAt])
-    @@index([brandId, createdAt])
-    @@index([appointmentId])
+  @@index([status, nextAttemptAt])
+  @@index([brandId, createdAt])
+  @@index([appointmentId])
 }
 
 model EmailOutboxHistory {
-    id String @id @default(uuid())
-    outboxId String
-    outbox EmailOutbox @relation(fields: [outboxId], references: [id], onDelete: Restrict)
-    status String
-    sequence Int
-    attempt Int
-    code String?
-    provider String?
-    actorId String?
-    createdAt DateTime @default(now())
+  id        String      @id @default(uuid())
+  outboxId  String
+  outbox    EmailOutbox @relation(fields: [outboxId], references: [id], onDelete: Restrict)
+  status    String
+  sequence  Int
+  attempt   Int
+  code      String?
+  provider  String?
+  actorId   String?
+  createdAt DateTime    @default(now())
 
-    @@index([outboxId, createdAt, id])
-    @@unique([outboxId, sequence])
+  @@unique([outboxId, sequence])
+  @@index([outboxId, createdAt, id])
+}
+
+// Committed business records are reconciled independently of their transactions.
+// Each bounded scan cycles from a fixed restoration cutoff to catch late commits.
+model EmailEventCursor {
+  id        String    @id
+  startedAt DateTime  @default(now())
+  afterAt   DateTime?
+  afterId   String?
 }

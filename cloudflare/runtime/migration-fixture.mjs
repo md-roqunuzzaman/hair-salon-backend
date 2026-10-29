@@ -213,7 +213,38 @@ export class MigrationFixture {
     let failed=false;try{applyMigrations(storage,migrations);}catch{failed=true;}
     if(!failed || storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==23 || JSON.stringify(storage.sql.exec('SELECT * FROM EmailOutboxHistory ORDER BY id').toArray())!==priorHistory || storage.sql.exec("SELECT status FROM EmailOutbox WHERE id='retire-0'").one().status!=='PENDING')throw new Error('Retirement migration was not atomic');
     storage.sql.exec('DROP TRIGGER test_retirement_failure');
+    applyMigrations(storage,migrations.slice(0,24));
+    // A failed v25 must not leave even its first additive column behind.
+    let emailUpgradeRolledBack = false;
+    try { applyMigrations(storage,[...migrations.slice(0,24),{...migrations[24],sql:migrations[24].sql+'; SELECT * FROM missing_email_upgrade_fixture;'}]); }
+    catch { emailUpgradeRolledBack = true; }
+    if (!emailUpgradeRolledBack || storage.sql.exec('PRAGMA table_info(Notification)').toArray().some(c=>c.name==='emailIntent')) throw new Error('Email routing upgrade was not atomic');
+    applyMigrations(storage,migrations.slice(0,25));
+    // Default-only v26 must preserve every existing field, including explicit
+    // enabled/disabled choices and verification, encrypted credentials and dates.
+    storage.sql.exec("INSERT INTO Brand (id,name,updatedAt) VALUES ('enabled-brand','Enabled merchant',1),('unverified-brand','Unverified merchant',1)");
+    storage.sql.exec("INSERT INTO BrandEmailSetting (id,brandId,provider,fromName,fromEmail,encryptedCredential,oauthDataEncrypted,isEnabled,isVerified,configurationVersion,providerData,lastTestAt,lastErrorCode,updatedAt) VALUES ('enabled-setting','enabled-brand','GMAIL','Keep','synthetic@example.com','keep-cipher','keep-oauth',1,1,7,'{}',1234,'EMAIL_KEEP_HISTORY',1),('unverified-setting','unverified-brand','QQ','Keep','synthetic@qq.com','keep-other',NULL,1,0,4,NULL,NULL,NULL,2)");
+    const settingsBeforeDefault=JSON.stringify(storage.sql.exec('SELECT * FROM BrandEmailSetting ORDER BY id').toArray());
+    const oldEnabledDefault=storage.sql.exec('PRAGMA table_info(BrandEmailSetting)').toArray().find(column=>column.name==='isEnabled').dflt_value;
+    let defaultRollback=false;
+    try {applyMigrations(storage,[...migrations.slice(0,25),{...migrations[25],sql:migrations[25].sql+' SELECT * FROM missing_default_migration_fixture;'}]);} catch {defaultRollback=true;}
+    if(!defaultRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==25||JSON.stringify(storage.sql.exec('SELECT * FROM BrandEmailSetting ORDER BY id').toArray())!==settingsBeforeDefault)throw new Error('Default migration failure did not preserve existing merchants atomically');
+    if(storage.sql.exec('PRAGMA table_info(BrandEmailSetting)').toArray().find(column=>column.name==='isEnabled').dflt_value!==oldEnabledDefault)throw new Error('Failed migration changed the column default');
     applyMigrations(storage,migrations);
+    if(JSON.stringify(storage.sql.exec('SELECT * FROM BrandEmailSetting ORDER BY id').toArray())!==settingsBeforeDefault)throw new Error('Default migration overwrote an existing merchant choice');
+    if(storage.sql.exec("SELECT name FROM sqlite_master WHERE name='_new_BrandEmailSetting'").toArray().length)throw new Error('Default migration left a temporary table');
+    storage.sql.exec("INSERT INTO Brand (id,name,updatedAt) VALUES ('default-brand','New merchant',1)");
+    storage.sql.exec("INSERT INTO BrandEmailSetting (id,brandId,provider,fromName,fromEmail,updatedAt) VALUES ('default-setting','default-brand','GMAIL','New','new@example.com',1)");
+    const newDefault=storage.sql.exec("SELECT isEnabled,isVerified FROM BrandEmailSetting WHERE id='default-setting'").one();
+    if(newDefault.isEnabled!==1||newDefault.isVerified!==0)throw new Error('New SQL defaults are not enabled/unverified');
+    let defaultUnique=false;try{storage.sql.exec("INSERT INTO BrandEmailSetting (id,brandId,provider,fromName,fromEmail,updatedAt) VALUES ('duplicate-default','default-brand','GMAIL','New','new@example.com',1)");}catch{defaultUnique=true;}
+    if(!defaultUnique||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Default migration lost constraints');
+    applyMigrations(storage,migrations);
+    storage.sql.exec("DELETE FROM Brand WHERE id IN ('enabled-brand','unverified-brand','default-brand')");
+    const emailCutoffs = JSON.stringify(storage.sql.exec('SELECT * FROM EmailEventCursor ORDER BY id').toArray());
+    if (JSON.parse(emailCutoffs).length !== 6) throw new Error('Missing email restoration stream cutoffs');
+    applyMigrations(storage,migrations);
+    if (JSON.stringify(storage.sql.exec('SELECT * FROM EmailEventCursor ORDER BY id').toArray()) !== emailCutoffs) throw new Error('Repeated initialization changed email restoration cutoffs');
     for(const [i]of retiredEvents.entries()) {
       const job=storage.sql.exec('SELECT * FROM EmailOutbox WHERE id=?',`retire-${i}`).one();
       if(job.status!=='SKIPPED'||job.skipReason!=='EMAIL_BUSINESS_EMAILS_RETIRED'||job.attempts!==i||job.subject!=='preserved subject'||job.html!=='preserved body'||job.terminalAt===null)throw new Error('Retirement changed records or failed to suppress pending mail');

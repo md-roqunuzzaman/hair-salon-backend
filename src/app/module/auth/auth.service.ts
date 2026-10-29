@@ -16,7 +16,9 @@ import { redisClient } from "../../lib/redis.js";
 import crypto from "crypto";
 import ejs from "ejs";
 import path from "path";
-import { transporter } from "../../lib/nodemailer.js";
+import { resolveEmailBrand } from '../brand-email-setting/brand-email-setting.sender.js';
+import { sendMerchantSecurityEmail } from '../brand-email-setting/brand-email-setting.auth.js';
+import { safeEmailError, EmailProviderError } from '../brand-email-setting/brand-email-setting.errors.js';
 import { AppError } from "../../utils/app-error.js";
 
 const OTP_TTL_SECONDS = 5 * 60; // 5 minutes
@@ -283,124 +285,39 @@ const logoutUser = async (userId: string, refreshToken: string) => {
 
 const forgotPassword = async (payload: IForgotPasswordPayload) => {
   const email = payload.email.trim().toLowerCase();
-
-  const user = await prisma.user.findUnique({
-    where: {
-      email,
-    },
-  });
-
-  if (!user) {
-    throw new AppError("User does not exist", 404);
+  let brandId: string | undefined;
+  try {
+    brandId = await resolveEmailBrand(payload.brandId);
+    const suffix = `${brandId}:${email}`;
+    const resendKey = `password-reset-resend:${suffix}`;
+    const rateLimitKey = `password-reset-rate:${suffix}`;
+    const requestCount = await redisClient.incr(rateLimitKey);
+    if (requestCount === 1) await redisClient.expire(rateLimitKey, FORGOT_PASSWORD_WINDOW_SECONDS);
+    if (requestCount > FORGOT_PASSWORD_MAX_REQUESTS) throw new AppError("Too many password reset requests. Please try again later.", 429);
+    const reserved = await redisClient.set(resendKey, '1', { EX: OTP_RESEND_COOLDOWN_SECONDS, NX: true });
+    if (!reserved) throw new AppError("Please wait before requesting another OTP", 429);
+    const user = await prisma.user.findUnique({ where: { email } });
+    // Identical public response/counters for absent and inactive accounts.
+    if (!user || user.status !== UserStatus.ACTIVE) return null;
+    const otp = crypto.randomInt(100000, 1000000).toString();
+    const html = await ejs.renderFile(path.join(process.cwd(), "src/app/templates/forgot-password.ejs"), { name: user.name, otp, expirationMinutes: OTP_TTL_SECONDS / 60 });
+    await sendMerchantSecurityEmail({ brandId, userId: user.id, to: user.email, eventType: 'AUTH_PASSWORD_RESET_OTP', subject: 'Reset Your Password', html });
+    // No newly valid OTP exists until the merchant provider accepts the message.
+    await redisClient.set(`password-reset-otp:${suffix}`, otp, { EX: OTP_TTL_SECONDS });
+    await redisClient.del(`password-reset-attempts:${suffix}`);
+  } catch (error) {
+    if (error instanceof AppError && !(error instanceof EmailProviderError) && error.statusCode === 429) throw error;
+    const safe = safeEmailError(error);
+    console.error('[Authentication Email]', { code: safe.code, deliveryUncertain: safe.deliveryUncertain, brandId });
   }
-
-  if (user.status !== UserStatus.ACTIVE) {
-    throw new AppError("User account is inactive", 403);
-  }
-
-  const otpKey = `password-reset-otp:${email}`;
-
-  const attemptsKey = `password-reset-attempts:${email}`;
-
-  const resendKey = `password-reset-resend:${email}`;
-
-  const rateLimitKey = `password-reset-rate:${email}`;
-
-  /*
-   * 1. RESEND COOLDOWN
-   *
-   * Prevent user from requesting OTP repeatedly
-   * within 60 seconds.
-   */
-  const resendBlocked = await redisClient.exists(resendKey);
-
-  if (resendBlocked) {
-    const ttl = await redisClient.ttl(resendKey);
-
-    throw new AppError(
-      `Please wait ${Math.max(ttl, 1)} seconds before requesting another OTP`,
-      429,
-    );
-  }
-
-  /*
-   * 2. FORGOT PASSWORD RATE LIMIT
-   *
-   * Maximum 5 requests in 15 minutes.
-   */
-  const requestCount = await redisClient.incr(rateLimitKey);
-
-  if (requestCount === 1) {
-    await redisClient.expire(rateLimitKey, FORGOT_PASSWORD_WINDOW_SECONDS);
-  }
-
-  if (requestCount > FORGOT_PASSWORD_MAX_REQUESTS) {
-    throw new AppError(
-      "Too many password reset requests. Please try again later.",
-      429,
-    );
-  }
-
-  /*
-   * 3. GENERATE OTP
-   */
-  const otp = crypto.randomInt(100000, 1000000).toString();
-
-  /*
-   * Store OTP for 5 minutes.
-   */
-  await redisClient.set(otpKey, otp, {
-    expiration: {
-      type: "EX",
-      value: OTP_TTL_SECONDS,
-    },
-  });
-
-  /*
-   * Every newly generated OTP gets a fresh
-   * attempt counter.
-   */
-  await redisClient.del(attemptsKey);
-
-  /*
-   * User cannot request another OTP
-   * for 60 seconds.
-   */
-  await redisClient.set(resendKey, "1", {
-    expiration: {
-      type: "EX",
-      value: OTP_RESEND_COOLDOWN_SECONDS,
-    },
-  });
-
-  /*
-   * 4. SEND OTP EMAIL
-   */
-  const templatePath = path.join(
-    process.cwd(),
-    "src/app/templates/forgot-password.ejs",
-  );
-
-  const templateData = {
-    name: user.name,
-    otp,
-    expirationMinutes: OTP_TTL_SECONDS / 60,
-  };
-
-  const html = await ejs.renderFile(templatePath, templateData);
-
-  await transporter.sendMail({
-    from: config.email_sender,
-    to: user.email,
-    subject: "Reset Your Password",
-    html,
-  });
-
   return null;
 };
 
 const verifyResetOtp = async (payload: IVerifyResetOtpPayload) => {
   const email = payload.email.trim().toLowerCase();
+  let brandId: string;
+  try { brandId = await resolveEmailBrand(payload.brandId); }
+  catch { throw new AppError('OTP expired or invalid', 400); }
 
   const otp = payload.otp;
 
@@ -411,16 +328,16 @@ const verifyResetOtp = async (payload: IVerifyResetOtpPayload) => {
   });
 
   if (!user) {
-    throw new AppError("User does not exist", 404);
+    throw new AppError("OTP expired or invalid", 400);
   }
 
   if (user.status !== UserStatus.ACTIVE) {
-    throw new AppError("User account is inactive", 403);
+    throw new AppError("OTP expired or invalid", 400);
   }
 
-  const otpKey = `password-reset-otp:${email}`;
+  const otpKey = `password-reset-otp:${brandId}:${email}`;
 
-  const attemptsKey = `password-reset-attempts:${email}`;
+  const attemptsKey = `password-reset-attempts:${brandId}:${email}`;
 
   /*
    * 1. Check OTP exists.
@@ -502,7 +419,7 @@ const verifyResetOtp = async (payload: IVerifyResetOtpPayload) => {
 
   const resetTokenKey = `password-reset-token:${resetToken}`;
 
-  await redisClient.set(resetTokenKey, user.id, {
+  await redisClient.set(resetTokenKey, JSON.stringify({ userId: user.id, brandId }), {
     expiration: {
       type: "EX",
       value: RESET_TOKEN_TTL_SECONDS,
@@ -520,7 +437,16 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
 
   const resetTokenKey = `password-reset-token:${resetToken}`;
 
-  const userId = await redisClient.getDel(resetTokenKey);
+  const stored = await redisClient.getDel(resetTokenKey);
+  let userId = stored;
+  const brandId = await resolveEmailBrand();
+  if (stored?.startsWith('{')) {
+    try {
+      const token = JSON.parse(stored) as { userId: string; brandId: string };
+      if (token.brandId !== brandId || typeof token.userId !== 'string') throw new Error();
+      userId = token.userId;
+    } catch { throw new AppError('Reset token expired or invalid', 400); }
+  }
 
   if (!userId) {
     throw new AppError("Reset token expired or invalid", 400);
@@ -565,8 +491,8 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
   });
 
   try {
-    await transporter.sendMail({
-      from: config.email_sender,
+    await sendMerchantSecurityEmail({
+      brandId, userId: user.id, eventType: 'AUTH_PASSWORD_RESET_SUCCESS',
       to: user.email,
       subject: "Password Reset Successful",
       html,

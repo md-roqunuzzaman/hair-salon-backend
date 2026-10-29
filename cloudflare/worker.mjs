@@ -1,5 +1,5 @@
 import { connect } from 'cloudflare:sockets';
-import { sendSmtpEmail } from './runtime/smtp.mjs';
+import { sendBusinessEmail, resolveEmailBrand } from '../src/app/module/brand-email-setting/brand-email-setting.sender.ts';
 import { httpServerHandler } from 'cloudflare:node';
 import app from '../src/app.ts';
 import { applicationRuntime } from './runtime/context.mjs';
@@ -17,6 +17,7 @@ import { retryIdempotentDatabaseOperation } from '../src/app/utils/retry-databas
 
 import { sendAppointmentReminders } from '../src/app/module/notification/notification-reminder.service.ts';
 import { runCronTasks } from './runtime/cron.mjs';
+import { processBusinessEmailBatch } from '../src/app/module/brand-email-setting/brand-email-setting.outbox-processor.ts';
 
 app.listen(3000);
 const http = httpServerHandler({ port: 3000 });
@@ -34,7 +35,7 @@ export class SalonDatabase {
       this.db = createDatabase(ctx.storage);
     });
   }
-  sendMail(message) { return sendSmtpEmail(connect, this.env, message); }
+  async sendMail(message) { return sendBusinessEmail({ ...message, brandId: await resolveEmailBrand() }); }
   connectSmtp(address, options) { return connect(address, options); }
   enqueue(callback) {
     const result = this.tail.then(() => applicationRuntime.run({
@@ -55,6 +56,7 @@ export class SalonDatabase {
           ['group-expiry', () => groupPurchaseExpiryService.expirePendingGroupPurchases()],
           ['completion', () => retryIdempotentDatabaseOperation(() => appointmentService.completeEligibleAppointments())],
           ['reminders', () => sendAppointmentReminders()],
+          ['merchant-email', () => processBusinessEmailBatch(2)],
           ['session-cleanup', () => this.sessions.cleanup()],
         ]);
         return new Response('OK');

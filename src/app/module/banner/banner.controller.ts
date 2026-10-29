@@ -504,6 +504,114 @@ const updateBannerMediaOrder = catchAsync(
     });
   },
 );
+
+// =====================================================
+// API 11 — GET BRANCH CAROUSEL SETTINGS
+// GET /api/v1/banners/carousel-settings/:branchId
+// =====================================================
+
+const getBannerCarouselSettings = catchAsync(
+  async (req: Request, res: Response) => {
+    // 1. Authentication
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    // 2. Validate branch ID
+    const branchId = z.uuid().parse(req.params.branchId);
+
+    // 3. Verify role
+    const role = req.user.role as Role;
+
+    if (role !== Role.BRAND_OWNER && role !== Role.BRANCH_MANAGER) {
+      throw new AppError(
+        "You are not authorized to view carousel settings",
+        403,
+      );
+    }
+
+    // 4. Verify branch manager assignment
+    if (role === Role.BRANCH_MANAGER) {
+      const assignment = await prisma.branchManagerBranch.findFirst({
+        where: {
+          userId: req.user.userId,
+          branchId,
+        },
+        select: {
+          branchId: true,
+        },
+      });
+
+      if (!assignment) {
+        throw new AppError(
+          "You can only view carousel settings for your assigned branches",
+          403,
+        );
+      }
+    }
+
+    // 5. Fetch settings
+    const result = await bannerService.getBannerCarouselSettings(branchId);
+
+    // 6. Response
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message: "Branch carousel settings retrieved successfully",
+      data: result,
+    });
+  },
+);
+
+// =====================================================
+// API 12 — UPDATE BRANCH CAROUSEL SETTINGS
+// PATCH /api/v1/banners/carousel-settings/:branchId
+// =====================================================
+
+const updateBannerCarouselSettings = catchAsync(
+  async (req: Request, res: Response) => {
+    // 1. Authentication
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    // 2. Validate branch ID
+    const branchId = z.uuid().parse(req.params.branchId);
+
+    // 3. Resolve brand
+    const brand = await prisma.brand.findFirst({
+      select: {
+        id: true,
+      },
+    });
+
+    if (!brand) {
+      throw new AppError("Brand not found", 404);
+    }
+
+    // 4. Prepare actor
+    const actor: IBannerActor = {
+      userId: req.user.userId,
+      role: req.user.role as Role,
+      brandId: brand.id,
+    };
+
+    // 5. Update settings
+    const result = await bannerService.updateBannerCarouselSettings(
+      branchId,
+      req.body,
+      actor,
+    );
+
+    // 6. Response
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message: "Branch carousel settings updated successfully",
+      data: result,
+    });
+  },
+);
 export const bannerController = {
   createBanner,
   attachBannerMedia,
@@ -515,4 +623,6 @@ export const bannerController = {
   deleteBanner,
   getActiveBanners,
   updateBannerMediaOrder,
+  getBannerCarouselSettings,
+  updateBannerCarouselSettings,
 };
