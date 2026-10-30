@@ -1,5 +1,9 @@
 import { PaymentPurpose } from "../../../../generated/prisma/enums.js";
 
+// =====================================================
+// 1. CREATE STRIPE PAYMENT INTENT
+// =====================================================
+
 export interface ICreateStripeIntentPayload {
   appointmentId: string;
 }
@@ -13,9 +17,17 @@ export interface ICreateStripeIntentResponse {
   clientSecret: string;
 }
 
+// =====================================================
+// 2. STRIPE WEBHOOK
+// =====================================================
+
 export interface IStripeWebhookResponse {
   received: true;
 }
+
+// =====================================================
+// 3. PAYMENT DETAILS
+// =====================================================
 
 export interface IPaymentDetailsResponse {
   id: string;
@@ -27,6 +39,10 @@ export interface IPaymentDetailsResponse {
   appointmentId: string | null;
 }
 
+// =====================================================
+// 4. CUSTOMER PAYMENT HISTORY QUERY
+// =====================================================
+
 export interface IMyPaymentsQuery {
   page?: string;
   limit?: string;
@@ -34,13 +50,20 @@ export interface IMyPaymentsQuery {
   status?: "PENDING" | "PAID" | "FAILED" | "REFUNDED" | "PARTIALLY_REFUNDED";
 }
 
+// =====================================================
+// 5. CUSTOMER PAYMENT HISTORY ITEM
+// =====================================================
+
 export interface IMyPaymentItem {
   id: string;
+
   orderNumber: string | null;
+
   amount: number;
   currency: string;
 
   paymentStatus: string;
+
   provider: string;
   providerPaymentId: string | null;
 
@@ -52,23 +75,15 @@ export interface IMyPaymentItem {
   groupPurchaseId: string | null;
   label: string;
   refundedAmount: number;
-}
-export interface IMyPaymentsQuery {
-  page?: string;
-  limit?: string;
 
-  status?: "PENDING" | "PAID" | "FAILED" | "REFUNDED" | "PARTIALLY_REFUNDED";
+  // G7 - Refund Eligibility
+  canRefund: boolean;
+  refundBlockedReason: string | null;
 }
 
-export interface IMyPaymentItem {
-  id: string;
-  amount: number;
-  currency: string;
-  paymentStatus: string;
-  provider: string;
-  providerPaymentId: string | null;
-  appointmentId: string | null;
-}
+// =====================================================
+// 6. REFUND PAYMENT
+// =====================================================
 
 export interface IRefundPaymentPayload {
   amount: number;
@@ -82,6 +97,10 @@ export interface IRefundPaymentResponse {
   refundStatus: "SUCCEEDED";
   amount: number;
 }
+
+// =====================================================
+// 7. GROUP PURCHASE STRIPE PAYMENT INTENT
+// =====================================================
 
 export interface ICreateGroupPurchaseStripeIntentPayload {
   purchaseId: string;

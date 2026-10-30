@@ -65,7 +65,7 @@
             "url": "{{baseUrl}}/policy-management/branches/{{branchId}}/service-cancellation",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"isEnabled\": true,\n  \"cancellationAllowed\": true,\n  \"refundAllowed\": true,\n  \"minimumCancellationHours\": 6,\n  \"nonRefundable\": false,\n  \"deductionTiers\": [\n    {\n      \"minimumHoursBeforeAppointment\": 48,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 0\n    },\n    {\n      \"minimumHoursBeforeAppointment\": 24,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 20\n    },\n    {\n      \"minimumHoursBeforeAppointment\": 12,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 50\n    },\n    {\n      \"minimumHoursBeforeAppointment\": 6,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 100\n    }\n  ],\n  \"expectedVersion\": {{serviceVersion}}\n}",
+              "raw": "{\n  \"isEnabled\": true,\n  \"cancellationAllowed\": true,\n  \"refundAllowed\": true,\n  \"minimumCancellationMinutes\": 360,\n  \"nonRefundable\": false,\n  \"deductionTiers\": [\n    {\n      \"minimumMinutesBeforeAppointment\": 2880,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 0\n    },\n    {\n      \"minimumMinutesBeforeAppointment\": 1440,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 20\n    },\n    {\n      \"minimumMinutesBeforeAppointment\": 720,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 50\n    },\n    {\n      \"minimumMinutesBeforeAppointment\": 360,\n      \"calculationType\": \"PERCENTAGE\",\n      \"deductionValue\": 100\n    }\n  ],\n  \"expectedVersion\": {{serviceVersion}}\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -142,7 +142,7 @@
             "url": "{{baseUrl}}/policy-management/branches/{{branchId}}/group-purchase-refunds",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"isEnabled\": true,\n  \"refundAllowed\": true,\n  \"allowPartiallyUsedRefund\": true,\n  \"allowExpiredRefund\": false,\n  \"requireNoActiveAppointments\": true,\n  \"refundTiers\": [\n    {\n      \"minimumHoursAfterPurchase\": 0,\n      \"refundPercentage\": 100\n    },\n    {\n      \"minimumHoursAfterPurchase\": 24,\n      \"refundPercentage\": 80\n    },\n    {\n      \"minimumHoursAfterPurchase\": 72,\n      \"refundPercentage\": 0\n    }\n  ],\n  \"expectedVersion\": {{groupRefundVersion}}\n}",
+              "raw": "{\n  \"isEnabled\": true,\n  \"refundAllowed\": true,\n  \"allowPartiallyUsedRefund\": true,\n  \"allowExpiredRefund\": false,\n  \"requireNoActiveAppointments\": true,\n  \"refundTiers\": [\n    {\n      \"minimumMinutesAfterPurchase\": 0,\n      \"refundPercentage\": 100\n    },\n    {\n      \"minimumMinutesAfterPurchase\": 1440,\n      \"refundPercentage\": 80\n    },\n    {\n      \"minimumMinutesAfterPurchase\": 4320,\n      \"refundPercentage\": 0\n    }\n  ],\n  \"expectedVersion\": {{groupRefundVersion}}\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -219,7 +219,7 @@
             "url": "{{baseUrl}}/policy-management/branches/{{branchId}}/group-purchase-cancellations",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"isEnabled\": true,\n  \"cancellationAllowed\": true,\n  \"minimumCancellationHours\": 2,\n  \"restorationMinimumHours\": 24,\n  \"lateCancellationOutcome\": \"FORFEITED\",\n  \"expectedVersion\": {{groupCancelVersion}}\n}",
+              "raw": "{\n  \"isEnabled\": true,\n  \"cancellationAllowed\": true,\n  \"minimumCancellationMinutes\": 120,\n  \"restorationMinimumMinutes\": 1440,\n  \"lateCancellationOutcome\": \"FORFEITED\",\n  \"expectedVersion\": {{groupCancelVersion}}\n}",
               "options": {
                 "raw": {
                   "language": "json"

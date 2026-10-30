@@ -1,5 +1,25 @@
 # Merchant cancellation and refund: API and staging acceptance
 
+Current local v29 candidate: the listed cancellation/rescheduling/refund thresholds and preview elapsed-time fields now use **minutes**. Existing 12-hour cutoffs become 720 minutes; 2-hour minimums become 120; 24-hour restoration becomes 1440. Request/response keys use `Minutes` instead of `Hours`; old request keys are not aliases. Routes, authorization, money, tier boundaries and notifications remain unchanged. Coordinate the frontend field-name/unit update before deploying this API change.
+
+SQLite `0029_policy_time_minutes.sql` and PostgreSQL `20261030060000_policy_time_minutes` convert only live policy columns and tiers once. Existing checkout/refund snapshots and audit history stay immutable; a detached read view converts old hour snapshot keys before policy evaluation. Versions/timestamps are retained. Repeated initialization never multiplies thresholds twice. Never run the migration SQL manually outside its versioned runner. Keep a schema-compatible recovery artifact; pre-v29 binaries are not a safe rollback. No deploy or live migration was performed by this implementation.
+
+Preview fields are `minutesBeforeAppointment` and `purchaseAgeMinutes`; they can be fractional because they reflect actual elapsed time. Editable threshold fields accept non-negative integer minutes, including 30 and 90. Carousel intervals, package validity, booking windows, capacity rates and infrastructure TTLs are outside this change.
+
+Refresh any previews created before rollout rather than reusing their signed confirmation tokens across the API-unit change.
+
+| Previous field | Current field |
+| --- | --- |
+| cancellationCutoffHours | cancellationCutoffMinutes |
+| rescheduleCutoffHours | rescheduleCutoffMinutes |
+| minimumCancellationHours (service/group) | minimumCancellationMinutes |
+| restorationMinimumHours | restorationMinimumMinutes |
+| minimumHoursBefore | minimumMinutesBefore |
+| minimumHoursBeforeAppointment | minimumMinutesBeforeAppointment |
+| minimumHoursAfterPurchase | minimumMinutesAfterPurchase |
+| hoursBeforeAppointment | minutesBeforeAppointment |
+| purchaseAgeHours | purchaseAgeMinutes |
+
 This implementation adds branch policies, immutable checkout snapshots, read-only previews, explicit customer confirmation, and the existing owner approval/processing workflow. It does not enable automatic refunds, enable Direct Booking, publish a Worker, or contact Stripe with real credentials. Automated provider responses are synthetic. PostgreSQL migration rehearsal and deployed Stripe test-account acceptance remain required before claiming full acceptance.
 
 ## Decisions and preserved behavior
@@ -50,13 +70,13 @@ Service example (`expectedVersion: 0` only for first creation):
   "isEnabled": true,
   "cancellationAllowed": true,
   "refundAllowed": true,
-  "minimumCancellationHours": 6,
+  "minimumCancellationMinutes": 360,
   "nonRefundable": false,
   "deductionTiers": [
-    {"minimumHoursBeforeAppointment":48,"calculationType":"PERCENTAGE","deductionValue":0},
-    {"minimumHoursBeforeAppointment":24,"calculationType":"PERCENTAGE","deductionValue":20},
-    {"minimumHoursBeforeAppointment":12,"calculationType":"PERCENTAGE","deductionValue":50},
-    {"minimumHoursBeforeAppointment":6,"calculationType":"PERCENTAGE","deductionValue":100}
+    {"minimumMinutesBeforeAppointment":2880,"calculationType":"PERCENTAGE","deductionValue":0},
+    {"minimumMinutesBeforeAppointment":1440,"calculationType":"PERCENTAGE","deductionValue":20},
+    {"minimumMinutesBeforeAppointment":720,"calculationType":"PERCENTAGE","deductionValue":50},
+    {"minimumMinutesBeforeAppointment":360,"calculationType":"PERCENTAGE","deductionValue":100}
   ],
   "expectedVersion": 0
 }
@@ -74,15 +94,15 @@ Group refund example:
   "allowExpiredRefund": false,
   "requireNoActiveAppointments": true,
   "refundTiers": [
-    {"minimumHoursAfterPurchase":0,"refundPercentage":100},
-    {"minimumHoursAfterPurchase":24,"refundPercentage":80},
-    {"minimumHoursAfterPurchase":72,"refundPercentage":0}
+    {"minimumMinutesAfterPurchase":0,"refundPercentage":100},
+    {"minimumMinutesAfterPurchase":1440,"refundPercentage":80},
+    {"minimumMinutesAfterPurchase":4320,"refundPercentage":0}
   ],
   "expectedVersion": 0
 }
 ```
 
-For this new API, age <=24 hours refunds 100%; >24 and <=72 refunds 80%; >72 refunds zero. The threshold field names are retained for consistency with stored data, but `boundaryMode:UPPER_INCLUSIVE` makes these semantics explicit. Alternatively supply **only** `deductionTiers` with `{minimumHoursAfterPurchase,calculationType,deductionValue}`; 20 means deduct 20%, unlike `refundPercentage:80`. At least a zero-hour tier is required.
+For this new API, age <=24 hours refunds 100%; >24 and <=72 refunds 80%; >72 refunds zero. All threshold fields use minutes; `boundaryMode:UPPER_INCLUSIVE` makes these semantics explicit. Alternatively supply **only** `deductionTiers` with `{minimumMinutesAfterPurchase,calculationType,deductionValue}`; 20 means deduct 20%, unlike `refundPercentage:80`. At least a zero-minute tier is required.
 
 Refundable quantity = purchased quantity minus non-cancelled allocations, forfeited quantity and previously refunded quantity. Completed/no-show allocations do not become refundable merely because another booking was cancelled. Partial-use and expiry permissions come from the purchase snapshot. Expiry uses the package valid-days value captured on that purchase. Eligible money is the remaining original online payment, capped by its proportional share for refundable quantity, rounded down to cents before applying the tier. A successful purchase refund invalidates remaining entitlements and increments refunded quantity once. Existing sold-inventory accounting is preserved; refunds do not invent inventory restock rules.
 
@@ -92,8 +112,8 @@ Group appointment cancellation example:
 {
   "isEnabled": true,
   "cancellationAllowed": true,
-  "minimumCancellationHours": 2,
-  "restorationMinimumHours": 24,
+  "minimumCancellationMinutes": 120,
+  "restorationMinimumMinutes": 1440,
   "lateCancellationOutcome": "FORFEITED",
   "expectedVersion": 0
 }

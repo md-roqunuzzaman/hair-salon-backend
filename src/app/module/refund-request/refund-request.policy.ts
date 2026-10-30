@@ -90,13 +90,13 @@ export const calculateRefundEligibility = ({
 
 interface IAppointmentRefundPolicyInput {
   appointmentDateTime: Date;
-  cancellationCutoffHours: number;
+  cancellationCutoffMinutes: number;
   appointmentStatus: string;
 }
 
 export const validateAppointmentRefundPolicy = ({
   appointmentDateTime,
-  cancellationCutoffHours,
+  cancellationCutoffMinutes,
   appointmentStatus,
 }: IAppointmentRefundPolicyInput) => {
   // 1. Validate appointment status
@@ -108,14 +108,14 @@ export const validateAppointmentRefundPolicy = ({
   // 2. Calculate cancellation deadline
 
   if (
-    !Number.isFinite(cancellationCutoffHours) ||
-    cancellationCutoffHours < 0 ||
+    !Number.isFinite(cancellationCutoffMinutes) ||
+    cancellationCutoffMinutes < 0 ||
     Number.isNaN(appointmentDateTime.getTime())
   ) {
     throw new AppError("INVALID_CANCELLATION_POLICY", 409);
   }
 
-  const cutoffMs = cancellationCutoffHours * 60 * 60 * 1000;
+  const cutoffMs = cancellationCutoffMinutes * 60 * 1000;
 
   const cancellationDeadline = new Date(
     appointmentDateTime.getTime() - cutoffMs,

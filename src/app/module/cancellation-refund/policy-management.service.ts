@@ -38,13 +38,13 @@ export async function savePolicy(branchId: string, module: PolicyModule, body: u
         if (module === 'SERVICE') {
             const p = servicePolicyBody.parse(body), old = await tx.branchCancellationPolicy.findUnique({ where: { branchId } });
             check(old);
-            const data = { isEnabled: p.isEnabled, cancellationAllowed: p.cancellationAllowed, refundAllowed: p.refundAllowed, minimumCancellationHours: p.minimumCancellationHours, nonRefundable: p.nonRefundable, policyFormat: 'DEDUCTION_V2', refundTiers: p.deductionTiers as Prisma.InputJsonArray };
+            const data = { isEnabled: p.isEnabled, cancellationAllowed: p.cancellationAllowed, refundAllowed: p.refundAllowed, minimumCancellationMinutes: p.minimumCancellationMinutes, nonRefundable: p.nonRefundable, policyFormat: 'DEDUCTION_V2', refundTiers: p.deductionTiers as Prisma.InputJsonArray };
             result = old ? await tx.branchCancellationPolicy.update({ where: { branchId }, data: { ...data, version: { increment: 1 } } }) : await tx.branchCancellationPolicy.create({ data: { branchId, ...data } });
         }
         else if (module === 'GROUP_REFUND') {
             const p = groupRefundBody.parse(body), old = await tx.groupPurchaseRefundPolicy.findUnique({ where: { branchId } });
             check(old);
-            const data = { isEnabled: p.isEnabled, refundAllowed: p.refundAllowed, allowPartiallyUsedRefund: p.allowPartiallyUsedRefund, allowExpiredRefund: p.allowExpiredRefund, requireNoActiveAppointments: p.requireNoActiveAppointments, policyFormat: p.deductionTiers ? 'DEDUCTION_V2' : 'REFUND_TIERS_V1', boundaryMode: 'UPPER_INCLUSIVE', refundTiers: (p.deductionTiers ?? p.refundTiers!.map(t => ({ minimumHoursAfterPurchase: t.minimumHoursAfterPurchase, calculationType: 'PERCENTAGE', value: t.refundPercentage }))) as Prisma.InputJsonArray };
+            const data = { isEnabled: p.isEnabled, refundAllowed: p.refundAllowed, allowPartiallyUsedRefund: p.allowPartiallyUsedRefund, allowExpiredRefund: p.allowExpiredRefund, requireNoActiveAppointments: p.requireNoActiveAppointments, policyFormat: p.deductionTiers ? 'DEDUCTION_V2' : 'REFUND_TIERS_V1', boundaryMode: 'UPPER_INCLUSIVE', refundTiers: (p.deductionTiers ?? p.refundTiers!.map(t => ({ minimumMinutesAfterPurchase: t.minimumMinutesAfterPurchase, calculationType: 'PERCENTAGE', value: t.refundPercentage }))) as Prisma.InputJsonArray };
             result = old ? await tx.groupPurchaseRefundPolicy.update({ where: { branchId }, data: { ...data, version: { increment: 1 } } }) : await tx.groupPurchaseRefundPolicy.create({ data: { branchId, ...data } });
         }
         else {

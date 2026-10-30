@@ -1,7 +1,7 @@
 import { z } from 'zod';
 const groupPurchaseRefundTierValidationSchema = z
   .object({
-    minimumHoursAfterPurchase: z.number().int().min(0),
+    minimumMinutesAfterPurchase: z.number().int().min(0),
 
     calculationType: z.enum(["PERCENTAGE", "FIXED"]),
 
@@ -55,22 +55,22 @@ const updateGroupPurchaseRefundPolicyValidationSchema = z.object({
       const seenHours = new Set<number>();
 
       for (const [index, tier] of policy.refundTiers.entries()) {
-        if (seenHours.has(tier.minimumHoursAfterPurchase)) {
+        if (seenHours.has(tier.minimumMinutesAfterPurchase)) {
           ctx.addIssue({
             code: "custom",
-            path: ["refundTiers", index, "minimumHoursAfterPurchase"],
-            message: "Duplicate refund tier hours",
+            path: ["refundTiers", index, "minimumMinutesAfterPurchase"],
+            message: "Duplicate refund tier minutes",
           });
         }
 
-        seenHours.add(tier.minimumHoursAfterPurchase);
+        seenHours.add(tier.minimumMinutesAfterPurchase);
       }
 
       if (!seenHours.has(0)) {
         ctx.addIssue({
           code: "custom",
           path: ["refundTiers"],
-          message: "Refund tiers must include a tier starting at 0 hours",
+          message: "Refund tiers must include a tier starting at 0 minutes",
         });
       }
     }),
@@ -86,20 +86,20 @@ const updateGroupPurchaseCancellationPolicyValidationSchema = z.object({
 
       cancellationAllowed: z.boolean(),
 
-      minimumCancellationHours: z.number().int().min(0),
+      minimumCancellationMinutes: z.number().int().min(0),
 
-      restorationMinimumHours: z.number().int().min(0),
+      restorationMinimumMinutes: z.number().int().min(0),
 
       lateCancellationOutcome: z.enum(["RESTORED", "FORFEITED"]),
     })
     .strict()
     .superRefine((body, ctx) => {
-      if (body.restorationMinimumHours < body.minimumCancellationHours) {
+      if (body.restorationMinimumMinutes < body.minimumCancellationMinutes) {
         ctx.addIssue({
           code: "custom",
-          path: ["restorationMinimumHours"],
+          path: ["restorationMinimumMinutes"],
           message:
-            "Restoration minimum hours cannot be less than minimum cancellation hours",
+            "Restoration minimum minutes cannot be less than minimum cancellation minutes",
         });
       }
     }),

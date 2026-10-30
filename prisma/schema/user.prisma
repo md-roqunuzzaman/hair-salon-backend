@@ -7,6 +7,8 @@ model User {
   preferredLanguage      String                @default("en")
   role                   Role                  @default(CUSTOMER)
   status                 UserStatus            @default(ACTIVE)
+  emailVerified          Boolean               @default(false)
+  emailVerifiedAt        DateTime?
   groupPurchases         GroupPurchase[]
   mustChangePassword     Boolean               @default(false)
   avatarObjectKey        String?

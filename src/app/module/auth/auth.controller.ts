@@ -17,6 +17,17 @@ const registerUser = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const verifyEmailOtp = catchAsync(async (req: Request, res: Response) => {
+  const result = await authService.verifyEmailOtp(req.body);
+
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: "Email verified successfully. You can now log in.",
+    data: result,
+  });
+});
+
 const loginUser = catchAsync(async (req: Request, res: Response) => {
   const result = await authService.loginUser(req.body);
 
@@ -35,6 +46,20 @@ const loginUser = catchAsync(async (req: Request, res: Response) => {
     },
   });
 });
+
+const resendVerificationOtp = catchAsync(
+  async (req: Request, res: Response) => {
+    const result = await authService.resendVerificationOtp(req.body);
+
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message:
+        "If this email requires verification, a verification code will be sent.",
+      data: result,
+    });
+  },
+);
 
 const refreshToken = catchAsync(async (req: Request, res: Response) => {
   const token = req.cookies?.refreshToken;
@@ -94,7 +119,8 @@ const forgotPassword = catchAsync(async (req: Request, res: Response) => {
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "If this account is eligible, your password reset request has been processed. Check your inbox; email delivery is not guaranteed.",
+    message:
+      "If this account is eligible, your password reset request has been processed. Check your inbox; email delivery is not guaranteed.",
     data: null,
   });
 });
@@ -128,4 +154,6 @@ export const authController = {
   forgotPassword,
   verifyResetOtp,
   resetPassword,
+  verifyEmailOtp,
+  resendVerificationOtp,
 };

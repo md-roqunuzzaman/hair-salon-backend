@@ -29,6 +29,7 @@ model RefundRequest {
 
   payment     Payment           @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   refund      Refund?           @relation(fields: [refundId], references: [id], onDelete: SetNull)
+  allocations RefundAllocation[]
   // Type of refund/cancellation request
   requestType RefundRequestType @default(APPOINTMENT_CANCELLATION)
 
@@ -55,5 +56,26 @@ model RefundRequest {
 
   @@index([customerId])
   @@index([paymentId])
+  @@index([status])
+}
+
+model RefundAllocation {
+  id String @id @default(uuid())
+  refundRequestId String
+  paymentId String
+  refundId String? @unique
+  amount Decimal @db.Decimal(10, 2)
+  provider PaymentProvider
+  status String @default("RESERVED")
+  idempotencyKey String @unique
+  submittedAt DateTime?
+  lastErrorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  request RefundRequest @relation(fields: [refundRequestId], references: [id], onDelete: Restrict)
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund Refund? @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  @@unique([refundRequestId, paymentId])
+  @@index([paymentId, status])
   @@index([status])
 }

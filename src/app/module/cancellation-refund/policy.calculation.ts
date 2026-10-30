@@ -1,5 +1,6 @@
 import { Prisma } from '../../../../generated/prisma/client.js';
 import { AppError } from '../../utils/app-error.js';
+import { policyTimeMinutes } from './policy-time.js';
 export type PolicyModule = 'SERVICE' | 'GROUP_REFUND' | 'GROUP_CANCEL';
 export interface PolicySnapshot {
     engineVersion: 1;
@@ -21,12 +22,12 @@ export const money = (value: number) => new Prisma.Decimal(value).div(100).toNum
 export const appointmentTime = (date: Date, time: string) => new Date(`${date.toISOString().slice(0, 10)}T${time}:00+08:00`);
 const rounded = (value: Prisma.Decimal) => value.toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber();
 export function evaluatePolicy(snapshot: PolicySnapshot, eligibleCents: number, elapsedMs: number) {
-    const p = snapshot.config;
+    const p = policyTimeMinutes(snapshot.config);
     if (!Number.isSafeInteger(eligibleCents) || eligibleCents < 0 || !Number.isFinite(elapsedMs))
         throw new AppError('INVALID_POLICY_CALCULATION', 409);
     let allowed = true, reason: string | null = null, tier: any = null;
     if (snapshot.module !== 'GROUP_REFUND') {
-        const cutoff = p.minimumCancellationHours * 3600000;
+        const cutoff = p.minimumCancellationMinutes * 60000;
         if (!p.cancellationAllowed) {
             allowed = false;
             reason = 'CANCELLATION_DISABLED';
@@ -41,15 +42,15 @@ export function evaluatePolicy(snapshot: PolicySnapshot, eligibleCents: number, 
         reason = 'REFUNDS_DISABLED';
     }
     if (snapshot.module === 'GROUP_CANCEL') {
-        return { allowed, reason, entitlementOutcome: elapsedMs >= p.restorationMinimumHours * 3600000 ? 'RESTORED' as const : p.lateCancellationOutcome as 'RESTORED' | 'FORFEITED', deductionCents: 0, refundCents: 0, tier: null };
+        return { allowed, reason, entitlementOutcome: elapsedMs >= p.restorationMinimumMinutes * 60000 ? 'RESTORED' as const : p.lateCancellationOutcome as 'RESTORED' | 'FORFEITED', deductionCents: 0, refundCents: 0, tier: null };
     }
     if (!allowed)
         return { allowed, reason, tier: null, deductionCents: 0, refundCents: 0, entitlementOutcome: null };
-    const tiers = [...(p.refundTiers ?? [])].sort((a, b) => (b.minimumHoursAfterPurchase ?? b.minimumHoursBeforeAppointment ?? b.minimumHoursBefore) - (a.minimumHoursAfterPurchase ?? a.minimumHoursBeforeAppointment ?? a.minimumHoursBefore));
+    const tiers = [...(p.refundTiers ?? [])].sort((a, b) => (b.minimumMinutesAfterPurchase ?? b.minimumMinutesBeforeAppointment ?? b.minimumMinutesBefore) - (a.minimumMinutesAfterPurchase ?? a.minimumMinutesBeforeAppointment ?? a.minimumMinutesBefore));
     if (snapshot.module === 'GROUP_REFUND')
-        tier = tiers.find(t => t.minimumHoursAfterPurchase === 0 || (p.boundaryMode === 'UPPER_INCLUSIVE' ? elapsedMs > t.minimumHoursAfterPurchase * 3600000 : elapsedMs >= t.minimumHoursAfterPurchase * 3600000));
+        tier = tiers.find(t => t.minimumMinutesAfterPurchase === 0 || (p.boundaryMode === 'UPPER_INCLUSIVE' ? elapsedMs > t.minimumMinutesAfterPurchase * 60000 : elapsedMs >= t.minimumMinutesAfterPurchase * 60000));
     else
-        tier = tiers.find(t => elapsedMs >= (t.minimumHoursBeforeAppointment ?? t.minimumHoursBefore) * 3600000);
+        tier = tiers.find(t => elapsedMs >= (t.minimumMinutesBeforeAppointment ?? t.minimumMinutesBefore) * 60000);
     if (!tier)
         throw new AppError('POLICY_TIER_GAP', 409);
     const isDeduction = p.policyFormat === 'DEDUCTION_V2';

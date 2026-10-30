@@ -1,3 +1,4 @@
+import { validateAllocationPlan, lockRefundResource } from './refund-allocation.plan.js';
 import { isSnapshot } from "../cancellation-refund/policy.calculation.js";
 import { validatePolicyRefund } from "../cancellation-refund/policy-refund.execution.js";
 import {
@@ -197,7 +198,7 @@ const createRefundRequest = async (
 
     validateAppointmentRefundPolicy({
       appointmentDateTime,
-      cancellationCutoffHours: policy.cancellationCutoffHours,
+      cancellationCutoffMinutes: policy.cancellationCutoffMinutes,
       appointmentStatus: appointment.appointmentStatus,
     });
   }
@@ -486,6 +487,9 @@ const reviewRefundRequest = async (
 
   return prisma.$transaction(
     async (tx) => {
+      const reviewer=await tx.user.findUnique({where:{id:reviewerId},select:{role:true,status:true}});
+      if(reviewer?.role!=='BRAND_OWNER'||reviewer.status!=='ACTIVE')throw new AppError('REFUND_REVIEW_ACCESS_DENIED',403);
+      await lockRefundResource(tx,requestId);
       // =====================================================
       // 1. FETCH REFUND REQUEST
       // =====================================================
@@ -557,6 +561,7 @@ const reviewRefundRequest = async (
           throw new AppError("REFUND_REQUEST_ALREADY_REVIEWED", 409);
         }
 
+        await tx.refundAllocation.updateMany({where:{refundRequestId:request.id,status:'RESERVED'},data:{status:'CANCELLED'}});
         // =================================================
         // 2.1 AUDIT LOG: REFUND REJECTED
         // =================================================
@@ -621,7 +626,8 @@ const reviewRefundRequest = async (
       // =====================================================
 
       const payment = request.payment;
-      const policyExecution = await validatePolicyRefund(tx, request);
+      const hasAllocations=(await tx.refundAllocation.count({where:{refundRequestId:request.id}}))>0;
+      const policyExecution = hasAllocations ? !!await validateAllocationPlan(tx,request.id) : await validatePolicyRefund(tx, request);
 
       const isStripe = payment.provider === PaymentProvider.STRIPE;
 
@@ -642,7 +648,7 @@ const reviewRefundRequest = async (
       const eligibility = policyExecution
         ? {
             eligible: true,
-            refundableAmount: Number(payment.amount) - alreadyRefunded,
+            refundableAmount: hasAllocations ? Number(request.amount) : Number(payment.amount) - alreadyRefunded,
           }
         : calculateRefundEligibility({
             paymentStatus: payment.status,
@@ -694,18 +700,18 @@ const reviewRefundRequest = async (
           appointment.startTime,
         );
 
-        const cutoffHours = policy.cancellationCutoffHours;
+        const cutoffMinutes = policy.cancellationCutoffMinutes;
 
         if (
-          !Number.isFinite(cutoffHours) ||
-          cutoffHours < 0 ||
+          !Number.isFinite(cutoffMinutes) ||
+          cutoffMinutes < 0 ||
           Number.isNaN(appointmentDateTime.getTime())
         ) {
           throw new AppError("INVALID_CANCELLATION_POLICY", 409);
         }
 
         const cancellationDeadline = new Date(
-          appointmentDateTime.getTime() - cutoffHours * 60 * 60 * 1000,
+          appointmentDateTime.getTime() - cutoffMinutes * 60 * 1000,
         );
 
         // Check original customer request time,
@@ -836,6 +842,7 @@ const getRefundRequestById = async (
     },
 
     include: {
+      allocations:{include:{refund:true},orderBy:{createdAt:"asc"}},
       customer: {
         select: {
           id: true,
@@ -958,6 +965,7 @@ const getRefundRequestById = async (
 
   return {
     id: request.id,
+    allocations:request.allocations.map(a=>({id:a.id,paymentId:a.paymentId,provider:a.provider,amount:Number(a.amount),status:a.status,refundId:a.refundId,providerRefundId:a.refund?.providerRefundId??null,errorCode:a.lastErrorCode})),
 
     customer: {
       id: request.customer.id,

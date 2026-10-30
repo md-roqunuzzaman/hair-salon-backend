@@ -10,7 +10,7 @@ model GroupPurchaseRefundPolicy {
   policyFormat  String  @default("REFUND_TIERS_V1")
   boundaryMode  String  @default("MINIMUM_INCLUSIVE")
 
-  // Refund rules based on hours since purchase
+  // Refund rules based on minutes since purchase
   refundTiers Json
 
   // Package usage restrictions
@@ -40,16 +40,16 @@ model GroupPurchaseCancellationPolicy {
 
   cancellationAllowed Boolean @default(true)
 
-  // Minimum hours before appointment start
+  // Minimum minutes before appointment start
   // Cancellation is blocked below this threshold
-  minimumCancellationHours Int @default(2)
+  minimumCancellationMinutes Int @default(120)
 
   // Cancellation at or above this threshold
   // restores the package entitlement
-  restorationMinimumHours Int @default(24)
+  restorationMinimumMinutes Int @default(1440)
 
-  // Cancellation allowed below restorationMinimumHours
-  // but at or above minimumCancellationHours
+  // Cancellation allowed below restorationMinimumMinutes
+  // but at or above minimumCancellationMinutes
   lateCancellationOutcome EntitlementCancellationOutcome @default(FORFEITED)
 
   // =====================================================

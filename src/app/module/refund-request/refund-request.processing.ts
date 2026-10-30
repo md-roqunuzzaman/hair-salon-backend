@@ -1,3 +1,6 @@
+import { processAllocatedRefund } from './refund-allocation.processing.js';
+import { aggregateGroupRefundStatus, lockRefundResource } from './refund-allocation.plan.js';
+import { walletPaymentFunding } from '../wallet/wallet-payment-ledger.js';
 import { validatePolicyRefund, finalizePolicyGroupRefund, recordPolicyRefundCompletion } from '../cancellation-refund/policy-refund.execution.js';
 import { executionSnapshot } from '../cancellation-refund/cancellation-refund.interface.js';
 import { notificationService } from "../notification/notification.service.js";
@@ -23,20 +26,28 @@ import { AppError } from "../../utils/app-error.js";
 
 // Use the SAME initialized Stripe client used by refundPayment().
 import { stripe } from "../../lib/stripe.js";
+import { cents } from '../cancellation-refund/policy.calculation.js';
 
 const createHongKongDateTime = (date: Date, time: string) => {
   const datePart = date.toISOString().slice(0, 10);
   return new Date(`${datePart}T${time}:00+08:00`);
 };
 
-const toCents = (amount: Prisma.Decimal | number) =>
-  Math.round(Number(amount) * 100);
+const toCents = cents;
+
+const verifyApprovedStripeRefund = (requestId:string,refundId:string,payment:{id:string;providerPaymentId:string|null;currency:string},amount:Prisma.Decimal|number,provider:Stripe.Refund) => {
+  const intent=typeof provider.payment_intent==='string'?provider.payment_intent:provider.payment_intent?.id;
+  if(!provider.id||intent!==payment.providerPaymentId||provider.amount!==toCents(amount)||provider.currency?.toUpperCase()!==payment.currency||provider.metadata?.refundRequestId!==requestId||provider.metadata?.refundId!==refundId||provider.metadata?.paymentId!==payment.id)throw new AppError('REFUND_RECONCILIATION_MISMATCH',409);
+};
 
 const processApprovedRefund = async (requestId: string, reviewerId: string) => {
   // =====================================================
   // 0. ROUTE REFUND TO THE CORRECT PAYMENT PROVIDER
   // =====================================================
 
+  const actor=await prisma.user.findUnique({where:{id:reviewerId},select:{role:true,status:true}});
+  if(actor?.role!=='BRAND_OWNER'||actor.status!=='ACTIVE')throw new AppError('REFUND_PROCESS_ACCESS_DENIED',403);
+  if(await prisma.refundAllocation.count({where:{refundRequestId:requestId}}))return processAllocatedRefund(requestId);
   const request = await prisma.refundRequest.findUnique({
     where: { id: requestId },
     select: {
@@ -82,6 +93,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
 
   const claimed = await prisma.$transaction(
     async (tx) => {
+      await lockRefundResource(tx,requestId);
       const request = await tx.refundRequest.findUnique({
         where: { id: requestId },
 
@@ -118,6 +130,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
         throw new AppError("REFUND_REQUEST_NOT_APPROVED", 409);
       }
 
+      if(!request.reviewedBy||!request.reviewedAt)throw new AppError('REFUND_APPROVAL_REQUIRED',409);
       const payment = request.payment;
       if (payment.groupPurchaseId) await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id"=${payment.groupPurchaseId} FOR UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id"=${payment.id} FOR UPDATE`;
@@ -203,7 +216,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
 
         const cutoffAt = new Date(
           appointmentAt.getTime() -
-            policy.cancellationCutoffHours * 60 * 60 * 1000,
+            policy.cancellationCutoffMinutes * 60 * 1000,
         );
 
         // Original request time, NOT processing time.
@@ -315,7 +328,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
       },
       {
         idempotencyKey: `refund-request-${claimed.requestId}`,
-        maxNetworkRetries: 0,
+        maxNetworkRetries: 0, timeout: 15000,
       },
     );
   } catch (error) {
@@ -328,6 +341,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
   }
 
   const refundedIntentId = typeof stripeRefund.payment_intent === "string" ? stripeRefund.payment_intent : stripeRefund.payment_intent?.id;
+  verifyApprovedStripeRefund(requestId,claimed.refundId,{id:claimed.paymentId,providerPaymentId:claimed.providerPaymentId,currency:claimed.currency},new Prisma.Decimal(claimed.amountCents).div(100),stripeRefund);
   if (refundedIntentId !== claimed.providerPaymentId || stripeRefund.amount !== claimed.amountCents || stripeRefund.currency.toLowerCase() !== claimed.currency.toLowerCase()) {
     throw new AppError("STRIPE_REFUND_RECONCILIATION_REQUIRED", 502);
   }
@@ -378,6 +392,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
 const finalizeApprovedStripeRefund = async (requestId: string, stripeRefund: Stripe.Refund) => {
   const finalized = await prisma.$transaction(
     async (tx) => {
+      await lockRefundResource(tx,requestId);
       await tx.$queryRaw`SELECT "id" FROM "RefundRequest" WHERE "id" = ${requestId} FOR UPDATE`;
       const request = await tx.refundRequest.findUnique({
         where: { id: requestId },
@@ -400,6 +415,7 @@ const finalizeApprovedStripeRefund = async (requestId: string, stripeRefund: Str
       if (!request || !request.refundId) {
         throw new AppError("REFUND_REQUEST_NOT_FOUND", 404);
       }
+      verifyApprovedStripeRefund(requestId,request.refundId,request.payment,request.amount,stripeRefund);
 
       if (request.status === RefundRequestStatus.COMPLETED) {
         const completed = request.payment.refunds.find(item => item.id === request.refundId);
@@ -433,6 +449,7 @@ const finalizeApprovedStripeRefund = async (requestId: string, stripeRefund: Str
       );
 
       const fullyRefunded = totalRefundedCents >= toCents(payment.amount);
+      if(totalRefundedCents>toCents(payment.amount))throw new AppError('REFUND_AMOUNT_EXCEEDS_AVAILABLE_BALANCE',409);
 
       const paymentStatus = fullyRefunded
         ? PaymentStatus.REFUNDED
@@ -514,12 +531,7 @@ const finalizeApprovedStripeRefund = async (requestId: string, stripeRefund: Str
           throw new AppError("GROUP_PURCHASE_NOT_FOUND", 404);
         }
 
-        await tx.groupPurchase.update({
-          where: { id: payment.groupPurchase.id },
-          data: {
-            paymentStatus: PaymentStatus.REFUNDED,
-          },
-        });
+        await aggregateGroupRefundStatus(tx,payment.groupPurchase.id);
       }
 
       // ===============================================
@@ -581,6 +593,7 @@ export const reconcileApprovedStripeRefund = async (requestId: string) => {
     provider = matches[0];
   }
   const intentId = typeof provider.payment_intent === "string" ? provider.payment_intent : provider.payment_intent?.id;
+  verifyApprovedStripeRefund(requestId,request.refund.id,request.payment,request.amount,provider);
   if ((request.refund.providerRefundId && provider.id !== request.refund.providerRefundId) || intentId !== request.payment.providerPaymentId || provider.amount !== toCents(request.amount) || provider.currency.toLowerCase() !== request.payment.currency.toLowerCase()) throw new AppError("REFUND_RECONCILIATION_MISMATCH", 409);
   await prisma.refund.updateMany({ where: { id: request.refund.id, status: RefundStatus.PENDING }, data: { providerRefundId: provider.id } });
   if (provider.status === "succeeded") return finalizeApprovedStripeRefund(requestId, provider);
@@ -598,10 +611,13 @@ const processApprovedWalletRefund = async (
   requestId: string,
   reviewerId: string,
 ) => {
+  const actor=await prisma.user.findUnique({where:{id:reviewerId},select:{role:true,status:true}});
+  if(actor?.role!=='BRAND_OWNER'||actor.status!=='ACTIVE')throw new AppError('REFUND_PROCESS_ACCESS_DENIED',403);
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await prisma.$transaction(
         async (tx) => {
+          await lockRefundResource(tx,requestId);
           // 1. Lock refund request first.
           const lockedRequests = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT "id"
@@ -760,18 +776,18 @@ const processApprovedWalletRefund = async (
               appointment.startTime,
             );
 
-            const cutoffHours = policy.cancellationCutoffHours;
+            const cutoffMinutes = policy.cancellationCutoffMinutes;
 
             if (
-              !Number.isFinite(cutoffHours) ||
-              cutoffHours < 0 ||
+              !Number.isFinite(cutoffMinutes) ||
+              cutoffMinutes < 0 ||
               Number.isNaN(appointmentAt.getTime())
             ) {
               throw new AppError("INVALID_CANCELLATION_POLICY", 409);
             }
 
             const cutoffAt = new Date(
-              appointmentAt.getTime() - cutoffHours * 60 * 60 * 1000,
+              appointmentAt.getTime() - cutoffMinutes * 60 * 1000,
             );
 
             if (request.createdAt >= cutoffAt) {
@@ -843,28 +859,9 @@ const processApprovedWalletRefund = async (
               ? WalletTransactionType.APPOINTMENT_PAYMENT
               : WalletTransactionType.GROUP_PURCHASE_PAYMENT;
 
-          const deductions = await tx.walletTransaction.findMany({
-            where: {
-              walletId: wallet.id,
-              referenceId,
-              type: transactionType,
-              amount: { lt: 0 },
-            },
-          });
-
-          const paidSpent = deductions
-            .filter((item) => item.balanceType === BalanceType.PAID)
-            .reduce(
-              (sum, item) => sum.plus(item.amount.negated()),
-              new Prisma.Decimal(0),
-            );
-
-          const bonusSpent = deductions
-            .filter((item) => item.balanceType === BalanceType.BONUS)
-            .reduce(
-              (sum, item) => sum.plus(item.amount.negated()),
-              new Prisma.Decimal(0),
-            );
+          const originalFunding=await walletPaymentFunding(tx,payment);
+          const paidSpent=new Prisma.Decimal(originalFunding.paidCents).div(100);
+          const bonusSpent=new Prisma.Decimal(originalFunding.bonusCents).div(100);
 
           if (!paidSpent.plus(bonusSpent).equals(paymentAmount)) {
             throw new AppError("WALLET_PAYMENT_LEDGER_MISMATCH", 409);
@@ -951,6 +948,8 @@ const processApprovedWalletRefund = async (
                 balanceType: BalanceType.PAID,
                 amount: paidRefund,
                 referenceId: refund.id,
+                paymentId: payment.id,
+                ledgerKey: `refund:${refund.id}:PAID`,
               },
             });
           }
@@ -963,6 +962,8 @@ const processApprovedWalletRefund = async (
                 balanceType: BalanceType.BONUS,
                 amount: bonusRefund,
                 referenceId: refund.id,
+                paymentId: payment.id,
+                ledgerKey: `refund:${refund.id}:BONUS`,
               },
             });
           }
@@ -1032,12 +1033,7 @@ const processApprovedWalletRefund = async (
 
           // 12. Invalidate refunded group purchase.
           if (payment.purpose === PaymentPurpose.GROUP_PURCHASE) {
-            await tx.groupPurchase.update({
-              where: { id: payment.groupPurchaseId! },
-              data: {
-                paymentStatus: PaymentStatus.REFUNDED,
-              },
-            });
+            await aggregateGroupRefundStatus(tx,payment.groupPurchaseId!);
           }
 
           await finalizePolicyGroupRefund(tx, request);

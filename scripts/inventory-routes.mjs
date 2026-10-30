@@ -47,6 +47,12 @@ if (process.argv.includes('--audit')) {
     }
     if (now.length!==1) throw Error(`Missing or duplicate existing route ${r.method} ${r.path}`);
     let expected = r.middleware;
+    // Registration verification now includes the user-supplied abuse limit.
+    // Preserve the old baseline and allow only this exact middleware addition.
+    if (r.method==='POST' && r.path==='/api/v1/auth/register') {
+      if(JSON.stringify(r.middleware)!==JSON.stringify(['validateRequest(authValidation.registerValidationSchema)']))throw Error('Registration baseline changed unexpectedly');
+      expected=['validateRequest(authValidation.registerValidationSchema)','registrationRateLimit'];
+    }
     if (r.method==='GET' && r.path==='/api/v1/staff/:staffId') {
       if (JSON.stringify(r.middleware)!==JSON.stringify(approvedStaffRead.before)) throw Error('Staff baseline changed unexpectedly');
       expected = approvedStaffRead.after;

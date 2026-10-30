@@ -51,6 +51,65 @@ export class Sessions {
     });
   }
   async eval(script, options) {
+    // Translate only the application's supported Lua operations. Every script
+    // is one SQLite transaction, including counters, TTLs and OTP consumption.
+    const normalized = script.replace(/--[^\n]*/g, '').replace(/\s+/g, ' ');
+    const { keys, arguments: args } = options;
+    if (keys.length === 1 && normalized.includes('local count = redis.call("INCR", KEYS[1])')) {
+      return this.storage.transaction(async () => {
+        const count = await this.incr(keys[0]);
+        if (count === 1) await this.expire(keys[0], Number(args[0]));
+        return count;
+      });
+    }
+    if (keys.length === 2 && normalized.includes('local count = redis.call("INCR", KEYS[1])') && normalized.includes('local reserved')) {
+      return this.storage.transaction(async () => {
+        const count = await this.incr(keys[0]);
+        if (count === 1) await this.expire(keys[0], Number(args[0]));
+        if (count > Number(args[1])) return -1;
+        return await this.set(keys[1], '1', { NX: true, EX: Number(args[2]) }) ? 1 : -2;
+      });
+    }
+    if (keys.length === 2 && normalized.includes('redis.call( "SET", KEYS[1], ARGV[1], "EX", tonumber(ARGV[2]) )')) {
+      return this.storage.transaction(async () => {
+        await this.set(keys[0], args[0], { EX: Number(args[1]) });
+        await this.del(keys[1]);
+        return 1;
+      });
+    }
+    if ([2, 3].includes(keys.length) && normalized.includes('local stored = redis.call("GET", KEYS[1])') && normalized.includes('local maxAttempts')) {
+      return this.storage.transaction(async () => {
+        const stored = await this.get(keys[0]);
+        if (stored === null) return -1;
+        let attempts = Number(await this.get(keys[1]) ?? 0);
+        const maximum = Number(args[1]);
+        if (attempts >= maximum) { await this.del(keys[0]); await this.del(keys[1]); return -2; }
+        if (stored !== args[0]) {
+          attempts = await this.incr(keys[1]);
+          if (attempts === 1) {
+            const ttl = await this.ttl(keys[0]);
+            if (ttl > 0) await this.expire(keys[1], ttl);
+          }
+          if (attempts >= maximum) { await this.del(keys[0]); await this.del(keys[1]); return -2; }
+          return maximum - attempts;
+        }
+        if (keys.length === 3) {
+          await this.set(keys[2], args[2], { EX: Number(args[3]) });
+          await this.del(keys[0]); await this.del(keys[1]);
+        }
+        return 0;
+      });
+    }
+    if ([1, 2].includes(keys.length) && normalized.includes('if redis.call("GET", KEYS[1]) == ARGV[1] then')) {
+      return this.storage.transaction(async () => {
+        if (await this.get(keys[0]) === args[0]) {
+          const deleted = await this.del(keys[0]);
+          if (keys.length === 2) await this.del(keys[1]);
+          return keys.length === 2 ? 1 : deleted;
+        }
+        return keys.length === 2 ? 1 : 0;
+      });
+    }
     if (options.keys.length === 2 && script.includes('redis.call("SET", KEYS[2]')) {
       return this.storage.transaction(async () => {
         if (!await this.get(options.keys[0])) return 0;

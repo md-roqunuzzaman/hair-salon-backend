@@ -22,8 +22,14 @@ declare global {
 
 export const auth = (...requiredRoles: Role[]) => {
   return catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+    // =====================================================
+    // 1. EXTRACT ACCESS TOKEN
+    // =====================================================
+
     const authorization = req.headers.authorization;
-    const token = req.cookies?.accessToken ??
+
+    const token =
+      req.cookies?.accessToken ??
       (authorization?.startsWith("Bearer ")
         ? authorization.slice(7)
         : undefined);
@@ -35,16 +41,31 @@ export const auth = (...requiredRoles: Role[]) => {
       );
     }
 
+    // =====================================================
+    // 2. VERIFY JWT
+    // =====================================================
+
     const verifiedToken = jwtUtils.verifyToken(token, config.jwt_access_secret);
 
     if (!verifiedToken.success || !verifiedToken.data) {
-      throw new AppError(verifiedToken.error || "Invalid or expired token", 401);
+      throw new AppError(
+        verifiedToken.error || "Invalid or expired token",
+        401,
+      );
     }
 
     const { userId, email } = verifiedToken.data as JwtPayload;
+
     if (typeof userId !== "string" || !userId.trim()) {
-      throw new AppError("Authentication token is invalid. Please log in again", 401);
+      throw new AppError(
+        "Authentication token is invalid. Please log in again",
+        401,
+      );
     }
+
+    // =====================================================
+    // 3. FIND USER
+    // =====================================================
 
     const user = await prisma.user.findUnique({
       where: {
@@ -56,9 +77,28 @@ export const auth = (...requiredRoles: Role[]) => {
       throw new AppError("User not found. Please log in again.", 401);
     }
 
+    // =====================================================
+    // 4. CHECK ACCOUNT STATUS
+    // =====================================================
+
     if (user.status !== UserStatus.ACTIVE) {
       throw new AppError("Your account is inactive.", 403);
     }
+
+    // =====================================================
+    // 5. CHECK EMAIL VERIFICATION (CUSTOMER ONLY)
+    // =====================================================
+
+    if (user.role === Role.CUSTOMER && !user.emailVerified) {
+      throw new AppError(
+        "Email verification required. Please verify your email before accessing this resource.",
+        403,
+      );
+    }
+
+    // =====================================================
+    // 6. CHECK ROLE PERMISSION
+    // =====================================================
 
     if (requiredRoles.length && !requiredRoles.includes(user.role)) {
       throw new AppError(
@@ -66,6 +106,10 @@ export const auth = (...requiredRoles: Role[]) => {
         403,
       );
     }
+
+    // =====================================================
+    // 7. ATTACH AUTHENTICATED USER
+    // =====================================================
 
     req.user = {
       userId: user.id,

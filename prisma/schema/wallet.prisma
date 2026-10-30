@@ -31,12 +31,16 @@ model WalletTransaction {
   amount Decimal @db.Decimal(10, 2)
 
   referenceId String?
+  paymentId String?
+  ledgerKey String? @unique
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 
   wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now())
 
   @@index([walletId])
+  @@index([paymentId])
   @@index([type])
   @@index([createdAt])
 }

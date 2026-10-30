@@ -11,7 +11,7 @@ const assertBranchPolicyAccess = async (branchId: string, userId: string, role: 
   if (role === Role.BRANCH_MANAGER && !await prisma.branchManagerBranch.findUnique({where:{userId_branchId:{userId,branchId}},select:{userId:true}})) throw new AppError('You are not allowed to access policies for this branch',403);
 };
 type GroupPurchaseRefundTier = {
-  minimumHoursAfterPurchase: number;
+  minimumMinutesAfterPurchase: number;
   calculationType: "PERCENTAGE" | "FIXED";
   value: number;
 };
@@ -90,20 +90,20 @@ const updateGroupPurchaseRefundPolicy = async (
 
   for (const tier of payload.refundTiers) {
     if (
-      !Number.isInteger(tier.minimumHoursAfterPurchase) ||
-      tier.minimumHoursAfterPurchase < 0
+      !Number.isInteger(tier.minimumMinutesAfterPurchase) ||
+      tier.minimumMinutesAfterPurchase < 0
     ) {
       throw new AppError(
-        "Refund tier hours must be non-negative integers",
+        "Refund tier minutes must be non-negative integers",
         400,
       );
     }
 
-    if (seenHours.has(tier.minimumHoursAfterPurchase)) {
-      throw new AppError("Duplicate refund tier hours", 400);
+    if (seenHours.has(tier.minimumMinutesAfterPurchase)) {
+      throw new AppError("Duplicate refund tier minutes", 400);
     }
 
-    seenHours.add(tier.minimumHoursAfterPurchase);
+    seenHours.add(tier.minimumMinutesAfterPurchase);
 
     if (
       tier.calculationType !== "PERCENTAGE" &&
@@ -142,7 +142,7 @@ const updateGroupPurchaseRefundPolicy = async (
   // the entire period after purchase.
   if (!seenHours.has(0)) {
     throw new AppError(
-      "Refund tiers must include a tier starting at 0 hours",
+      "Refund tiers must include a tier starting at 0 minutes",
       400,
     );
   }
@@ -152,7 +152,7 @@ const updateGroupPurchaseRefundPolicy = async (
   // =====================================================
 
   const refundTiers = [...payload.refundTiers].sort(
-    (a, b) => b.minimumHoursAfterPurchase - a.minimumHoursAfterPurchase,
+    (a, b) => b.minimumMinutesAfterPurchase - a.minimumMinutesAfterPurchase,
   );
 
   // =====================================================
@@ -319,28 +319,28 @@ const updateGroupPurchaseCancellationPolicy = async (
   }
 
   if (
-    !Number.isInteger(payload.minimumCancellationHours) ||
-    payload.minimumCancellationHours < 0
+    !Number.isInteger(payload.minimumCancellationMinutes) ||
+    payload.minimumCancellationMinutes < 0
   ) {
     throw new AppError(
-      "Minimum cancellation hours must be a non-negative integer",
+      "Minimum cancellation minutes must be a non-negative integer",
       400,
     );
   }
 
   if (
-    !Number.isInteger(payload.restorationMinimumHours) ||
-    payload.restorationMinimumHours < 0
+    !Number.isInteger(payload.restorationMinimumMinutes) ||
+    payload.restorationMinimumMinutes < 0
   ) {
     throw new AppError(
-      "Restoration minimum hours must be a non-negative integer",
+      "Restoration minimum minutes must be a non-negative integer",
       400,
     );
   }
 
-  if (payload.restorationMinimumHours < payload.minimumCancellationHours) {
+  if (payload.restorationMinimumMinutes < payload.minimumCancellationMinutes) {
     throw new AppError(
-      "Restoration minimum hours cannot be less than minimum cancellation hours",
+      "Restoration minimum minutes cannot be less than minimum cancellation minutes",
       400,
     );
   }
@@ -372,8 +372,8 @@ const updateGroupPurchaseCancellationPolicy = async (
     const policyData = {
       isEnabled: payload.isEnabled,
       cancellationAllowed: payload.cancellationAllowed,
-      minimumCancellationHours: payload.minimumCancellationHours,
-      restorationMinimumHours: payload.restorationMinimumHours,
+      minimumCancellationMinutes: payload.minimumCancellationMinutes,
+      restorationMinimumMinutes: payload.restorationMinimumMinutes,
       lateCancellationOutcome: payload.lateCancellationOutcome,
     };
     if (existing) {

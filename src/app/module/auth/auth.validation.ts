@@ -77,10 +77,27 @@ const resetPasswordValidationSchema = z.object({
       ),
   }),
 });
+
+const verifyEmailOtpValidationSchema = z.object({
+  body: z.object({
+    email: z.email("Invalid email address").trim().toLowerCase(),
+
+    otp: z.string().regex(/^\d{6}$/, "OTP must be exactly 6 digits"),
+  }),
+});
+
+const resendVerificationOtpValidationSchema = z.object({
+  body: z.object({
+    email: z.string().trim().toLowerCase().email("Invalid email address"),
+  }),
+});
+
 export const authValidation = {
   registerValidationSchema,
   LoginZodSchema,
   forgotPasswordValidationSchema,
   verifyResetOtpValidationSchema,
   resetPasswordValidationSchema,
+  verifyEmailOtpValidationSchema,
+  resendVerificationOtpValidationSchema,
 };

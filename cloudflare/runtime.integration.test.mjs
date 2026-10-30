@@ -30,7 +30,7 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
   let cookie = '';
   const api = async (url, { method = 'GET', body, status = 200, headers = {} } = {}) => {
     const response = await mf.dispatchFetch(`https://test${url}`, {
-      method, headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...headers },
+      method, headers: { 'cf-connecting-ip':'192.0.2.10', ...(body ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...headers },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     const text = await response.text();
@@ -72,7 +72,7 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
     assert.deepEqual((await api(path, { status: 500 })).data, { success: false, statusCode: 500, name: 'Internal Server Error', message: 'Internal Server Error' });
   }
   const credentials = { email: 'customer@example.com', password: 'StrongPassword123!' };
-  const registered = await api('/api/v1/auth/register', { method: 'POST', body: { ...credentials, name: 'Customer' }, status: 201 });
+  const registered = await api('/__email-test-control', { method:'POST',body:{seedCustomer:credentials.email} });
   await api('/api/v1/auth/register', { method: 'POST', body: { ...credentials, name: 'Customer' }, status: 409 });
   const login = await api('/api/v1/auth/login', { method: 'POST', body: credentials });
   const refresh = login.data.data.refreshToken;

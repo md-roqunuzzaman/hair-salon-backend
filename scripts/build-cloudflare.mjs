@@ -11,7 +11,7 @@ const integration = process.argv.includes('--test');
 const outputName = integration ? 'integration' : 'worker';
 await mkdir(directory, { recursive: true });
 const templates = [];
-for (const name of ['forgot-password', 'reset-password']) {
+for (const name of ['forgot-password', 'reset-password', 'verify-email']) {
   const source = await readFile(`src/app/templates/${name}.ejs`, 'utf8');
   const pieces = [];
   let offset = 0;
@@ -25,8 +25,8 @@ for (const name of ['forgot-password', 'reset-password']) {
 }
 await writeFile(`${directory}/templates.mjs`, `const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&#34;',"'":'&#39;'}[char]));\nconst templates = {${templates.join(',\n')}};\nexport default { async renderFile(file, data) { const name = file.split(/[\\\\/]/).pop(); if (!templates[name]) throw new Error('Unknown email template'); return templates[name](data); } };\n`);
 const { default: compiledTemplates } = await import(`../${directory}/templates.mjs?${Date.now()}`);
-for (const name of ['forgot-password', 'reset-password']) {
-  const data = { name: '<b>Test & "name"</b>', otp: '123456', expirationMinutes: 5 };
+for (const name of ['forgot-password', 'reset-password', 'verify-email']) {
+  const data = { brandName: '<Brand & Co>', year: 2026, name: '<b>Test & "name"</b>', otp: '123456', expirationMinutes: 5 };
   const original = ejs.render(await readFile(`src/app/templates/${name}.ejs`, 'utf8'), data);
   if (await compiledTemplates.renderFile(`${name}.ejs`, data) !== original) throw new Error(`Email template parity failed: ${name}`);
 }
@@ -71,13 +71,18 @@ const emailOutboxManagement = await readFile('cloudflare/migrations/0023_email_o
 const businessEmailRetirement = await readFile('cloudflare/migrations/0024_retire_business_email_events.sql', 'utf8');
 const unifiedMerchantEmail = await readFile('cloudflare/migrations/0025_unified_merchant_email.sql', 'utf8');
 const emailEnabledDefault = await readFile('cloudflare/migrations/0026_email_enabled_default.sql', 'utf8');
-const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence, emailOutboxManagement, businessEmailRetirement, unifiedMerchantEmail, emailEnabledDefault].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+const branchBannerCarousel = await readFile('cloudflare/migrations/0027_branch_banner_carousel.sql', 'utf8');
+const registrationVerification = await readFile('cloudflare/migrations/0028_registration_email_verification.sql', 'utf8');
+const policyTimeMinutes = await readFile('cloudflare/migrations/0029_policy_time_minutes.sql', 'utf8');
+const refundAllocations = await readFile('cloudflare/migrations/0030_refund_allocations.sql','utf8');
+const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence, emailOutboxManagement, businessEmailRetirement, unifiedMerchantEmail, emailEnabledDefault, branchBannerCarousel, registrationVerification, policyTimeMinutes, refundAllocations].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);
 await copyFile('generated/sqlite/internal/query_compiler_fast_bg.wasm', `${directory}/compiler.wasm`);
 const aliases = {
   'src/app/lib/prisma.ts': 'cloudflare/runtime/prisma.mjs',
+  'src/app/lib/request-client-ip.ts': 'cloudflare/runtime/request-client-ip.mjs',
   'src/app/lib/redis.ts': 'cloudflare/runtime/redis.mjs',
   'src/app/lib/nodemailer.ts': 'cloudflare/runtime/nodemailer.mjs',
   'src/app/lib/merchant-smtp.ts': 'cloudflare/runtime/merchant-smtp.mjs',
@@ -103,7 +108,7 @@ await build({
     builder.onResolve({ filter: /query_compiler_fast_bg\.wasm\?module$/ }, () => ({ path: './compiler.wasm', external: true }));
     builder.onResolve({ filter: /^bcrypt$/ }, () => ({ path: path.resolve('node_modules/bcryptjs/index.js') }));
     builder.onResolve({ filter: /^ejs$/ }, () => ({ path: path.resolve(`${directory}/templates.mjs`) }));
-    builder.onResolve({ filter: /(?:prisma|redis|nodemailer|merchant-smtp|env|client|enums)\.js$/ }, args => {
+    builder.onResolve({ filter: /(?:prisma|redis|nodemailer|merchant-smtp|request-client-ip|env|client|enums)\.js$/ }, args => {
       const resolved = path.relative(process.cwd(), path.resolve(args.resolveDir, args.path)).replaceAll('\\', '/').replace(/\.js$/, '.ts');
       if (aliases[resolved]) return { path: path.resolve(aliases[resolved]) };
     });

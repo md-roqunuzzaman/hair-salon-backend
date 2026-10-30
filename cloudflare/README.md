@@ -1,5 +1,72 @@
 # Cloudflare deployment
 
+## Cancellation/refund policy minutes — v29 local candidate
+
+Only the requested cancellation/rescheduling, refund-tier and preview fields change from hours to minutes. See the complete field map and current Postman examples in [the policy API guide](../docs/CANCELLATION_REFUND_POLICY_API.md). Existing durations are preserved: 12 hours becomes 720 minutes, 2 becomes 120 and 24 becomes 1440. New requests can set 30/90-minute thresholds. API paths, money calculations, permissions, notifications and unrelated time settings remain unchanged. Frontend clients must update both the field names and units together; old hour request fields are not minute aliases. Preview elapsed-minute values may be fractional.
+
+SQLite `0029_policy_time_minutes.sql` and PostgreSQL `20261030060000_policy_time_minutes` convert live policy columns/defaults and editable JSON tiers once. Invalid/conflicting JSON units and overflow fail closed. Existing checkout/refund/audit snapshots are not rewritten; detached normalization preserves their original thresholds and boundary modes during evaluation. Versions, timestamps and historical financial records are retained. Repeated migration initialization does not multiply values again. Old migration files remain unchanged.
+
+This is a local candidate, with no live migration or deployment. Use the existing `npm run cloudflare:prepare:staging` checks before a separately approved rollout, verify a fresh usable backup/live ledger and coordinate the frontend contract change. Worker initialization applies pending SQLite migrations; never run PostgreSQL SQL against Workers. After v29, recovery requires a v29-compatible binary; a pre-v29 application is not an automatic rollback. Staging/production email flags and credentials were not changed by this conversion.
+
+Local verification on 2026-10-30: `npm run test:regression` exited 0 with **280 TAP tests passed, zero failed/skipped**. Tests include 30/90-minute cutoff boundaries, actual 30-minute rescheduling and preview APIs, legacy snapshot financial equivalence, group refund age in minutes, invalid/conflicting units, migration overflow/rollback and repeated startup without double conversion. Node compilation, schema parity, financial/booking/email regressions and historical route checks passed. PostgreSQL Prisma schema validation passed; no live PostgreSQL upgrade was run. The protected historical backup restored/upgraded locally to v29 with 13,319 original cells checked, allowing only the explicit value/name conversions; it is not a current live backup. Ignored logs are `node_modules/.cloudflare-test/policy-minutes-{regression,prepare,backup}.log`.
+
+Latest standalone TypeScript and Cloudflare build/artifact checks passed; the manifest records v29 and 91 unchanged historical SQL files. A concurrent payment-history feature edit temporarily interrupted the aggregate preparation command and was subsequently updated outside this time-unit task. The 280-test regression result above predates those independent payment-feature edits and does not certify that separate feature; rerun aggregate preparation/regression for the combined workspace before release. This task preserves those shared edits and does not change payment-history/refund-eligibility business rules. Latest logs: `policy-minutes-latest-typecheck.log` and `policy-minutes-build.log` in the ignored test directory.
+
+## Registration email verification — v28 local candidate
+
+The registration/verification changes are included in the Cloudflare bundle. SQLite `0028_registration_email_verification.sql` adds User.emailVerified (default false) and nullable emailVerifiedAt. As explicitly requested, customers present during the one-time migration retain access via emailVerified=true; no historical OTP verification timestamp is invented. New registrations remain unverified and repeat initialization never verifies them. Existing customer/account, booking, payment, notification and email history records are retained. v1-v27 SQL is unchanged.
+
+The supplied PostgreSQL schema migration `20261030014939_add_email_verification` is retained unchanged. A separate `20261030020000_preserve_existing_customer_access` migration uses that migration's successful ledger timestamp to preserve access only for customers created before its application. Do not run PostgreSQL migrations against Workers. PostgreSQL schema validation is not a live PostgreSQL upgrade rehearsal.
+
+Public requests (JSON, no owner token required):
+
+```http
+POST /api/v1/auth/register
+{"name":"Test Customer","email":"your-approved-test-address@example.com","password":"StrongPassword123!"}
+
+POST /api/v1/auth/verify-email
+{"email":"your-approved-test-address@example.com","otp":"123456"}
+
+POST /api/v1/auth/resend-verification-otp
+{"email":"your-approved-test-address@example.com"}
+```
+
+Registration returns 201 and emailVerified=false, without an authenticated session or an inbox-delivery claim. Customer login/refresh/protected APIs require verification; staff/owner roles keep their existing exemption. Correct OTP returns 200, sets verification time and consumes the OTP; replay returns 409. Wrong/expired OTP returns 400, fifth wrong attempt returns 429. OTPs expire after five minutes and are stored as keyed HMACs. Resend uses the existing merchant-only security sender, five requests/15 minutes and a 60-second cooldown. Registration limits are five requests/IP/15 minutes and three/normalized email/hour. Worker limits use the edge-managed CF-Connecting-IP captured before the Node HTTP adapter; no broad Express proxy trust or client X-Forwarded-For fallback was added. Node retains req.ip.
+
+Cloudflare's SQLite session adapter now implements the new atomic counter/cooldown, OTP store/verify/consume, reset-token issuance and owner-lock-release operations. The new verify-email EJS template is compiled into the Worker with escape/parity checks; runtime filesystem access is unnecessary. AUTH_EMAIL_VERIFICATION_OTP is supported by owner history filters and stale-SENDING quarantine, with no automatic uncertain replay. OTP bodies/codes are excluded from stored security email history. Provider/booking/payment/outbox selection logic is retained.
+
+Registration sends immediately through an enabled, verified, runtime-ready merchant provider, independently of EMAIL_OUTBOX_ENABLED. A provider failure leaves the account unverified and recoverable through resend; accepted SMTP is not inbox confirmation. No new secret is required: retain the existing persistent encryption key, JWT secrets (at least 32 characters), merchant credentials and database namespace/singleton. The new password-reset implementation uses HMAC OTPs as well, so an outstanding older plaintext reset OTP may require a new request after rollout. Existing reset-token TTL/one-use behavior is retained.
+
+Run `npm run cloudflare:prepare:staging` and `npm run test:regression` locally. Before any separately approved staging deployment, verify a fresh usable backup and the immutable live ledger, keep the frontend API online, and review merchant readiness: real registration requests can send security emails after deployment. This preparation performs no deployment, live migration, secret change or real send; staging's previously authorized true outbox flag and production's false flag remain unchanged. Worker initialization applies only pending versioned SQLite migrations. After v28, retain a v28-compatible recovery artifact; do not roll back to an older migration checker, reset the database or edit its ledger.
+
+Verification on 2026-10-30: the complete `npm run test:regression` exited 0 with **276 TAP tests passed, zero failed/skipped**, including four new registration Worker tests with real SQLite and mocked Gmail sockets. Coverage includes the full verification/login lifecycle, access blocking, HMAC/TTL/attempts, rate/cooldown limits, replay/concurrent verification, failed/uncertain sends, stale security-send quarantine and no platform fallback. Existing booking/customer fixtures now explicitly represent verified accounts; the production access gate is exercised separately rather than bypassed. The standalone adapter fixture uses the current immutable migration runner instead of its stale v22 SQL list. Node compilation, TypeScript, PostgreSQL Prisma validation, fresh SQLite schema parity, v28 rollback/upgrade/repeat tests and historical route checks passed. The supplied register middleware addition is checked explicitly without rewriting the old route baseline. A protected historical v19 backup upgraded locally through v28 with all 13,319 original cells preserved; it is not a current live recovery point. Ignored evidence logs: `node_modules/.cloudflare-test/registration-{regression,prepare,backup,typecheck}.log`.
+
+Final `npm run cloudflare:prepare:staging` exited 0. The release manifest records v28, 91 unchanged historical migration files, registration/template/runtime inclusion, bundle isolation and Worker JavaScript 3,564,284 bytes. No Wrangler deployment command was executed.
+
+## Branch banner carousel — v27 local candidate
+
+The user-added carousel schema/APIs are included in the Worker build. Additive SQLite `0027_branch_banner_carousel.sql` creates the final branch-scoped model: unique required branchId, optional brandId, default imageIntervalMs=5000 and videoIntervalMs=15000. Existing banners, media, branch assignments and email/financial records are unchanged. Previous migration files remain immutable. The supplied PostgreSQL migrations `20261029100537_add_banner_carousel_settings` and `20261029101521_add_branch_carousel_settings` remain unchanged; do not run them against Workers. For a separate PostgreSQL rollout, inspect any intermediate rows with NULL branchId before applying the supplied required-branch migration; do not guess a branch or discard rows.
+
+New admin APIs (Authorization: owner or assigned branch manager):
+
+```http
+GET /api/v1/banners/carousel-settings/:branchId
+PATCH /api/v1/banners/carousel-settings/:branchId
+Content-Type: application/json
+
+{"imageIntervalMs":7000,"videoIntervalMs":20000}
+```
+
+PATCH accepts either/both integer fields, 1000–120000 ms; empty, unknown, null and invalid values are rejected. GET returns fallback defaults before the first write. Settings persist per branch; an omitted field retains its existing value. Existing public active-banner response remains unchanged. No new public carousel-settings endpoint was added by this preparation task.
+
+Preparation: `npm run cloudflare:prepare:staging` (local generation/build/schema/upgrade/artifact checks; no deployment). The regression suite includes real Worker API authorization, persistence, partial/concurrent updates and validation tests plus populated migration rollback, uniqueness, foreign-key/cascade and repeat-initialization tests. No live deployment, migration or email is authorized by build preparation. Keep the existing namespace/singleton and verify a current usable backup before any separately approved rollout; Worker initialization then applies only pending versioned SQLite migrations. A pre-v27 binary is not an automatic rollback after v27 because its ledger checker rejects extra versions.
+
+Local verification on 2026-10-29: `npm run test:regression` exited 0 with 272 TAP tests passed, zero failed/skipped; Node compilation, migration/schema checks and 148 historical route assertions passed. PostgreSQL Prisma schema validation passed without running PostgreSQL migrations. The protected historical v19 backup restored and upgraded locally through v27, preserving 13,319 original cells and passing repeated initialization; this rehearsal is not a fresh live backup. Logs are ignored under `node_modules/.cloudflare-test/banner-carousel-{regression,prepare,backup}.log`.
+
+Final `npm run cloudflare:prepare:staging` exited 0: TypeScript, generation, schema parity, v27 upgrade/rollback checks and production-bundle isolation passed. The manifest records 91 unchanged historical migration files, Worker JavaScript 3,546,778 bytes, staging business delivery true and production false. No Wrangler deployment or live database operation was run.
+
+The previously approved staging outbox flag remains true and production remains false. This task changes neither live flags nor merchant settings. A future deployment includes the shared workspace's earlier email candidates as well as carousel changes; review pending v25/v26 migrations and enabled merchant delivery/backlog before approving that release. Never deploy maintenance or reset/seed the database to prepare this feature.
+
 **Current v26 local candidate:** [unified merchant-only email](../docs/unified-merchant-email-system.md) adds enabled/unverified defaults for new configurations while preserving existing owner choices. All authentication and business mail uses the single merchant without platform fallback; sending still requires enabled, verified and provider/runtime readiness. Old skipped/uncertain records never replay. Staging's outbox flag was separately approved true; production remains false. This v26 defaults update is local only and is not deployment or real-send approval. See the dated activation/default sections in the linked guide; older false-flag/retirement instructions below are historical.
 
 For the permanent v23 Email Outbox upgrade, follow the staging-only, delivery-disabled procedure in [transactional-email-system.md](../docs/transactional-email-system.md#permanent-outbox-management-upgrade-v23-local-candidate). This implementation does not authorize deployment, secret rotation, production rollout or real email delivery. Old generic deployment examples below are not activation approval.

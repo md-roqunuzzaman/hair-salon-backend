@@ -19,7 +19,11 @@ import {
   ExecutionSnapshot,
   executionSnapshot,
 } from "./cancellation-refund.interface.js";
+import { policyTimeMinutes } from "./policy-time.js";
 import { purchaseExpired } from "./policy.snapshot.js";
+import { groupRefundFunding, allocateRefund } from '../refund-request/refund-allocation.plan.js';
+import { randomUUID } from 'node:crypto';
+import { PaymentProvider } from '../../../../generated/prisma/enums.js';
 const active = ["PENDING", "APPROVED", "PROCESSING"] as const;
 const signature = (value: unknown) =>
   createHmac("sha256", config.jwt_access_secret)
@@ -109,7 +113,7 @@ async function appointmentEvaluation(
 
   await access(tx, appointment, userId, role);
 
-  const snapshot = appointment.cancellationPolicySnapshot;
+  const snapshot = policyTimeMinutes(appointment.cancellationPolicySnapshot);
 
   if (!isSnapshot(snapshot)) {
     throw new AppError("LEGACY_POLICY_REVIEW_REQUIRED", 409);
@@ -224,13 +228,13 @@ async function appointmentEvaluation(
 
     reason,
 
-    hoursBeforeAppointment: ms / 3600000,
+    minutesBeforeAppointment: ms / 60000,
 
     policyVersion: snapshot.version,
 
     cancellationDeadline: new Date(
       appointmentTime(appointment.date, appointment.startTime).getTime() -
-        snapshot.config.minimumCancellationHours * 3600000,
+        snapshot.config.minimumCancellationMinutes * 60000,
     ),
 
     entitlementOutcome: outcome,
@@ -262,7 +266,7 @@ async function groupEvaluation(
   if (!purchase) throw new AppError("Group purchase not found", 404);
   if (purchase.customerId !== userId)
     throw new AppError("REFUND_ACCESS_DENIED", 403);
-  const snapshot = purchase.refundPolicySnapshot;
+  const snapshot = policyTimeMinutes(purchase.refundPolicySnapshot);
   if (
     !isSnapshot(snapshot) ||
     snapshot.module !== "GROUP_REFUND" ||
@@ -282,14 +286,12 @@ async function groupEvaluation(
       purchase.forfeitedQuantity -
       purchase.refundedQuantity,
   );
-  const { payment, pending } = await funding(
-    tx,
-    purchase.payments.filter((p) => p.purpose === "GROUP_PURCHASE"),
-  );
+  const {payments, funds, pending} = await groupRefundFunding(tx,purchase.id,purchase.customerId);
+  const payment=payments.find(p=>(funds.find(f=>f.paymentId===p.id)?.remainingCents??0)>0)??null;
   const eligible = payment
     ? Math.min(
-        remaining(payment),
-        new Prisma.Decimal(cents(payment.amount))
+        funds.reduce((s,p)=>s+p.remainingCents,0),
+        new Prisma.Decimal(funds.reduce((s,p)=>s+p.paidCents,0))
           .mul(remainingQuantity)
           .div(purchase.quantity)
           .toDecimalPlaces(0, Prisma.Decimal.ROUND_DOWN)
@@ -325,6 +327,7 @@ async function groupEvaluation(
     currency: "HKD",
     destination: payment?.provider ?? null,
     paymentId: payment?.id ?? null,
+    destinations: funds.map(p=>({paymentId:p.paymentId,provider:p.provider,availableAmount:money(p.remainingCents)})),
     approvalRequired: true,
   };
   const token = signature({
@@ -343,7 +346,7 @@ async function groupEvaluation(
     purchaseId: id,
     canRequestRefund: reason === null,
     reason,
-    purchaseAgeHours: age / 3600000,
+    purchaseAgeMinutes: age / 60000,
     purchasedQuantity: purchase.quantity,
     usedQuantity: allocated.length,
     forfeitedQuantity: purchase.forfeitedQuantity,
@@ -363,6 +366,7 @@ async function groupEvaluation(
     eligible,
     remainingQuantity,
     evaluatedAt,
+    funds,
   };
 }
 export const previewAppointment = (
@@ -412,6 +416,12 @@ async function createRequest(
       policyEvaluatedAt: new Date(snapshot.evaluatedAt),
     },
   });
+  if(snapshot.funding?.length){
+    for(const fund of snapshot.funding){
+      const id=randomUUID();
+      await tx.refundAllocation.create({data:{id,refundRequestId:request.id,paymentId:fund.paymentId,amount:money(fund.amountCents),provider:fund.provider as PaymentProvider,idempotencyKey:`refund-allocation-${id}`}});
+    }
+  }
   await auditLogService.createAuditLog(
     {
       userId: customerId,
@@ -672,6 +682,7 @@ export async function requestGroupRefund(
         policy: result.snapshot,
         evaluatedAt: result.evaluatedAt.toISOString(),
         refundableQuantity: result.remainingQuantity,
+        ...(result.funds.length>1?{funding:allocateRefund(result.funds,result.calculation.refundCents).map(a=>({...a,paidCents:result.funds.find(f=>f.paymentId===a.paymentId)!.paidCents}))}:{}),
         calculation: {
           eligibleCents: result.eligible,
           deductionCents: result.calculation.deductionCents,
@@ -685,3 +696,113 @@ export async function requestGroupRefund(
     },
   );
 }
+
+export const getPaymentRefundEligibility = async (
+  customerId: string,
+  payment: {
+    id: string;
+    purpose: string;
+    status: string;
+    appointmentId: string | null;
+    groupPurchaseId: string | null;
+  },
+): Promise<{
+  canRefund: boolean;
+  refundBlockedReason: string | null;
+}> => {
+  // Only settled payments can be refunded.
+  if (!["PAID", "PARTIALLY_REFUNDED"].includes(payment.status)) {
+    return {
+      canRefund: false,
+      refundBlockedReason: "PAYMENT_NOT_PAID",
+    };
+  }
+
+  // Wallet top-up is not refundable through
+  // the appointment/group purchase refund workflow.
+  if (payment.purpose === "WALLET_TOP_UP") {
+    return {
+      canRefund: false,
+      refundBlockedReason: "NOT_REFUNDABLE_PURPOSE",
+    };
+  }
+
+  // Appointment remaining payment is not currently
+  // covered by appointmentEvaluation funding selection.
+  if (payment.purpose === "APPOINTMENT_REMAINING") {
+    return {
+      canRefund: false,
+      refundBlockedReason: "REFUND_REVIEW_REQUIRED",
+    };
+  }
+
+  try {
+    if (
+      ["APPOINTMENT", "APPOINTMENT_DEPOSIT"].includes(payment.purpose) &&
+      payment.appointmentId
+    ) {
+      const result = await prisma.$transaction((tx) =>
+        appointmentEvaluation(
+          tx,
+          payment.appointmentId!,
+          customerId,
+          Role.CUSTOMER,
+        ),
+      );
+
+      const isEvaluatedPayment = result.view.refund.paymentId === payment.id;
+
+      const refundableAmount = result.view.refund.refundAmount;
+
+      return {
+        canRefund:
+          isEvaluatedPayment && result.view.canCancel && refundableAmount > 0,
+
+        refundBlockedReason: !isEvaluatedPayment
+          ? "PAYMENT_NOT_REFUND_SOURCE"
+          : (result.view.reason ??
+            (refundableAmount <= 0 ? "NO_REFUNDABLE_BALANCE" : null)),
+      };
+    }
+
+    if (payment.purpose === "GROUP_PURCHASE" && payment.groupPurchaseId) {
+      const result = await prisma.$transaction((tx) =>
+        groupEvaluation(tx, payment.groupPurchaseId!, customerId),
+      );
+
+      const isEvaluatedPayment = result.view.refund.paymentId === payment.id;
+
+      const refundableAmount = result.view.refund.refundAmount;
+
+      return {
+        canRefund:
+          isEvaluatedPayment &&
+          result.view.canRequestRefund &&
+          refundableAmount > 0,
+
+        refundBlockedReason: !isEvaluatedPayment
+          ? "PAYMENT_NOT_REFUND_SOURCE"
+          : (result.view.reason ??
+            (refundableAmount <= 0 ? "NO_REFUNDABLE_BALANCE" : null)),
+      };
+    }
+
+    return {
+      canRefund: false,
+      refundBlockedReason: "NOT_REFUNDABLE_PURPOSE",
+    };
+  } catch (error) {
+    // Known policy/reconciliation errors should block
+    // the refund button without failing payment history.
+    if (error instanceof AppError) {
+      if (error.statusCode === 409) {
+        return {
+          canRefund: false,
+          refundBlockedReason: error.message,
+        };
+      }
+    }
+
+    throw error;
+  }
+};

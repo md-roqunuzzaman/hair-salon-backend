@@ -1,9 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setup } from './test-support/public-worker.mjs';
-const servicePolicy={isEnabled:true,cancellationAllowed:true,refundAllowed:true,minimumCancellationHours:6,nonRefundable:false,deductionTiers:[{minimumHoursBeforeAppointment:48,calculationType:'PERCENTAGE',deductionValue:0},{minimumHoursBeforeAppointment:24,calculationType:'PERCENTAGE',deductionValue:20},{minimumHoursBeforeAppointment:12,calculationType:'PERCENTAGE',deductionValue:50},{minimumHoursBeforeAppointment:6,calculationType:'PERCENTAGE',deductionValue:100}]};
-const groupRefundPolicy={isEnabled:true,refundAllowed:true,allowPartiallyUsedRefund:true,allowExpiredRefund:false,requireNoActiveAppointments:true,refundTiers:[{minimumHoursAfterPurchase:0,refundPercentage:100},{minimumHoursAfterPurchase:24,refundPercentage:80},{minimumHoursAfterPurchase:72,refundPercentage:0}]};
-const groupCancelPolicy={isEnabled:true,cancellationAllowed:true,minimumCancellationHours:2,restorationMinimumHours:24,lateCancellationOutcome:'FORFEITED'};
+const servicePolicy={isEnabled:true,cancellationAllowed:true,refundAllowed:true,minimumCancellationMinutes:360,nonRefundable:false,deductionTiers:[{minimumMinutesBeforeAppointment:2880,calculationType:'PERCENTAGE',deductionValue:0},{minimumMinutesBeforeAppointment:1440,calculationType:'PERCENTAGE',deductionValue:20},{minimumMinutesBeforeAppointment:720,calculationType:'PERCENTAGE',deductionValue:50},{minimumMinutesBeforeAppointment:360,calculationType:'PERCENTAGE',deductionValue:100}]};
+const groupRefundPolicy={isEnabled:true,refundAllowed:true,allowPartiallyUsedRefund:true,allowExpiredRefund:false,requireNoActiveAppointments:true,refundTiers:[{minimumMinutesAfterPurchase:0,refundPercentage:100},{minimumMinutesAfterPurchase:1440,refundPercentage:80},{minimumMinutesAfterPurchase:4320,refundPercentage:0}]};
+const groupCancelPolicy={isEnabled:true,cancellationAllowed:true,minimumCancellationMinutes:120,restorationMinimumMinutes:1440,lateCancellationOutcome:'FORFEITED'};
+
+test('minute booking policy APIs preserve 30-minute rescheduling and preview units',async t=>{
+ const {api,fixture,ownerToken}=await setup(t,'true');
+ const root=`/api/v1/branches/${fixture.branchId}/booking-policy`;
+ const {groupPurchaseBookingMethods,staffSelectionRequired,depositEnabled,...policy}=(await api(root)).data;
+ assert.equal(policy.cancellationCutoffMinutes,720);assert.equal(policy.cancellationCutoffHours,undefined);
+ const save=minutes=>api(root,{method:'PUT',roleToken:ownerToken,body:{...policy,cancellationCutoffMinutes:30,rescheduleCutoffMinutes:minutes}});
+ await save(30);assert.equal((await api(root)).data.rescheduleCutoffMinutes,30);
+ const body={branchId:fixture.branchId,serviceId:fixture.serviceId,staffId:fixture.staffId,date:fixture.date,startTime:'14:00'};
+ const id=(await api('/api/v1/appointments/reserve',{body,status:201})).data.appointmentId;
+ await api('/__policy-test',{body:{appointmentId:id,hoursBefore:1}});
+ const view=(await api(`/api/v1/cancellation-refund/appointments/${id}/preview`)).data;
+ assert.ok(view.minutesBeforeAppointment>58&&view.minutesBeforeAppointment<=60);assert.equal(view.hoursBeforeAppointment,undefined);assert.equal(view.canCancel,true);
+ await api(`/api/v1/appointments/${id}/reschedule`,{body:{date:fixture.date,startTime:'15:00',staffId:fixture.staffId}});
+ await api('/__policy-test',{body:{appointmentId:id,hoursBefore:1}});await save(120);
+ await api(`/api/v1/appointments/${id}/reschedule`,{body:{date:fixture.date,startTime:'16:00',staffId:fixture.staffId},status:422});
+});
 test('merchant policies: real Worker APIs, snapshots, cancellation, approval and original funding refunds',async t=>{
   const {api,fixture,ownerToken,managerToken,otherManagerToken,state,webhook}=await setup(t,'true');
   const root='/api/v1/cancellation-refund',admin=`/api/v1/policy-management/branches/${fixture.branchId}`;
@@ -46,7 +63,7 @@ test('merchant policies: real Worker APIs, snapshots, cancellation, approval and
     else assert.equal(result.refundRequestId,null);
   });
   await t.test('fixed deduction, disabled refunds and non-refundable cancellation are independent',async()=>{
-    await put('service-cancellation',{...servicePolicy,deductionTiers:[{minimumHoursBeforeAppointment:6,calculationType:'FIXED',deductionValue:50}]});
+    await put('service-cancellation',{...servicePolicy,deductionTiers:[{minimumMinutesBeforeAppointment:360,calculationType:'FIXED',deductionValue:50}]});
     const fixed=await book();assert.equal((await preview(fixed.id)).refund.refundAmount,250);await cancel(fixed.id,'fixed-deduction');
     for(const changes of [{refundAllowed:false},{nonRefundable:true}]){await put('service-cancellation',{...servicePolicy,...changes});const {id}=await book();const p=await preview(id);assert.equal(p.canCancel,true);assert.equal(p.refund.refundAmount,0);assert.equal((await cancel(id,`zero-refund-${slot}`)).refundRequestId,null);}
     await put('service-cancellation',servicePolicy);
@@ -63,7 +80,7 @@ test('merchant policies: real Worker APIs, snapshots, cancellation, approval and
     const late=await book('RESERVE_NOW','NONE',5);assert.equal((await preview(late.id)).canCancel,false);
     const unpaid=await book('RESERVE_NOW','NONE',25);assert.equal((await cancel(unpaid.id,'reserve-no-refund')).refundRequestId,null);
     const changed=await book();const old=await preview(changed.id);await control({appointmentId:changed.id,hoursBefore:13});await api(`${root}/appointments/${changed.id}/cancel`,{body:{reason:'Stale confirmation',idempotencyKey:'stale-preview',previewToken:old.previewToken},status:409});
-    const register=(await api('/api/v1/auth/register',{body:{name:'Other customer',email:'other-policy@example.com',password:'StrongPassword123!'},status:201})).data;
+    const register=(await api('/__email-test-control',{body:{seedCustomer:'other-policy@example.com'}})).data;
     const otherToken=(await api('/api/v1/auth/login',{body:{email:'other-policy@example.com',password:'StrongPassword123!'}})).data.accessToken;
     await api(`${root}/appointments/${changed.id}/preview`,{roleToken:otherToken,status:403});assert.ok(register.id);
     await control({appointmentId:changed.id,clearSnapshot:true});await api(`${root}/appointments/${changed.id}/preview`,{status:409});
@@ -105,13 +122,13 @@ test('merchant policies: real Worker APIs, snapshots, cancellation, approval and
     const body={reason:'Refund unused entitlement',idempotencyKey:'partial-group-refund',previewToken:p.previewToken};const request=(await api(`${root}/group-purchases/${id}/refund-request`,{body})).data;
     assert.equal((await api(`${root}/group-purchases/${id}/refund-request`,{body})).data.id,request.id);
     await api(`/api/v1/group-purchases/${id}/book-appointment`,{body:{branchId:fixture.branchId,date:fixture.date,startTime:time()},status:409});
-    await approve(request.id);await process(request.id);const purchase=(await state()).purchases.find(p=>p.id===id);assert.equal(purchase.refundedQuantity,1);assert.equal(purchase.paymentStatus,'REFUNDED');
+    await approve(request.id);await process(request.id);const purchase=(await state()).purchases.find(p=>p.id===id);assert.equal(purchase.refundedQuantity,1);assert.equal(purchase.paymentStatus,'PARTIALLY_REFUNDED');
     await api(`/api/v1/group-purchases/${id}/book-appointment`,{body:{branchId:fixture.branchId,date:fixture.date,startTime:time()},status:409});
   });
   await t.test('active reservations block package refunds; group age and zero-refund tiers are explicit',async()=>{
     const id=await buy(2);const a=await redeem(id);let p=(await api(`${root}/group-purchases/${id}/refund-preview`)).data;assert.equal(p.canRequestRefund,false);
     await control({appointmentId:a.appointmentId,hoursBefore:25});await cancel(a.appointmentId,'resolve-active-package');
-    await control({purchaseId:id,ageHours:25});p=(await api(`${root}/group-purchases/${id}/refund-preview`)).data;assert.equal(p.refund.refundAmount,160.4);
+    await control({purchaseId:id,ageHours:25});p=(await api(`${root}/group-purchases/${id}/refund-preview`)).data;assert.equal(p.refund.refundAmount,160.4);assert.ok(p.purchaseAgeMinutes>=1500&&p.purchaseAgeMinutes<1501);assert.equal(p.purchaseAgeHours,undefined);
     await control({purchaseId:id,ageHours:73});p=(await api(`${root}/group-purchases/${id}/refund-preview`)).data;assert.equal(p.refund.refundAmount,0);assert.equal(p.canRequestRefund,false);
   });
   await t.test('concurrent cancellation and Wallet processing have one durable effect',async()=>{

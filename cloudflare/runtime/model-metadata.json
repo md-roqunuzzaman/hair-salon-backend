@@ -12,7 +12,7 @@
       "cancellationAllowed": "Boolean",
       "refundAllowed": "Boolean",
       "policyFormat": "String",
-      "minimumCancellationHours": "Int",
+      "minimumCancellationMinutes": "Int",
       "refundTiers": "Json",
       "nonRefundable": "Boolean",
       "version": "Int",
@@ -53,8 +53,8 @@
       "branchId": "String",
       "isEnabled": "Boolean",
       "cancellationAllowed": "Boolean",
-      "minimumCancellationHours": "Int",
-      "restorationMinimumHours": "Int",
+      "minimumCancellationMinutes": "Int",
+      "restorationMinimumMinutes": "Int",
       "lateCancellationOutcome": "EntitlementCancellationOutcome",
       "version": "Int",
       "createdAt": "DateTime",
@@ -201,9 +201,27 @@
       "createdAt": "DateTime"
     }
   },
+  "BannerCarouselSetting": {
+    "money": {},
+    "relations": {
+      "branch": "Branch",
+      "brand": "Brand"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "branchId": "String",
+      "imageIntervalMs": "Int",
+      "videoIntervalMs": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime",
+      "brandId": "String"
+    }
+  },
   "Branch": {
     "money": {},
     "relations": {
+      "bannerCarouselSettings": "BannerCarouselSetting",
       "bookingPolicy": "BranchBookingPolicy",
       "businessHours": "BranchBusinessHour",
       "hourlyCapacities": "BranchHourlyCapacity",
@@ -273,8 +291,8 @@
       "slotIntervalMinutes": "Int",
       "minimumBookingNoticeMinutes": "Int",
       "maximumAdvanceBookingDays": "Int",
-      "cancellationCutoffHours": "Int",
-      "rescheduleCutoffHours": "Int",
+      "cancellationCutoffMinutes": "Int",
+      "rescheduleCutoffMinutes": "Int",
       "reserveExpiryRule": "ReserveExpiryRule",
       "depositEnabled": "Boolean",
       "depositPercentage": "Decimal",
@@ -316,7 +334,8 @@
     "money": {},
     "relations": {
       "banners": "Banner",
-      "emailSetting": "BrandEmailSetting"
+      "emailSetting": "BrandEmailSetting",
+      "bannerCarouselSettings": "BannerCarouselSetting"
     },
     "arrays": [],
     "scalars": {
@@ -614,6 +633,8 @@
       "groupPurchase": "GroupPurchase",
       "settledGroupPurchase": "GroupPurchase",
       "refunds": "Refund",
+      "refundAllocations": "RefundAllocation",
+      "walletTransactions": "WalletTransaction",
       "walletTopup": "WalletTopup",
       "refundRequests": "RefundRequest"
     },
@@ -658,7 +679,8 @@
     },
     "relations": {
       "payment": "Payment",
-      "refundRequest": "RefundRequest"
+      "refundRequest": "RefundRequest",
+      "refundAllocation": "RefundAllocation"
     },
     "arrays": [],
     "scalars": {
@@ -768,7 +790,8 @@
       "customer": "User",
       "reviewer": "User",
       "payment": "Payment",
-      "refund": "Refund"
+      "refund": "Refund",
+      "allocations": "RefundAllocation"
     },
     "arrays": [],
     "scalars": {
@@ -791,6 +814,34 @@
       "isCancellationOnly": "Boolean",
       "policyEvaluatedAt": "DateTime",
       "idempotencyKey": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "RefundAllocation": {
+    "money": {
+      "amount": {
+        "scale": 2,
+        "max": "9999999999"
+      }
+    },
+    "relations": {
+      "request": "RefundRequest",
+      "payment": "Payment",
+      "refund": "Refund"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "refundRequestId": "String",
+      "paymentId": "String",
+      "refundId": "String",
+      "amount": "Decimal",
+      "provider": "PaymentProvider",
+      "status": "String",
+      "idempotencyKey": "String",
+      "submittedAt": "DateTime",
+      "lastErrorCode": "String",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }
@@ -1073,6 +1124,8 @@
       "preferredLanguage": "String",
       "role": "Role",
       "status": "UserStatus",
+      "emailVerified": "Boolean",
+      "emailVerifiedAt": "DateTime",
       "mustChangePassword": "Boolean",
       "avatarObjectKey": "String",
       "createdAt": "DateTime",
@@ -1114,6 +1167,7 @@
       }
     },
     "relations": {
+      "payment": "Payment",
       "wallet": "Wallet"
     },
     "arrays": [],
@@ -1124,6 +1178,8 @@
       "balanceType": "BalanceType",
       "amount": "Decimal",
       "referenceId": "String",
+      "paymentId": "String",
+      "ledgerKey": "String",
       "createdAt": "DateTime"
     }
   },

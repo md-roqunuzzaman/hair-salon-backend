@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 // External-provider mocks. Imported only by the integration entry point.
 const mock = { installed: false, mode: {}, requests: [], smtp: [] };
 let onData;
@@ -14,6 +15,8 @@ export function emailMockSocket(address, options) {
   return { opened: mock.mode.smtp === 'tls' ? Promise.reject(Object.assign(new Error('private TLS detail'), { code: 'CERT_HAS_EXPIRED' })) : Promise.resolve({}),
     readable, writable: new WritableStream({ async write(value) {
       const text = new TextDecoder().decode(value);
+      const otp = text.replace(/=\r?\n/g, '').match(/class=(?:3D)?"otp">(\d{6})/);
+      if (otp) record.otp = otp[1];
       if (text.startsWith('MAIL FROM:')) record.from = text.trim();
       if (text.startsWith('RCPT TO:')) record.to = text.trim();
       if (text.startsWith('AUTH')) record.stage = 'AUTH';
@@ -21,6 +24,7 @@ export function emailMockSocket(address, options) {
     } }), closed: Promise.resolve(), async close() {} };
 }
 export async function emailTestControl(db, sessions, body) {
+  if (body.seedCustomer) return {success:true,data:await db.user.create({ data: { name:'Existing synthetic customer', email:body.seedCustomer, passwordHash:await bcrypt.hash('StrongPassword123!',10), emailVerified:true, role:'CUSTOMER' } })};
   if (!mock.installed) {
     mock.installed = true;
     const originalFetch = globalThis.fetch;
@@ -70,12 +74,18 @@ export async function emailTestControl(db, sessions, body) {
   const brand = await db.brand.findFirst();
   if (body.flags) await db.brandEmailSetting.update({ where:{brandId:brand.id},data:body.flags });
   const authKey = `password-reset-otp:${brand.id}:${body.authEmail ?? 'book-now-customer@example.com'}`;
+  const verificationKey = `email-verification-otp:${brand.id}:${body.authEmail ?? 'book-now-customer@example.com'}`;
+  const latestOtp = mock.smtp.findLast(record => record.otp && record.to?.includes(`<${body.authEmail ?? 'book-now-customer@example.com'}>`))?.otp ?? null;
+  if (body.resetVerification) await sessions.eval('return redis.call("SCAN")', {keys:[],arguments:['email-verification-*']});
+  if (body.expireVerification) await sessions.del(verificationKey);
+  if (body.clearVerificationCooldown) await sessions.del(`email-verification-resend:${brand.id}:${body.authEmail}`);
   if (body.clearAuthCooldown) await sessions.del(`password-reset-resend:${brand.id}:${body.authEmail ?? 'book-now-customer@example.com'}`);
   if (body.expireAuthOtp) await sessions.del(authKey);
   const setting = await db.brandEmailSetting.findUnique({ where: { brandId: brand.id } });
   if (body.seedOutbox) await db.emailOutbox.create({ data: { brandId: brand.id, eventType: 'TEST_ONLY', idempotencyKey: 'email-config-pending', recipientEmail: 'mock@example.com', subject: 'Not sent', html: 'Not sent' } });
   return { brandId: brand.id, requests: mock.requests, smtp: mock.smtp,
-    auth: { otp:await sessions.get(authKey), ttl:await sessions.ttl(authKey) },
+    auth: { otp:await sessions.get(authKey) ? latestOtp : null, hash:await sessions.get(authKey), ttl:await sessions.ttl(authKey) },
+    verification: { otp:await sessions.get(verificationKey) ? latestOtp : null, hash:await sessions.get(verificationKey), ttl:await sessions.ttl(verificationKey), lock:await sessions.get(`email-verification-lock:${brand.id}:${body.authEmail}`) },
     encryptedAtRest: !setting || (!setting.encryptedCredential || setting.encryptedCredential.startsWith('v1:')) && (!setting.oauthDataEncrypted || setting.oauthDataEncrypted.startsWith('v1:')),
     outbox: await db.emailOutbox.findMany({ select: { status: true } }) };
 }

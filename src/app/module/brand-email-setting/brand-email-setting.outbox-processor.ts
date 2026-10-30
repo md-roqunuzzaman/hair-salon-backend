@@ -68,7 +68,7 @@ export async function processBusinessEmailBatch(limit = 10) {
   await collectBusinessEmailEvents();
   // Security sends are direct and never replayed. A crashed direct send is
   // quarantined even while business delivery is disabled.
-  const security = await prisma.emailOutbox.findMany({ where:{status:'SENDING',lockedUntil:{lte:new Date()},eventType:{in:['AUTH_PASSWORD_RESET_OTP','AUTH_PASSWORD_RESET_SUCCESS']}},take:100 });
+  const security = await prisma.emailOutbox.findMany({ where:{status:'SENDING',lockedUntil:{lte:new Date()},eventType:{in:['AUTH_PASSWORD_RESET_OTP','AUTH_PASSWORD_RESET_SUCCESS','AUTH_EMAIL_VERIFICATION_OTP']}},take:100 });
   for (const job of security) if ((job.validationData as any)?.generation === 'MERCHANT_AUTH_V1') {
     await transition({id:job.id,status:'SENDING',lockedUntil:{lte:new Date()}},{status:'DELIVERY_UNCERTAIN',lockedUntil:null,terminalAt:new Date(),lastError:'EMAIL_ABANDONED_SEND_UNCERTAIN'},'EMAIL_ABANDONED_SEND_UNCERTAIN');
   }

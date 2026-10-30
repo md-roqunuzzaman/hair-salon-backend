@@ -30,6 +30,8 @@ model Payment {
   settledGroupPurchase GroupPurchase? @relation("GroupPurchaseSettlement")
 
   refunds Refund[]
+  refundAllocations RefundAllocation[]
+  walletTransactions WalletTransaction[]
 
   walletTopupId String?
   walletTopup   WalletTopup? @relation(fields: [walletTopupId], references: [id], onDelete: Restrict)
@@ -77,6 +79,7 @@ model Refund {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   refundRequest RefundRequest?
+  refundAllocation RefundAllocation?
 
   @@index([paymentId])
   @@index([status])

@@ -10,7 +10,7 @@ model BranchCancellationPolicy {
   refundAllowed       Boolean @default(true)
   policyFormat        String  @default("REFUND_TIERS_V1")
 
-  minimumCancellationHours Int @default(2)
+  minimumCancellationMinutes Int @default(120)
 
   refundTiers Json
 
@@ -34,7 +34,7 @@ model GroupPurchaseRefundPolicy {
   policyFormat  String  @default("REFUND_TIERS_V1")
   boundaryMode  String  @default("MINIMUM_INCLUSIVE")
 
-  // Refund rules based on hours since purchase
+  // Refund rules based on minutes since purchase
   refundTiers Json
 
   // Package usage restrictions
@@ -64,16 +64,16 @@ model GroupPurchaseCancellationPolicy {
 
   cancellationAllowed Boolean @default(true)
 
-  // Minimum hours before appointment start
+  // Minimum minutes before appointment start
   // Cancellation is blocked below this threshold
-  minimumCancellationHours Int @default(2)
+  minimumCancellationMinutes Int @default(120)
 
   // Cancellation at or above this threshold
   // restores the package entitlement
-  restorationMinimumHours Int @default(24)
+  restorationMinimumMinutes Int @default(1440)
 
-  // Cancellation allowed below restorationMinimumHours
-  // but at or above minimumCancellationHours
+  // Cancellation allowed below restorationMinimumMinutes
+  // but at or above minimumCancellationMinutes
   lateCancellationOutcome EntitlementCancellationOutcome @default(FORFEITED)
 
   // =====================================================
@@ -105,10 +105,10 @@ model Appointment {
   appointmentStatus AppointmentStatus
   paymentStatus     PaymentStatus
 
-  date      DateTime
-  startTime String
-  endTime   String
-  emailScheduleRevision Int @default(0)
+  date                    DateTime
+  startTime               String
+  endTime                 String
+  emailScheduleRevision   Int       @default(0)
   emailPaymentConfirmedAt DateTime?
 
   price           BigInt
@@ -259,16 +259,34 @@ model BannerMedia {
   @@index([bannerId, sortOrder])
 }
 
+model BannerCarouselSetting {
+  id String @id @default(uuid())
+
+  branchId String @unique
+
+  imageIntervalMs Int @default(5000)
+  videoIntervalMs Int @default(15000)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch  Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  brand   Brand?  @relation(fields: [brandId], references: [id])
+  brandId String?
+}
+
 model Branch {
-  id                              String                           @id @default(uuid())
-  name                            String
-  address                         String
-  phone                           String?
-  description                     String?
-  imageObjectKey                  String?
-  translations                    Json?
-  latitude                        Float?
-  longitude                       Float?
+  id             String  @id @default(uuid())
+  name           String
+  address        String
+  phone          String?
+  description    String?
+  imageObjectKey String?
+  translations   Json?
+  latitude       Float?
+  longitude      Float?
+
+  bannerCarouselSettings          BannerCarouselSetting[]
   status                          BranchStatus                     @default(ACTIVE)
   bookingPolicy                   BranchBookingPolicy?
   businessHours                   BranchBusinessHour[]
@@ -285,9 +303,10 @@ model Branch {
   cancellationPolicy              BranchCancellationPolicy?
   groupPurchaseRefundPolicy       GroupPurchaseRefundPolicy?
   groupPurchaseCancellationPolicy GroupPurchaseCancellationPolicy?
-  policyPurchases                 GroupPurchase[]                  @relation("PurchasePolicyBranch")
-  createdAt                       DateTime                         @default(now())
-  updatedAt                       DateTime                         @updatedAt
+
+  policyPurchases GroupPurchase[] @relation("PurchasePolicyBranch")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 }
 
 model BranchBusinessHour {
@@ -314,8 +333,8 @@ model BranchBookingPolicy {
   slotIntervalMinutes         Int                @default(5)
   minimumBookingNoticeMinutes Int                @default(120)
   maximumAdvanceBookingDays   Int                @default(30)
-  cancellationCutoffHours     Int                @default(12)
-  rescheduleCutoffHours       Int                @default(12)
+  cancellationCutoffMinutes     Int                @default(720)
+  rescheduleCutoffMinutes       Int                @default(720)
   reserveExpiryRule           ReserveExpiryRule  @default(APPOINTMENT_TIME)
   depositEnabled              Boolean            @default(true)
   depositPercentage           BigInt?
@@ -367,120 +386,122 @@ model Brand {
   logoObjectKey String?
   translations  Json?
   banners       Banner[]
+  // Banner carousel override settings
 
-  primaryColor    String             @default("#0F766E")
-  secondaryColor  String             @default("#B45309")
-  backgroundColor String             @default("#F3F1EA")
-  surfaceColor    String             @default("#FBFAF6")
-  textColor       String             @default("#1A1813")
-  mutedTextColor  String             @default("#8B8676")
-  lineColor       String             @default("#E2DED3")
-  onPrimaryColor  String             @default("#FFFFFF")
-  emailSetting    BrandEmailSetting?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  primaryColor           String                  @default("#0F766E")
+  secondaryColor         String                  @default("#B45309")
+  backgroundColor        String                  @default("#F3F1EA")
+  surfaceColor           String                  @default("#FBFAF6")
+  textColor              String                  @default("#1A1813")
+  mutedTextColor         String                  @default("#8B8676")
+  lineColor              String                  @default("#E2DED3")
+  onPrimaryColor         String                  @default("#FFFFFF")
+  emailSetting           BrandEmailSetting?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  bannerCarouselSettings BannerCarouselSetting[]
 }
 
 model BrandEmailSetting {
-    id       String        @id @default(uuid())
-    brandId  String        @unique
-    provider EmailProvider
+  id       String        @id @default(uuid())
+  brandId  String        @unique
+  provider EmailProvider
 
-    // Sender information
-    fromName  String
-    fromEmail String
+  // Sender information
+  fromName  String
+  fromEmail String
 
-    // SMTP configuration
-    smtpHost     String?
-    smtpPort     Int?
-    smtpSecure   Boolean?
-    smtpUsername String?
+  // SMTP configuration
+  smtpHost     String?
+  smtpPort     Int?
+  smtpSecure   Boolean?
+  smtpUsername String?
 
-    // Encrypted SMTP password / authorization code
-    encryptedCredential String?
+  // Encrypted SMTP password / authorization code
+  encryptedCredential String?
 
-    // Microsoft 365 OAuth credentials/tokens
-    oauthDataEncrypted String?
+  // Microsoft 365 OAuth credentials/tokens
+  oauthDataEncrypted String?
 
-    // Configuration status
-    isEnabled  Boolean @default(true)
-    isVerified Boolean @default(false)
-    configurationVersion Int @default(1)
-    providerData Json?
-    lastTestAt DateTime?
-    lastErrorCode String?
+  // Configuration status
+  isEnabled            Boolean   @default(true)
+  isVerified           Boolean   @default(false)
+  configurationVersion Int       @default(1)
+  providerData         Json?
+  lastTestAt           DateTime?
+  lastErrorCode        String?
 
-    // Relations
-    brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  // Relations
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
 
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model EmailOutbox {
-    id String @id @default(uuid())
+  id String @id @default(uuid())
 
-    brandId       String
-    userId        String?
-    appointmentId String?
+  brandId       String
+  userId        String?
+  appointmentId String?
 
-    eventType      String
-    idempotencyKey String @unique
+  eventType      String
+  idempotencyKey String @unique
 
-    recipientEmail String
-    subject        String
-    html           String
+  recipientEmail String
+  subject        String
+  html           String
 
-    status      String @default("PENDING")
-    attempts    Int    @default(0)
-    maxAttempts Int    @default(3)
+  status      String @default("PENDING")
+  attempts    Int    @default(0)
+  maxAttempts Int    @default(3)
 
-    nextAttemptAt DateTime  @default(now())
-    lockedUntil   DateTime?
-    claimToken    String?
-    attemptedAt   DateTime?
-    text          String?
-    validationData Json?
-    skipReason String?
-    terminalAt DateTime?
-    history EmailOutboxHistory[]
+  nextAttemptAt  DateTime             @default(now())
+  lockedUntil    DateTime?
+  claimToken     String?
+  attemptedAt    DateTime?
+  text           String?
+  validationData Json?
+  skipReason     String?
+  terminalAt     DateTime?
+  history        EmailOutboxHistory[]
 
-    sentAt            DateTime?
-    lastError         String?
-    provider          String?
-    providerMessageId String?
+  sentAt            DateTime?
+  lastError         String?
+  provider          String?
+  providerMessageId String?
 
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-    @@index([status, nextAttemptAt])
-    @@index([brandId, createdAt])
-    @@index([appointmentId])
+  @@index([status, nextAttemptAt])
+  @@index([brandId, createdAt])
+  @@index([appointmentId])
 }
 
 model EmailOutboxHistory {
-    id String @id @default(uuid())
-    outboxId String
-    outbox EmailOutbox @relation(fields: [outboxId], references: [id], onDelete: Restrict)
-    status String
-    sequence Int
-    attempt Int
-    code String?
-    provider String?
-    actorId String?
-    createdAt DateTime @default(now())
+  id        String      @id @default(uuid())
+  outboxId  String
+  outbox    EmailOutbox @relation(fields: [outboxId], references: [id], onDelete: Restrict)
+  status    String
+  sequence  Int
+  attempt   Int
+  code      String?
+  provider  String?
+  actorId   String?
+  createdAt DateTime    @default(now())
 
-    @@index([outboxId, createdAt, id])
-    @@unique([outboxId, sequence])
+  @@unique([outboxId, sequence])
+  @@index([outboxId, createdAt, id])
 }
 
 // Committed business records are reconciled independently of their transactions.
 // Each bounded scan cycles from a fixed restoration cutoff to catch late commits.
 model EmailEventCursor {
-    id String @id
-    startedAt DateTime @default(now())
-    afterAt DateTime?
-    afterId String?
+  id        String    @id
+  startedAt DateTime  @default(now())
+  afterAt   DateTime?
+  afterId   String?
 }
 
 enum Role {
@@ -691,11 +712,11 @@ enum EmailProvider {
 
 model GroupPurchase {
   emailPurchaseConfirmedAt DateTime?
-  id               String  @id @default(uuid())
-  customerId       String
-  packageId        String
-  purchaseBranchId String?
-  purchaseBranch   Branch? @relation("PurchasePolicyBranch", fields: [purchaseBranchId], references: [id], onDelete: Restrict)
+  id                       String    @id @default(uuid())
+  customerId               String
+  packageId                String
+  purchaseBranchId         String?
+  purchaseBranch           Branch?   @relation("PurchasePolicyBranch", fields: [purchaseBranchId], references: [id], onDelete: Restrict)
 
   quantity  Int
   unitPrice BigInt
@@ -745,7 +766,7 @@ model Notification {
   isRead       Boolean @default(false)
   translations Json?
   // Internal reschedule snapshot; excluded from notification API responses.
-  emailIntent Json?
+  emailIntent  Json?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -886,6 +907,8 @@ model Payment {
   settledGroupPurchase GroupPurchase? @relation("GroupPurchaseSettlement")
 
   refunds Refund[]
+  refundAllocations RefundAllocation[]
+  walletTransactions WalletTransaction[]
 
   walletTopupId String?
   walletTopup   WalletTopup? @relation(fields: [walletTopupId], references: [id], onDelete: Restrict)
@@ -933,6 +956,7 @@ model Refund {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   refundRequest RefundRequest?
+  refundAllocation RefundAllocation?
 
   @@index([paymentId])
   @@index([status])
@@ -1033,6 +1057,7 @@ model RefundRequest {
 
   payment     Payment           @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   refund      Refund?           @relation(fields: [refundId], references: [id], onDelete: SetNull)
+  allocations RefundAllocation[]
   // Type of refund/cancellation request
   requestType RefundRequestType @default(APPOINTMENT_CANCELLATION)
 
@@ -1059,6 +1084,27 @@ model RefundRequest {
 
   @@index([customerId])
   @@index([paymentId])
+  @@index([status])
+}
+
+model RefundAllocation {
+  id String @id @default(uuid())
+  refundRequestId String
+  paymentId String
+  refundId String? @unique
+  amount BigInt
+  provider PaymentProvider
+  status String @default("RESERVED")
+  idempotencyKey String @unique
+  submittedAt DateTime?
+  lastErrorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  request RefundRequest @relation(fields: [refundRequestId], references: [id], onDelete: Restrict)
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund Refund? @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  @@unique([refundRequestId, paymentId])
+  @@index([paymentId, status])
   @@index([status])
 }
 
@@ -1344,6 +1390,8 @@ model User {
   preferredLanguage      String                @default("en")
   role                   Role                  @default(CUSTOMER)
   status                 UserStatus            @default(ACTIVE)
+  emailVerified          Boolean               @default(false)
+  emailVerifiedAt        DateTime?
   groupPurchases         GroupPurchase[]
   mustChangePassword     Boolean               @default(false)
   avatarObjectKey        String?
@@ -1396,12 +1444,16 @@ model WalletTransaction {
   amount BigInt
 
   referenceId String?
+  paymentId String?
+  ledgerKey String? @unique
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 
   wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now())
 
   @@index([walletId])
+  @@index([paymentId])
   @@index([type])
   @@index([createdAt])
 }

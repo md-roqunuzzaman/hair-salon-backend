@@ -3268,7 +3268,7 @@ const cancelAppointment = async (
       appointment.startTime,
     );
 
-    const cutoffMs = policy.cancellationCutoffHours * 60 * 60 * 1000;
+    const cutoffMs = policy.cancellationCutoffMinutes * 60 * 1000;
 
     if (new Date() >= new Date(appointmentDateTime.getTime() - cutoffMs)) {
       throw new AppError(
@@ -3354,7 +3354,7 @@ const cancelAppointment = async (
                 select: {
                   bookingPolicy: {
                     select: {
-                      cancellationCutoffHours: true,
+                      cancellationCutoffMinutes: true,
                     },
                   },
                 },
@@ -3433,7 +3433,7 @@ const cancelAppointment = async (
               current.startTime,
             );
 
-            const cutoffMs = policy.cancellationCutoffHours * 60 * 60 * 1000;
+            const cutoffMs = policy.cancellationCutoffMinutes * 60 * 1000;
 
             if (
               new Date() >= new Date(appointmentDateTime.getTime() - cutoffMs)
@@ -3739,7 +3739,7 @@ const rescheduleAppointment = async (
   );
 
   const cutoffMilliseconds =
-    appointment.branch.bookingPolicy.rescheduleCutoffHours * 60 * 60 * 1000;
+    appointment.branch.bookingPolicy.rescheduleCutoffMinutes * 60 * 1000;
 
   const latestAllowedRescheduleTime = new Date(
     currentAppointmentDateTime.getTime() - cutoffMilliseconds,

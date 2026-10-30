@@ -53,9 +53,9 @@ export interface IUpdateBookingPolicyPayload {
 
   maximumAdvanceBookingDays: number;
 
-  cancellationCutoffHours: number;
+  cancellationCutoffMinutes: number;
 
-  rescheduleCutoffHours: number;
+  rescheduleCutoffMinutes: number;
 
   reserveExpiryRule: ReserveExpiryRule;
   qrVerificationRule: "BEFORE_START_TIME" | "BEFORE_END_TIME";

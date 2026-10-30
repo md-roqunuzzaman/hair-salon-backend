@@ -23,6 +23,7 @@ function fixture(t) {
     if (where.OR && !where.OR.some(branch => branch.refundClaimToken === null ? row.refundClaimToken === null : 'providerRefundId' in branch ? branch.providerRefundId === row.providerRefundId : row.refundClaimExpiresAt <= branch.refundClaimExpiresAt.lte)) return false;
     return true;
   };
+  stub(t, prisma.payment, 'findUniqueOrThrow', async () => payment);
   stub(t, prisma.refund, 'findUniqueOrThrow', async () => ({ ...row }));
   stub(t, prisma.refund, 'findMany', async () => [{ ...row }]);
   stub(t, prisma.refund, 'count', async () => 0);
@@ -109,4 +110,14 @@ test('legacy local refund is marked possibly attempted before reuse', async t =>
 test('duplicate local legacy records block automatic refunds', async t => {
   const f = fixture(t); stub(t, prisma.refund, 'findMany', async () => [f.row, { ...f.row, id: 'duplicate' }]);
   await assert.rejects(getOrCreateLateGroupPurchaseRefund('payment', f.payment.amount), /Multiple/); assert.equal(f.creates, 0);
+});
+
+const {walletRefundSplit}=await import('../src/app/module/wallet/wallet-payment-ledger.ts');
+test('wallet cumulative rounding restores original paid/bonus exactly without cent drift',()=>{
+ for(let total=1;total<=400;total++)for(const paid of new Set([0,Math.floor(total/3),Math.floor(total/2),total])){
+  let restoredPaid=0,restoredBonus=0;
+  for(let before=0;before<total;){const amount=Math.min(7,total-before),split=walletRefundSplit(total,paid,before,amount);restoredPaid+=split.paidCents;restoredBonus+=split.bonusCents;assert.equal(split.paidCents+split.bonusCents,amount);before+=amount;}
+  assert.equal(restoredPaid,paid);assert.equal(restoredBonus,total-paid);
+ }
+ assert.throws(()=>walletRefundSplit(100,50,90,11),/INVALID/);
 });

@@ -444,6 +444,7 @@ const deductWalletBalance = async (
   useBonus: boolean,
   type: WalletPaymentType,
   referenceId: string,
+  paymentId?: string,
 ) => {
   if (!amount.isFinite() || amount.lte(0)) {
     throw new AppError("INVALID_PAYMENT_AMOUNT", 400);
@@ -495,6 +496,8 @@ const deductWalletBalance = async (
         balanceType: BalanceType.PAID,
         amount: paidBalanceUsed.negated(),
         referenceId,
+        paymentId,
+        ledgerKey: paymentId ? `wallet-payment:${paymentId}:PAID` : undefined,
       },
     });
   }
@@ -507,6 +510,8 @@ const deductWalletBalance = async (
         balanceType: BalanceType.BONUS,
         amount: bonusBalanceUsed.negated(),
         referenceId,
+        paymentId,
+        ledgerKey: paymentId ? `wallet-payment:${paymentId}:BONUS` : undefined,
       },
     });
   }
@@ -662,6 +667,19 @@ const payAppointmentWithWallet = async (
           // 7. ATOMIC WALLET DEDUCTION
           // ==========================================
 
+          const payment = await tx.payment.create({
+            data: {
+              customerId,
+              appointmentId: appointment.id,
+              purpose: PaymentPurpose.APPOINTMENT,
+              provider: PaymentProvider.WALLET,
+              amount: appointment.price,
+              currency: "HKD",
+              status: PaymentStatus.PAID,
+              paidAt: now,
+            },
+          });
+
           const walletResult = await deductWalletBalance(
             tx,
             customerId,
@@ -669,6 +687,7 @@ const payAppointmentWithWallet = async (
             payload.useBonus,
             "APPOINTMENT_PAYMENT",
             appointment.id,
+            payment.id,
           );
 
           // ==========================================
@@ -705,23 +724,6 @@ const payAppointmentWithWallet = async (
           if (updated.count !== 1) {
             throw new AppError("APPOINTMENT_PAYMENT_CONFLICT", 409);
           }
-
-          // ==========================================
-          // 9. CREATE WALLET PAYMENT RECORD
-          // ==========================================
-
-          await tx.payment.create({
-            data: {
-              customerId,
-              appointmentId: appointment.id,
-              purpose: PaymentPurpose.APPOINTMENT,
-              provider: PaymentProvider.WALLET,
-              amount: appointment.price,
-              currency: "HKD",
-              status: PaymentStatus.PAID,
-              paidAt: now,
-            },
-          });
 
           // ==========================================
           // 10. BOOKING CONFIRMED NOTIFICATION
@@ -968,19 +970,6 @@ const payGroupPurchaseWithWallet = async (
           // 9. ATOMIC WALLET DEDUCTION
           // =====================================================
 
-          const walletResult = await deductWalletBalance(
-            tx,
-            customerId,
-            paymentAmount,
-            payload.useBonus,
-            "GROUP_PURCHASE_PAYMENT",
-            purchase.id,
-          );
-
-          // =====================================================
-          // 10. UPDATE PURCHASE
-          // =====================================================
-
           const payment = await tx.payment.create({
             data: {
               customerId,
@@ -993,6 +982,20 @@ const payGroupPurchaseWithWallet = async (
               paidAt: now,
             },
           });
+
+          const walletResult = await deductWalletBalance(
+            tx,
+            customerId,
+            paymentAmount,
+            payload.useBonus,
+            "GROUP_PURCHASE_PAYMENT",
+            purchase.id,
+            payment.id,
+          );
+
+          // =====================================================
+          // 10. UPDATE PURCHASE
+          // =====================================================
 
           const nextPurchaseStatus = isDeposit
             ? PaymentStatus.PARTIALLY_PAID
@@ -1321,6 +1324,7 @@ const payAppointmentRemainingWithWallet = async (
             payload.useBonus,
             "APPOINTMENT_PAYMENT",
             payment.id,
+            payment.id,
           );
 
           // =====================================================
@@ -1618,6 +1622,7 @@ const payGroupPurchaseRemainingWithWallet = async (
             remainingAmount,
             payload.useBonus,
             "GROUP_PURCHASE_PAYMENT",
+            payment.id,
             payment.id,
           );
 

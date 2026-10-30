@@ -6,16 +6,19 @@ const intents = new Map();
 const intentKeys = new Map();
 const refunds = new Map();
 let refundMode='succeeded';
+let refundCreateCalls=0;
+let failIntentRead=false;
 
-export async function bookNowFixture(db, customerId) {
+function installProviderMocks() {
   stripe.paymentIntents.create = async (params, options) => {
     if (intentKeys.has(options.idempotencyKey)) return intents.get(intentKeys.get(options.idempotencyKey));
     const id = `pi_${crypto.randomUUID()}`;
     const intent = { id, ...params, amount_received: 0, status: 'requires_payment_method', client_secret: `${id}_secret_synthetic` };
     intents.set(id, intent); intentKeys.set(options.idempotencyKey, id); return intent;
   };
-  stripe.paymentIntents.retrieve = async id => { if (!intents.has(id)) throw new Error('Unknown synthetic intent'); return intents.get(id); };
+  stripe.paymentIntents.retrieve = async id => { if(failIntentRead)throw new Error('Synthetic provider unavailable before submission'); if (!intents.has(id)) throw new Error('Unknown synthetic intent'); return intents.get(id); };
   stripe.refunds.create = async (params, options) => {
+    refundCreateCalls++;
     if (refunds.has(options.idempotencyKey)) return refunds.get(options.idempotencyKey);
     const refund = { id: `re_${crypto.randomUUID()}`, ...params, currency: 'hkd', status: refundMode==='timeout'?'succeeded':refundMode };
     refunds.set(options.idempotencyKey, refund);
@@ -24,6 +27,9 @@ export async function bookNowFixture(db, customerId) {
   };
   stripe.refunds.retrieve = async id => [...refunds.values()].find(refund => refund.id === id);
   stripe.refunds.list = async params => ({ data: [...refunds.values()].filter(refund => refund.payment_intent === params.payment_intent), has_more: false });
+}
+export async function bookNowFixture(db, customerId) {
+  installProviderMocks();
   const date = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
   const day = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'][new Date(date).getUTCDay()];
   const branch = await db.branch.create({ data: { name: 'Public Book Now', address: 'Hong Kong', bookingPolicy: { create: { minimumBookingNoticeMinutes: 0, depositPercentage: 30 } }, businessHours: { create: { day, openTime: '00:00', closeTime: '23:59' } }, hourlyCapacities: { create: { day, maxBookingsPerHour: 100 } } } });
@@ -39,7 +45,25 @@ export async function bookNowFixture(db, customerId) {
   return { packageId: item.id, branchId: branch.id, staffId: staff.id, serviceId:service.id, date };
 }
 
-export async function policyTestControl(db,body){
+export async function policyTestControl(db,body,storage){
+  if(body.failIntentRead!==undefined)failIntentRead=body.failIntentRead;
+  if(body.restoreProviderState){installProviderMocks();intents.clear();refunds.clear();for(const [k,v] of body.restoreProviderState.intents)intents.set(k,v);for(const [k,v]of body.restoreProviderState.refunds)refunds.set(k,v);refundCreateCalls=body.restoreProviderState.refundCreateCalls;}
+
+  if(body.priorRefundPayment){
+    await db.refund.create({data:{paymentId:body.priorRefundPayment,amount:10,reason:'Synthetic historical successful refund',status:'SUCCEEDED',refundedAt:new Date()}});
+    await db.payment.update({where:{id:body.priorRefundPayment},data:{status:'PARTIALLY_REFUNDED'}});
+  }
+  if(body.allocationFailure!==undefined){
+    storage.sql.exec('DROP TRIGGER IF EXISTS test_allocation_refund_failure');
+    storage.sql.exec('DROP TRIGGER IF EXISTS test_allocation_wallet_failure');
+    if(body.allocationFailure==='stripe')storage.sql.exec("CREATE TRIGGER test_allocation_refund_failure BEFORE UPDATE ON Refund WHEN NEW.status='SUCCEEDED' AND EXISTS (SELECT 1 FROM Payment WHERE id=NEW.paymentId AND provider='STRIPE') BEGIN SELECT RAISE(ABORT,'synthetic accepted refund persistence failure'); END");
+    if(body.allocationFailure==='wallet')storage.sql.exec("CREATE TRIGGER test_allocation_wallet_failure BEFORE INSERT ON WalletTransaction WHEN NEW.type='REFUND' BEGIN SELECT RAISE(ABORT,'synthetic wallet ledger failure'); END");
+  }
+  if(body.legacyWalletPurchase){
+    const payments=await db.payment.findMany({where:{groupPurchaseId:body.legacyWalletPurchase,provider:'WALLET'}});
+    await db.walletTransaction.updateMany({where:{paymentId:{in:payments.map(p=>p.id)},type:'GROUP_PURCHASE_PAYMENT'},data:{paymentId:null,ledgerKey:null,referenceId:body.legacyWalletPurchase}});
+  }
+
   if (body.autoStaff) {
     const { branchId, serviceId, packageId, date } = body.autoStaff;
     const day = ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'][new Date(date).getUTCDay()];
@@ -80,7 +104,7 @@ export async function policyTestControl(db,body){
   }
   if(body.purchaseId&&body.ageHours!==undefined)await db.groupPurchase.update({where:{id:body.purchaseId},data:{purchasedAt:new Date(Date.now()-body.ageHours*3600000)}});
   if(body.refundStatus){const refund=[...refunds.values()].find(r=>r.id===body.providerRefundId);if(!refund)throw new Error('Unknown synthetic refund');refund.status=body.refundStatus;return {id:`evt_${crypto.randomUUID()}`,type:'refund.updated',data:{object:refund}};}
-  return {providerRefundCount:refunds.size,providerRefunds:[...refunds.values()],requests:await db.refundRequest.findMany()};
+  return {providerState:{intents:[...intents],refunds:[...refunds],refundCreateCalls},providerRefundCreateCalls:refundCreateCalls,providerRefundCount:refunds.size,providerRefunds:[...refunds.values()],requests:await db.refundRequest.findMany()};
 }
 
 export async function providerEvent(db, body) {

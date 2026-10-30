@@ -10,7 +10,7 @@ model BranchCancellationPolicy {
   refundAllowed       Boolean @default(true)
   policyFormat        String  @default("REFUND_TIERS_V1")
 
-  minimumCancellationHours Int @default(2)
+  minimumCancellationMinutes Int @default(120)
 
   refundTiers Json
 

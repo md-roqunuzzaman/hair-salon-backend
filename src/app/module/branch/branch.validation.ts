@@ -227,12 +227,12 @@ const updateBookingPolicyValidationSchema = z.object({
         .int()
         .positive("Maximum advance booking days must be greater than 0"),
 
-      cancellationCutoffHours: z
+      cancellationCutoffMinutes: z
         .number()
         .int()
         .min(0, "Cancellation cutoff cannot be negative"),
 
-      rescheduleCutoffHours: z
+      rescheduleCutoffMinutes: z
         .number()
         .int()
         .min(0, "Reschedule cutoff cannot be negative"),
@@ -448,7 +448,7 @@ const getNearbyBranchesValidationSchema = z.object({
 
 const refundTierValidationSchema = z
   .object({
-    minimumHoursBefore: z.number().int().min(0),
+    minimumMinutesBefore: z.number().int().min(0),
 
     calculationType: z.enum(["PERCENTAGE", "FIXED"]),
 
@@ -487,7 +487,7 @@ const updateCancellationPolicyValidationSchema = z.object({
 
       cancellationAllowed: z.boolean(),
 
-      minimumCancellationHours: z.number().int().min(0),
+      minimumCancellationMinutes: z.number().int().min(0),
 
       nonRefundable: z.boolean(),
 
@@ -499,28 +499,28 @@ const updateCancellationPolicyValidationSchema = z.object({
 
       for (const [index, tier] of policy.refundTiers.entries()) {
         // Duplicate tier check
-        if (hours.has(tier.minimumHoursBefore)) {
+        if (hours.has(tier.minimumMinutesBefore)) {
           ctx.addIssue({
             code: "custom",
-            path: ["refundTiers", index, "minimumHoursBefore"],
-            message: "Duplicate refund tier minimum hours",
+            path: ["refundTiers", index, "minimumMinutesBefore"],
+            message: "Duplicate refund tier minimum minutes",
           });
         }
 
-        hours.add(tier.minimumHoursBefore);
+        hours.add(tier.minimumMinutesBefore);
 
         // Tier must not be below minimum cancellation notice
-        if (tier.minimumHoursBefore < policy.minimumCancellationHours) {
+        if (tier.minimumMinutesBefore < policy.minimumCancellationMinutes) {
           ctx.addIssue({
             code: "custom",
-            path: ["refundTiers", index, "minimumHoursBefore"],
-            message: "Refund tier cannot be below minimum cancellation hours",
+            path: ["refundTiers", index, "minimumMinutesBefore"],
+            message: "Refund tier cannot be below minimum cancellation minutes",
           });
         }
       }
 
       // Ensure cancellation window has a matching refund tier
-      if (!hours.has(policy.minimumCancellationHours)) {
+      if (!hours.has(policy.minimumCancellationMinutes)) {
         ctx.addIssue({
           code: "custom",
           path: ["refundTiers"],

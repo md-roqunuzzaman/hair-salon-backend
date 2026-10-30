@@ -44,7 +44,7 @@ function fixture(t) {
   t.mock.method(console, 'warn', () => {});
   const data = {
     branch: { id: branchId, status: 'ACTIVE', bookingPolicy: {
-      maximumAdvanceBookingDays: 30, minimumBookingNoticeMinutes: 0, slotIntervalMinutes: 30, cancellationCutoffHours: 12,
+      maximumAdvanceBookingDays: 30, minimumBookingNoticeMinutes: 0, slotIntervalMinutes: 30, cancellationCutoffMinutes: 720,
       allowedBookingMethods: ['PAY_NOW', 'DEPOSIT', 'RESERVE_NOW'], depositPercentage: 30,
     } },
     service: { name: 'Haircut', translations: { en: { name: 'Haircut' } }, price: new Prisma.Decimal('125.55'), status: 'ACTIVE', durationMinutes: 60, branches: [{ branchId }] },
@@ -297,7 +297,7 @@ test('Express booking endpoints preserve authentication, validation and response
     body: JSON.stringify(body),
   });
   assert.equal((await post('/pay-now', payload)).status, 401);
-  const user = { id: 'customer', email: 'test@example.com', name: 'Test', role: 'CUSTOMER', status: 'ACTIVE' };
+  const user = { id: 'customer', email: 'test@example.com', name: 'Test', role: 'CUSTOMER', status: 'ACTIVE', emailVerified:true };
   stubDelegate(t, 'user', 'findUnique', async () => user);
   const token = jwtUtils.createToken({ userId: 'customer', email: 'test@example.com' }, process.env.JWT_ACCESS_SECRET, '5m');
   assert.equal((await post('/pay-now', payload, 'invalid-token')).status, 401);
@@ -333,7 +333,7 @@ test('Express booking endpoints preserve authentication, validation and response
 
 test('HTTP requests run all three real booking services through controller and validation', async t => {
   const { create } = transactionFixture(t);
-  stubDelegate(t, 'user', 'findUnique', async () => ({ id: 'customer', email: 'test@example.com', name: 'Test', role: 'CUSTOMER', status: 'ACTIVE' }));
+  stubDelegate(t, 'user', 'findUnique', async () => ({ id: 'customer', email: 'test@example.com', name: 'Test', role: 'CUSTOMER', status: 'ACTIVE', emailVerified:true }));
   const token = jwtUtils.createToken({ userId: 'customer' }, process.env.JWT_ACCESS_SECRET, '5m');
   const server = createServer(app);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -485,7 +485,7 @@ async function reportedAutoBookingFixture(t) {
   data.eligible = [{ id: david }, { id: other }];
   data.schedules = data.eligible.map(({ id }) => ({ staffId: id, startTime: '10:00', endTime: '20:00' }));
   data.staff = { ...data.staff, id: david, branches: [{ branchId: request.branchId }], services: [{ serviceId: request.serviceId }] };
-  stubDelegate(t, 'user', 'findUnique', async () => ({ id: 'customer', role: 'CUSTOMER', status: 'ACTIVE' }));
+  stubDelegate(t, 'user', 'findUnique', async () => ({ id: 'customer', role: 'CUSTOMER', status: 'ACTIVE', emailVerified:true }));
   const token = jwtUtils.createToken({ userId: 'customer' }, process.env.JWT_ACCESS_SECRET, '5m');
   const server = createServer(app);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

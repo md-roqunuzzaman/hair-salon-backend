@@ -190,9 +190,9 @@ const createBranch = async (payload: ICreateBranchPayload) => {
 
         maximumAdvanceBookingDays: 30,
 
-        cancellationCutoffHours: 12,
+        cancellationCutoffMinutes: 720,
 
-        rescheduleCutoffHours: 12,
+        rescheduleCutoffMinutes: 720,
 
         reserveExpiryRule: "APPOINTMENT_TIME",
 
@@ -1248,8 +1248,8 @@ const getBookingPolicy = async (branchId: string) => {
         slotIntervalMinutes: 30,
         minimumBookingNoticeMinutes: 120,
         maximumAdvanceBookingDays: 30,
-        cancellationCutoffHours: 12,
-        rescheduleCutoffHours: 12,
+        cancellationCutoffMinutes: 720,
+        rescheduleCutoffMinutes: 720,
 
         reserveExpiryRule: "APPOINTMENT_TIME",
 
@@ -1276,9 +1276,9 @@ const getBookingPolicy = async (branchId: string) => {
 
     maximumAdvanceBookingDays: bookingPolicy.maximumAdvanceBookingDays,
 
-    cancellationCutoffHours: bookingPolicy.cancellationCutoffHours,
+    cancellationCutoffMinutes: bookingPolicy.cancellationCutoffMinutes,
 
-    rescheduleCutoffHours: bookingPolicy.rescheduleCutoffHours,
+    rescheduleCutoffMinutes: bookingPolicy.rescheduleCutoffMinutes,
 
     reserveExpiryRule: bookingPolicy.reserveExpiryRule,
 
@@ -1310,7 +1310,7 @@ const getBookingPolicy = async (branchId: string) => {
 // =====================================================
 
 type CancellationRefundTier = {
-  minimumHoursBefore: number;
+  minimumMinutesBefore: number;
   calculationType: "PERCENTAGE" | "FIXED";
   value: number;
 };
@@ -1318,7 +1318,7 @@ type CancellationRefundTier = {
 type UpdateCancellationPolicyPayload = {
   isEnabled: boolean;
   cancellationAllowed: boolean;
-  minimumCancellationHours: number;
+  minimumCancellationMinutes: number;
   nonRefundable: boolean;
   refundTiers: CancellationRefundTier[];
 };
@@ -1378,10 +1378,10 @@ const updateCancellationPolicy = async (
   // =====================================================
 
   if (
-    !Number.isSafeInteger(payload.minimumCancellationHours) ||
-    payload.minimumCancellationHours < 0
+    !Number.isSafeInteger(payload.minimumCancellationMinutes) ||
+    payload.minimumCancellationMinutes < 0
   ) {
-    throw new AppError("Invalid minimumCancellationHours", 400);
+    throw new AppError("Invalid minimumCancellationMinutes", 400);
   }
 
   if (!Array.isArray(payload.refundTiers) || payload.refundTiers.length === 0) {
@@ -1392,17 +1392,17 @@ const updateCancellationPolicy = async (
 
   for (const tier of payload.refundTiers) {
     if (
-      !Number.isSafeInteger(tier.minimumHoursBefore) ||
-      tier.minimumHoursBefore < payload.minimumCancellationHours
+      !Number.isSafeInteger(tier.minimumMinutesBefore) ||
+      tier.minimumMinutesBefore < payload.minimumCancellationMinutes
     ) {
-      throw new AppError("Invalid refund tier minimum hours", 400);
+      throw new AppError("Invalid refund tier minimum minutes", 400);
     }
 
-    if (seenHours.has(tier.minimumHoursBefore)) {
-      throw new AppError("Duplicate refund tier minimum hours", 400);
+    if (seenHours.has(tier.minimumMinutesBefore)) {
+      throw new AppError("Duplicate refund tier minimum minutes", 400);
     }
 
-    seenHours.add(tier.minimumHoursBefore);
+    seenHours.add(tier.minimumMinutesBefore);
 
     if (!Number.isFinite(tier.value) || tier.value < 0) {
       throw new AppError("Invalid refund tier value", 400);
@@ -1428,12 +1428,12 @@ const updateCancellationPolicy = async (
   }
 
   const sortedTiers = [...payload.refundTiers].sort(
-    (a, b) => b.minimumHoursBefore - a.minimumHoursBefore,
+    (a, b) => b.minimumMinutesBefore - a.minimumMinutesBefore,
   );
 
   if (
-    sortedTiers[sortedTiers.length - 1].minimumHoursBefore !==
-    payload.minimumCancellationHours
+    sortedTiers[sortedTiers.length - 1].minimumMinutesBefore !==
+    payload.minimumCancellationMinutes
   ) {
     throw new AppError(
       "Refund tiers must cover the minimum cancellation notice",
@@ -1454,7 +1454,7 @@ const updateCancellationPolicy = async (
       policyFormat: 'REFUND_TIERS_V1',
       isEnabled: payload.isEnabled,
       cancellationAllowed: payload.cancellationAllowed,
-      minimumCancellationHours: payload.minimumCancellationHours,
+      minimumCancellationMinutes: payload.minimumCancellationMinutes,
       nonRefundable: payload.nonRefundable,
       refundTiers: sortedTiers as Prisma.InputJsonArray,
     };
@@ -1624,9 +1624,9 @@ const updateBookingPolicy = async (
 
         maximumAdvanceBookingDays: payload.maximumAdvanceBookingDays,
 
-        cancellationCutoffHours: payload.cancellationCutoffHours,
+        cancellationCutoffMinutes: payload.cancellationCutoffMinutes,
 
-        rescheduleCutoffHours: payload.rescheduleCutoffHours,
+        rescheduleCutoffMinutes: payload.rescheduleCutoffMinutes,
 
         reserveExpiryRule: payload.reserveExpiryRule,
 
@@ -1649,9 +1649,9 @@ const updateBookingPolicy = async (
 
         maximumAdvanceBookingDays: payload.maximumAdvanceBookingDays,
 
-        cancellationCutoffHours: payload.cancellationCutoffHours,
+        cancellationCutoffMinutes: payload.cancellationCutoffMinutes,
 
-        rescheduleCutoffHours: payload.rescheduleCutoffHours,
+        rescheduleCutoffMinutes: payload.rescheduleCutoffMinutes,
 
         reserveExpiryRule: payload.reserveExpiryRule,
 
@@ -1691,9 +1691,9 @@ const updateBookingPolicy = async (
                 maximumAdvanceBookingDays:
                   existingPolicy.maximumAdvanceBookingDays,
 
-                cancellationCutoffHours: existingPolicy.cancellationCutoffHours,
+                cancellationCutoffMinutes: existingPolicy.cancellationCutoffMinutes,
 
-                rescheduleCutoffHours: existingPolicy.rescheduleCutoffHours,
+                rescheduleCutoffMinutes: existingPolicy.rescheduleCutoffMinutes,
 
                 reserveExpiryRule: existingPolicy.reserveExpiryRule,
 
@@ -1719,9 +1719,9 @@ const updateBookingPolicy = async (
 
             maximumAdvanceBookingDays: updatedPolicy.maximumAdvanceBookingDays,
 
-            cancellationCutoffHours: updatedPolicy.cancellationCutoffHours,
+            cancellationCutoffMinutes: updatedPolicy.cancellationCutoffMinutes,
 
-            rescheduleCutoffHours: updatedPolicy.rescheduleCutoffHours,
+            rescheduleCutoffMinutes: updatedPolicy.rescheduleCutoffMinutes,
 
             reserveExpiryRule: updatedPolicy.reserveExpiryRule,
 

@@ -12,6 +12,7 @@ export interface ExecutionSnapshot {
     policy: PolicySnapshot;
     evaluatedAt: string;
     refundableQuantity: number;
+    funding?: { paymentId: string; provider: string; paidCents: number; remainingCents: number; amountCents: number }[];
     calculation: {
         eligibleCents: number;
         deductionCents: number;

@@ -13,7 +13,7 @@ const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).max(100000).default(1), limit: z.coerce.number().int().min(1).max(100).default(100),
 }).strict();
 const querySchema = paginationSchema.extend({
-  status: z.enum(statuses).optional(), eventType: z.enum([...EMAIL_EVENTS,'AUTH_PASSWORD_RESET_OTP','AUTH_PASSWORD_RESET_SUCCESS']).optional(),
+  status: z.enum(statuses).optional(), eventType: z.enum([...EMAIL_EVENTS,'AUTH_PASSWORD_RESET_OTP','AUTH_PASSWORD_RESET_SUCCESS','AUTH_EMAIL_VERIFICATION_OTP']).optional(),
   provider: z.enum(['GMAIL','QQ','NETEASE_163','MICROSOFT_365','RESEND','CUSTOM_SMTP','PLATFORM_SMTP']).optional(),
   recipientEmail: z.email().max(320).transform(v => v.toLowerCase()).optional(),
   createdFrom: z.iso.datetime().optional(), createdTo: z.iso.datetime().optional(),

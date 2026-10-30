@@ -49,6 +49,7 @@ export class SalonDatabase {
   async fetch(request) {
     try {
       return await this.enqueue(async () => {
+      applicationRuntime.getStore().clientIp = request.headers.get('cf-connecting-ip') ?? undefined;
       const path = new URL(request.url).pathname;
       if (path === '/__internal/cron') {
         await runCronTasks([

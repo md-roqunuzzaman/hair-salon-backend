@@ -230,7 +230,71 @@ export class MigrationFixture {
     try {applyMigrations(storage,[...migrations.slice(0,25),{...migrations[25],sql:migrations[25].sql+' SELECT * FROM missing_default_migration_fixture;'}]);} catch {defaultRollback=true;}
     if(!defaultRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==25||JSON.stringify(storage.sql.exec('SELECT * FROM BrandEmailSetting ORDER BY id').toArray())!==settingsBeforeDefault)throw new Error('Default migration failure did not preserve existing merchants atomically');
     if(storage.sql.exec('PRAGMA table_info(BrandEmailSetting)').toArray().find(column=>column.name==='isEnabled').dflt_value!==oldEnabledDefault)throw new Error('Failed migration changed the column default');
+    applyMigrations(storage,migrations.slice(0,26));
+    let carouselRollback=false;
+    try{applyMigrations(storage,[...migrations.slice(0,26),{...migrations[26],sql:migrations[26].sql+' SELECT * FROM missing_carousel_migration_fixture;'}]);}catch{carouselRollback=true;}
+    if(!carouselRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==26||storage.sql.exec("SELECT name FROM sqlite_master WHERE name='BannerCarouselSetting'").toArray().length)throw new Error('Carousel migration was not atomic');
+    applyMigrations(storage,migrations.slice(0,27));
+    const usersBeforeVerification=JSON.stringify(storage.sql.exec('SELECT * FROM User ORDER BY id').toArray());
+    let verificationRollback=false;
+    try{applyMigrations(storage,[...migrations.slice(0,27),{...migrations[27],sql:migrations[27].sql+' SELECT * FROM missing_verification_fixture;'}]);}catch{verificationRollback=true;}
+    if(!verificationRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==27||JSON.stringify(storage.sql.exec('SELECT * FROM User ORDER BY id').toArray())!==usersBeforeVerification||storage.sql.exec('PRAGMA table_info(User)').toArray().some(c=>c.name==='emailVerified'))throw new Error('Verification upgrade did not roll back atomically');
+    applyMigrations(storage,migrations.slice(0,28));
+    storage.sql.exec("INSERT INTO Branch (id,name,address,updatedAt) VALUES ('minute-branch','Minute branch','HK',1)");
+    storage.sql.exec("INSERT INTO BranchCancellationPolicy (id,branchId,minimumCancellationHours,refundTiers,updatedAt) VALUES ('minute-service','minute-branch',2,?,1)",JSON.stringify([{minimumHoursBefore:2,calculationType:'PERCENTAGE',value:100},{minimumHoursBeforeAppointment:24,calculationType:'PERCENTAGE',value:50}]));
+    storage.sql.exec("INSERT INTO GroupPurchaseRefundPolicy (id,branchId,refundTiers,updatedAt) VALUES ('minute-group','minute-branch',?,1)",JSON.stringify([{minimumHoursAfterPurchase:2,calculationType:'PERCENTAGE',value:80}]));
+    const oldSnapshot=JSON.stringify({engineVersion:1,module:'SERVICE',branchId:'branch',version:1,config:{minimumCancellationHours:2,refundTiers:[{minimumHoursBefore:2,value:100}]}});
+    storage.sql.exec("UPDATE GroupPurchase SET cancellationPolicySnapshot=? WHERE id='legacy-direct'",oldSnapshot);
+    const policiesBeforeMinutes=JSON.stringify(['BranchBookingPolicy','BranchCancellationPolicy','GroupPurchaseCancellationPolicy','GroupPurchaseRefundPolicy'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()));
+    let minuteRollback=false;
+    try{applyMigrations(storage,[...migrations.slice(0,28),{...migrations[28],sql:migrations[28].sql+' SELECT * FROM missing_minutes_fixture;'}]);}catch{minuteRollback=true;}
+    if(!minuteRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==28||JSON.stringify(['BranchBookingPolicy','BranchCancellationPolicy','GroupPurchaseCancellationPolicy','GroupPurchaseRefundPolicy'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()))!==policiesBeforeMinutes)throw new Error('Minute conversion failed to roll back atomically');
+    const validTiers=storage.sql.exec("SELECT refundTiers FROM BranchCancellationPolicy WHERE id='minute-service'").one().refundTiers;
+    storage.sql.exec("UPDATE BranchCancellationPolicy SET refundTiers=? WHERE id='minute-service'",JSON.stringify([{minimumHoursBefore:'invalid'}]));
+    let invalidMinuteBlocked=false;try{applyMigrations(storage,migrations);}catch{invalidMinuteBlocked=true;}
+    if(!invalidMinuteBlocked||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==28||storage.sql.exec("SELECT name FROM sqlite_master WHERE name='_PolicyMinuteConversionGuard'").toArray().length)throw new Error('Invalid historical units were not blocked atomically');
+    storage.sql.exec("UPDATE BranchCancellationPolicy SET refundTiers=? WHERE id='minute-service'",validTiers);
+    storage.sql.exec("UPDATE BranchBookingPolicy SET cancellationCutoffHours=2147483647 WHERE id='policy'");
+    let overflowBlocked=false;try{applyMigrations(storage,migrations);}catch{overflowBlocked=true;}
+    if(!overflowBlocked||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==28)throw new Error('Minute overflow was not blocked');
+    storage.sql.exec("UPDATE BranchBookingPolicy SET cancellationCutoffHours=5 WHERE id='policy'");
+    applyMigrations(storage,migrations.slice(0,29));
+    const financialTables=['Payment','Refund','RefundRequest','Wallet','WalletTransaction'];
+    const financialBefore=financialTables.map(t=>storage.sql.exec(`SELECT * FROM "${t}" ORDER BY id`).toArray());
+    let allocationRollback=false;
+    try{applyMigrations(storage,[...migrations.slice(0,29),{...migrations[29],sql:migrations[29].sql+'; SELECT * FROM deliberately_missing_allocation_table;'}]);}catch{allocationRollback=true;}
+    if(!allocationRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==29||storage.sql.exec('PRAGMA table_info(WalletTransaction)').toArray().some(c=>c.name==='paymentId')||storage.sql.exec("SELECT name FROM sqlite_master WHERE name='RefundAllocation'").toArray().length)throw new Error('Allocation migration did not roll back atomically');
     applyMigrations(storage,migrations);
+    for(let i=0;i<financialTables.length;i++){
+      const rows=storage.sql.exec(`SELECT * FROM "${financialTables[i]}" ORDER BY id`).toArray();
+      for(let j=0;j<rows.length;j++)for(const key of Object.keys(financialBefore[i][j]))if(rows[j][key]!==financialBefore[i][j][key])throw new Error('Allocation migration changed historical money or records');
+      if(rows.length!==financialBefore[i].length)throw new Error('Allocation migration invented financial records');
+    }
+    if(storage.sql.exec('SELECT COUNT(*) AS n FROM RefundAllocation').one().n!==0||storage.sql.exec('SELECT COUNT(*) AS n FROM WalletTransaction WHERE paymentId IS NOT NULL OR ledgerKey IS NOT NULL').one().n!==0)throw new Error('Legacy wallet provenance was guessed');
+    applyMigrations(storage,migrations);
+    if(storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==30||storage.sql.exec('SELECT COUNT(*) AS n FROM RefundAllocation').one().n!==0||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Allocation repeated initialization or foreign keys failed');
+    const insertAllocation=(id,paymentId,key,amount=100)=>storage.sql.exec("INSERT INTO RefundAllocation (id,refundRequestId,paymentId,amount,provider,idempotencyKey,updatedAt) VALUES (?,'group-request',?,?,'STRIPE',?,1)",id,paymentId,amount,key);
+    for(const amount of [1.5,-1,0,10000000000]){let blocked=false;try{insertAllocation('invalid-amount','legacy-payment','invalid-key',amount);}catch{blocked=true;}if(!blocked)throw new Error('Allocation minor-unit amount constraint failed');}
+    insertAllocation('test-allocation','legacy-payment','allocation-key');
+    for(const [id,paymentId,key,amount]of [['duplicate-source','legacy-payment','new-key',100],['orphan','no-payment','orphan-key',100],['invalid-money','legacy-payment','invalid-key',1.5],['negative-money','legacy-payment','negative-key',-1]]){
+      let rejected=false;try{insertAllocation(id,paymentId,key,amount);}catch{rejected=true;}if(!rejected)throw new Error('Allocation uniqueness/FK/money guard failed');
+    }
+    storage.sql.exec("DELETE FROM RefundAllocation WHERE id='test-allocation'");
+    if(storage.sql.exec("SELECT cancellationCutoffMinutes FROM BranchBookingPolicy WHERE id='policy'").one().cancellationCutoffMinutes!==300)throw new Error('Hour cutoff not converted to minutes');
+    const convertedService=storage.sql.exec("SELECT minimumCancellationMinutes,refundTiers FROM BranchCancellationPolicy WHERE id='minute-service'").one();
+    if(convertedService.minimumCancellationMinutes!==120||convertedService.refundTiers!==JSON.stringify([{calculationType:'PERCENTAGE',value:100,minimumMinutesBefore:120},{calculationType:'PERCENTAGE',value:50,minimumMinutesBeforeAppointment:1440}]))throw new Error('Service policy tier conversion failed');
+    if(JSON.parse(storage.sql.exec("SELECT refundTiers FROM GroupPurchaseRefundPolicy WHERE id='minute-group'").one().refundTiers)[0].minimumMinutesAfterPurchase!==120)throw new Error('Group refund tiers not converted');
+    for(const [table,field,expected] of [['BranchBookingPolicy','cancellationCutoffMinutes',720],['BranchBookingPolicy','rescheduleCutoffMinutes',720],['BranchCancellationPolicy','minimumCancellationMinutes',120],['GroupPurchaseCancellationPolicy','minimumCancellationMinutes',120],['GroupPurchaseCancellationPolicy','restorationMinimumMinutes',1440]])if(Number(storage.sql.exec(`PRAGMA table_info("${table}")`).toArray().find(c=>c.name===field)?.dflt_value)!==expected)throw new Error('Minute default does not preserve original duration');
+    if(storage.sql.exec("SELECT cancellationPolicySnapshot FROM GroupPurchase WHERE id='legacy-direct'").one().cancellationPolicySnapshot!==oldSnapshot)throw new Error('Historical booking snapshot was rewritten');
+    const minuteState=JSON.stringify(['BranchBookingPolicy','BranchCancellationPolicy','GroupPurchaseCancellationPolicy','GroupPurchaseRefundPolicy'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()));
+    applyMigrations(storage,migrations);
+    if(JSON.stringify(['BranchBookingPolicy','BranchCancellationPolicy','GroupPurchaseCancellationPolicy','GroupPurchaseRefundPolicy'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()))!==minuteState)throw new Error('Minute migration multiplied thresholds twice');
+    const legacyVerification=storage.sql.exec("SELECT emailVerified,emailVerifiedAt FROM User WHERE id='customer'").one();
+    if(legacyVerification.emailVerified!==1||legacyVerification.emailVerifiedAt!==null)throw new Error('Existing customer lost access or received an invented verification timestamp');
+    storage.sql.exec("INSERT INTO User (id,name,email,passwordHash,updatedAt) VALUES ('new-unverified','New','new-unverified@example.com','hash',1)");
+    applyMigrations(storage,migrations);
+    const unverified=storage.sql.exec("SELECT emailVerified,emailVerifiedAt FROM User WHERE id='new-unverified'").one();
+    if(unverified.emailVerified!==0||unverified.emailVerifiedAt!==null)throw new Error('Repeat startup verified a new customer');
     if(JSON.stringify(storage.sql.exec('SELECT * FROM BrandEmailSetting ORDER BY id').toArray())!==settingsBeforeDefault)throw new Error('Default migration overwrote an existing merchant choice');
     if(storage.sql.exec("SELECT name FROM sqlite_master WHERE name='_new_BrandEmailSetting'").toArray().length)throw new Error('Default migration left a temporary table');
     storage.sql.exec("INSERT INTO Brand (id,name,updatedAt) VALUES ('default-brand','New merchant',1)");
@@ -284,7 +348,15 @@ export class MigrationFixture {
     for (const [table,before] of [['GroupPurchaseRefundPolicy',refundBefore],['GroupPurchaseCancellationPolicy',cancelBefore]]) {
       const {packageId,...preserved} = before;
       const after = storage.sql.exec(`SELECT * FROM "${table}" WHERE id=?`,before.id).one();
-      if (after.branchId !== mappedBranch || Object.entries(preserved).some(([key,value]) => after[key] !== value)) throw new Error('Mapped policy settings, version, timestamps or identity changed');
+      const minutes={minimumCancellationHours:'minimumCancellationMinutes',restorationMinimumHours:'restorationMinimumMinutes'};
+      if (after.branchId !== mappedBranch || Object.entries(preserved).some(([key,value]) => {
+        if(minutes[key])return after[minutes[key]]!==value*60;
+        if(key==='refundTiers'){
+          const expected=JSON.parse(value),actual=JSON.parse(after[key]);
+          return actual.length!==expected.length||actual.some((t,i)=>JSON.stringify(Object.entries(t).map(([k,v])=>k==='minimumMinutesAfterPurchase'?['minimumHoursAfterPurchase',v/60]:[k,v]).sort())!==JSON.stringify(Object.entries(expected[i]).sort()));
+        }
+        return after[key]!==value;
+      })) throw new Error('Mapped policy settings, version, timestamps or identity changed');
     }
     if (storage.sql.exec('SELECT COUNT(*) AS count FROM PackageBranch WHERE packageId=?',mappedPackage).one().count !== 2) throw new Error('Multi-branch package assignments changed');
     const merchantDefaults=storage.sql.exec("SELECT policyFormat,boundaryMode FROM GroupPurchaseRefundPolicy WHERE id='mapped-refund'").one();
@@ -297,6 +369,24 @@ export class MigrationFixture {
     let mismatch = false;
     try { applyMigrations(storage, [{ ...migrations[0], checksum: 'changed' }, migrations[1]]); } catch { mismatch = true; }
     if (!mismatch) throw new Error('Edited applied migration accepted');
+    storage.sql.exec("INSERT INTO Brand (id,name,updatedAt) VALUES ('carousel-brand','Carousel test',1)");
+    storage.sql.exec("INSERT INTO Branch (id,name,address,updatedAt) VALUES ('carousel-a','A','A',1),('carousel-b','B','B',1)");
+    storage.sql.exec("INSERT INTO BannerCarouselSetting (id,branchId,updatedAt) VALUES ('carousel-default','carousel-a',1)");
+    storage.sql.exec("INSERT INTO BannerCarouselSetting (id,branchId,brandId,imageIntervalMs,videoIntervalMs,updatedAt) VALUES ('carousel-custom','carousel-b','carousel-brand',9000,20000,1)");
+    const carouselDefault=storage.sql.exec("SELECT imageIntervalMs,videoIntervalMs,brandId FROM BannerCarouselSetting WHERE id='carousel-default'").one();
+    if(carouselDefault.imageIntervalMs!==5000||carouselDefault.videoIntervalMs!==15000||carouselDefault.brandId!==null)throw new Error('Carousel defaults changed');
+    let carouselUnique=false,carouselForeignKey=false,carouselRequired=false;
+    try{storage.sql.exec("INSERT INTO BannerCarouselSetting (id,branchId,updatedAt) VALUES ('duplicate-carousel','carousel-a',1)");}catch{carouselUnique=true;}
+    try{storage.sql.exec("INSERT INTO BannerCarouselSetting (id,branchId,updatedAt) VALUES ('orphan-carousel','missing',1)");}catch{carouselForeignKey=true;}
+    try{storage.sql.exec("INSERT INTO BannerCarouselSetting (id,updatedAt) VALUES ('null-carousel',1)");}catch{carouselRequired=true;}
+    if(!carouselUnique||!carouselForeignKey||!carouselRequired)throw new Error('Carousel constraints missing');
+    const carouselBefore=JSON.stringify(storage.sql.exec('SELECT * FROM BannerCarouselSetting ORDER BY id').toArray());
+    applyMigrations(storage,migrations);
+    if(JSON.stringify(storage.sql.exec('SELECT * FROM BannerCarouselSetting ORDER BY id').toArray())!==carouselBefore)throw new Error('Repeat initialization reset carousel settings');
+    storage.sql.exec("DELETE FROM Brand WHERE id='carousel-brand'");
+    if(storage.sql.exec("SELECT brandId FROM BannerCarouselSetting WHERE id='carousel-custom'").one().brandId!==null)throw new Error('Carousel brand deletion must retain branch settings');
+    storage.sql.exec("DELETE FROM Branch WHERE id IN ('carousel-a','carousel-b')");
+    if(storage.sql.exec('SELECT COUNT(*) AS n FROM BannerCarouselSetting').one().n!==0||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Carousel branch cascade failed');
     return Response.json({ preserved: true, repeatable: true, foreignKey: true, checksumProtected: true });
   }
 }

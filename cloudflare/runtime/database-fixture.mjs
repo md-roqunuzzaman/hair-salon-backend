@@ -1,32 +1,12 @@
 import { createDatabase } from './database.mjs';
-import branchCoordinates from '../migrations/0007_branch_coordinates.sql';
-import directBookRename from '../migrations/0008_rename_direct_book.sql';
-import policySchema from '../migrations/0009_policy_schema.sql';
-import refundEntitlements from '../migrations/0010_refund_request_entitlements.sql';
-import branchPolicies from '../migrations/0011_branch_group_purchase_policies.sql';
-import policyExecution from '../migrations/0012_merchant_policy_execution.sql';
-import bannerManagement from '../migrations/0013_banner_management.sql';
-import staffPortfolio from '../migrations/0014_staff_portfolio.sql';
-import appointmentOrderNumber from '../migrations/0015_appointment_order_number.sql';
-import requiredOrderNumber from '../migrations/0016_require_appointment_order_number.sql';
-import paymentOrderNumber from '../migrations/0017_payment_order_number.sql';
-import paymentOrderBackfill from '../migrations/0018_backfill_payment_order_numbers.sql';
-import brandEmailSettings from '../migrations/0019_brand_email_settings.sql';
-import emailOutbox from '../migrations/0020_email_outbox.sql';
-import emailProviderConfiguration from '../migrations/0021_email_provider_configuration.sql';
-import emailOutboxFence from '../migrations/0022_email_outbox_delivery_fence.sql';
-import migration from '../migrations/0001_initial.sql';
-import upgrade from '../migrations/0002_wallet_topup_promotion.sql';
-import settlementIdentity from '../migrations/0006_group_settlement_identity.sql';
-import unified from '../migrations/0004_unified_group_purchase.sql';
-import attemptFence from '../migrations/0005_refund_attempt_fence.sql';
-import qrUpgrade from '../migrations/0003_branch_qr_verification_rule.sql';
+import migrations from '../.build/migrations.mjs';
+import { applyMigrations } from './migrations.mjs';
 import { Sessions } from './sessions.mjs';
 
 export class DatabaseFixture {
   constructor(state) {
     this.state = state;
-    state.blockConcurrencyWhile(async () => state.storage.sql.exec(migration + upgrade + qrUpgrade + unified + attemptFence + settlementIdentity + branchCoordinates + directBookRename + policySchema + refundEntitlements + branchPolicies + policyExecution + bannerManagement + staffPortfolio + appointmentOrderNumber + requiredOrderNumber + paymentOrderNumber + paymentOrderBackfill + brandEmailSettings + emailOutbox + emailProviderConfiguration + emailOutboxFence));
+    state.blockConcurrencyWhile(async () => applyMigrations(state.storage,migrations));
     this.db = createDatabase(state.storage);
   }
   async fetch() {

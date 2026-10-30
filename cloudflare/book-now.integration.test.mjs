@@ -24,7 +24,7 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
   const root = '/api/v1/group-purchases';
   await t.test('policy management routes persist and version JSON on the Cloudflare schema', async () => {
     const packagePath = `/api/v1/branches/${fixture.branchId}/group-purchase-refund-policy`;
-    const refundPolicy = { isEnabled: true, refundAllowed: true, refundTiers: [{ minimumHoursAfterPurchase: 0, calculationType: 'PERCENTAGE', value: 100 }], allowPartiallyUsedRefund: false, allowExpiredRefund: false, requireNoActiveAppointments: true };
+    const refundPolicy = { isEnabled: true, refundAllowed: true, refundTiers: [{ minimumMinutesAfterPurchase: 0, calculationType: 'PERCENTAGE', value: 100 }], allowPartiallyUsedRefund: false, allowExpiredRefund: false, requireNoActiveAppointments: true };
     await api(packagePath, { method: 'PUT', body: refundPolicy, status: 403 });
     const first = (await api(packagePath, { method: 'PUT', body: refundPolicy, roleToken: ownerToken })).data;
     assert.equal(first.version, 1);
@@ -36,13 +36,13 @@ test('enabled public Book Now creation, Stripe, wallet, QR, salon and expiry end
     assert.equal((await api(packagePath, { method: 'PUT', body: refundPolicy, roleToken: managerToken })).data.version, 3);
     assert.deepEqual((await api(packagePath, { roleToken: ownerToken })).data.refundTiers, refundPolicy.refundTiers);
     const branchPath = `/api/v1/branches/${fixture.branchId}/cancellation-policy`;
-    const cancellationPolicy = { isEnabled: true, cancellationAllowed: true, minimumCancellationHours: 2, nonRefundable: false, refundTiers: [{ minimumHoursBefore: 2, calculationType: 'PERCENTAGE', value: 50 }] };
+    const cancellationPolicy = { isEnabled: true, cancellationAllowed: true, minimumCancellationMinutes: 120, nonRefundable: false, refundTiers: [{ minimumMinutesBefore: 120, calculationType: 'PERCENTAGE', value: 50 }] };
     await api(branchPath, { method: 'PUT', body: cancellationPolicy, roleToken: otherManagerToken, status: 403 });
     assert.equal((await api(branchPath, { method: 'PUT', body: cancellationPolicy, roleToken: managerToken })).data.version, 1);
     assert.equal((await api(branchPath, { method: 'PUT', body: cancellationPolicy, roleToken: ownerToken })).data.version, 2);
     assert.deepEqual((await api(branchPath)).data.refundTiers, cancellationPolicy.refundTiers);
     const groupCancellationPath = `/api/v1/branches/${fixture.branchId}/group-purchase-cancellation-policy`;
-    const groupCancellation = {isEnabled:true,cancellationAllowed:true,minimumCancellationHours:2,restorationMinimumHours:24,lateCancellationOutcome:'RESTORED'};
+    const groupCancellation = {isEnabled:true,cancellationAllowed:true,minimumCancellationMinutes:120,restorationMinimumMinutes:1440,lateCancellationOutcome:'RESTORED'};
     await api(groupCancellationPath, {method:'PUT',body:groupCancellation,status:403});
     await api(groupCancellationPath, {method:'PUT',body:groupCancellation,roleToken:otherManagerToken,status:403});
     assert.equal((await api(groupCancellationPath,{method:'PUT',body:groupCancellation,roleToken:managerToken})).data.version,1);

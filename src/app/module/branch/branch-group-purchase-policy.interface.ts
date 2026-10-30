@@ -3,7 +3,7 @@ import type { EntitlementCancellationOutcome } from "../../../../generated/prism
 export interface IUpdateGroupPurchaseCancellationPolicyPayload {
   isEnabled: boolean;
   cancellationAllowed: boolean;
-  minimumCancellationHours: number;
-  restorationMinimumHours: number;
+  minimumCancellationMinutes: number;
+  restorationMinimumMinutes: number;
   lateCancellationOutcome: EntitlementCancellationOutcome;
 }

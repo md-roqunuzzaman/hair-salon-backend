@@ -1,3 +1,4 @@
+import { aggregateGroupRefundStatus } from '../refund-request/refund-allocation.plan.js';
 import { Prisma } from '../../../../generated/prisma/client.js';
 import { AppError } from '../../utils/app-error.js';
 import { cents, appointmentTime, evaluatePolicy } from './policy.calculation.js';
@@ -75,5 +76,6 @@ export async function finalizePolicyGroupRefund(tx: Prisma.TransactionClient, re
     const purchase = await tx.groupPurchase.findUniqueOrThrow({ where: { id: saved.resourceId } });
     if (purchase.refundedQuantity + saved.refundableQuantity > purchase.quantity)
         throw new AppError('REFUND_QUANTITY_RECONCILIATION_REQUIRED', 409);
-    await tx.groupPurchase.update({ where: { id: purchase.id }, data: { refundedQuantity: { increment: saved.refundableQuantity }, paymentStatus: 'REFUNDED' } });
+    await tx.groupPurchase.update({ where: { id: purchase.id }, data: { refundedQuantity: { increment: saved.refundableQuantity } } });
+    await aggregateGroupRefundStatus(tx,purchase.id);
 }
