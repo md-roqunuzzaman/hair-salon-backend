@@ -1,3 +1,4 @@
+import { notificationTemplates } from "../notification/notification.templates.js";
 import {
   AppointmentStatus,
   GroupPurchaseFlow,
@@ -208,6 +209,7 @@ const expirePendingGroupPurchases = async () => {
                 title: "Group purchase reservation expired",
                 message:
                   "Your group purchase reservation expired because payment was not completed before the deadline.",
+                translations: notificationTemplates.GROUP_PURCHASE_EXPIRED(),
               },
               tx,
             );

@@ -1,3 +1,4 @@
+import { notificationTemplates } from "../notification/notification.templates.js";
 import { aggregateGroupRefundStatus } from '../refund-request/refund-allocation.plan.js';
 import { Prisma } from '../../../../generated/prisma/client.js';
 import { AppError } from '../../utils/app-error.js';
@@ -16,7 +17,7 @@ export async function recordPolicyRefundCompletion(tx: Prisma.TransactionClient,
     const saved = executionSnapshot(request.policySnapshot);
     if (!saved)
         return;
-    await notificationService.createNotification({ userId: request.customerId, type: 'REFUND_COMPLETED', title: 'Refund completed', message: `Your refund of ${currency} ${request.amount.toFixed(2)} has been completed.` }, tx);
+    await notificationService.createNotification({ userId: request.customerId, type: 'REFUND_COMPLETED', title: 'Refund completed', message: `Your refund of ${currency} ${request.amount.toFixed(2)} has been completed.`, translations: notificationTemplates.POLICY_REFUND_COMPLETED(Number(request.amount), currency), }, tx);
     await auditLogService.createAuditLog({ userId: null, action: 'POLICY_REFUND_COMPLETED', entityType: 'REFUND_REQUEST', entityId: request.id, metadata: { paymentId: request.paymentId, refundId, resourceId: saved.resourceId, amount: Number(request.amount) } }, tx);
 }
 export async function validatePolicyRefund(tx: Prisma.TransactionClient, request: {

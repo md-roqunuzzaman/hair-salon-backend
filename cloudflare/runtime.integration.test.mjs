@@ -156,6 +156,23 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
     for (const row of list.items) assert.match(row.message, /Appointment /);
     const localized = (await api('/api/v1/notifications', { headers: { 'accept-language': 'zh-HK' } })).data.data;
     assert.match(localized.items[0].message, /預約/);
+    for (const [query, header, expected, marker] of [
+      ['en', 'zh-HK', 'en', /Appointment /],
+      ['zh-HK', 'en', 'zh-HK', /預約/],
+      ['zh-CN', 'en', 'zh-CN', /预约/],
+      ['', 'en;q=0.1,zh-HK;q=1', 'zh-HK', /預約/],
+    ]) {
+      const translated = await api(`/api/v1/notifications${query ? `?lang=${query}` : ''}`, { headers: { 'accept-language': header } });
+      assert.equal(translated.response.headers.get('content-language'), expected);
+      assert.match(translated.response.headers.get('vary'), /Accept-Language/i);
+      assert.deepEqual(translated.data.data.items.map(row => row.id), list.items.map(row => row.id));
+      assert.equal(translated.data.data.pagination.total, expectedTotal);
+      for (const row of translated.data.data.items) {
+        assert.match(row.message, marker);
+        if (expected !== 'en') assert.doesNotMatch(row.title, /[A-Za-z]/);
+      }
+      if (expected !== 'en') assert.doesNotMatch(translated.data.message, /[A-Za-z]/);
+    }
     const noteId = list.items[0].id;
     await api(`/api/v1/notifications/${noteId}/read`, { method: 'PATCH' });
     await api(`/api/v1/notifications/${noteId}/read`, { method: 'PATCH' });
@@ -220,6 +237,19 @@ test('Cloudflare: real Express auth, sessions, booking and wallet persistence', 
   assert.equal((await runReminders(start + 60000)).data.reminderCount, 0);
   const reminders = (await api('/__snapshot')).data.notifications.filter(row => row.type === 'APPOINTMENT_REMINDER');
   assert.ok(reminders.every(row => row.userId === upcoming.customerId));
+  const notificationSnapshot = (await api('/__snapshot')).data.notifications;
+  for (const lang of ['en', 'zh-CN', 'zh-HK']) {
+    const notes = (await api(`/api/v1/notifications?lang=${lang}&limit=100`)).data.data.items;
+    assert.ok(notes.some(row => row.type === 'APPOINTMENT_REMINDER'));
+    assert.ok(notes.some(row => row.type === 'BOOKING_CONFIRMED'));
+    assert.ok(notes.some(row => row.type === 'BOOKING_CANCELLED'));
+    assert.ok(notes.some(row => row.type === 'BOOKING_RESCHEDULED'));
+    for (const row of notes) {
+      if (lang === 'en') assert.doesNotMatch(row.title + row.message, /\p{Script=Han}/u);
+      else assert.doesNotMatch(row.title + row.message, /[A-Za-z]/);
+    }
+  }
+  assert.deepEqual((await api('/__snapshot')).data.notifications, notificationSnapshot, 'Language changes must not write or duplicate notifications');
 
   assert.equal((await mf.dispatchFetch('https://test/__internal/cron')).status, 404);
   const rotated = await api('/api/v1/auth/refresh-token', { method: 'POST', body: {} });

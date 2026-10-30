@@ -1,3 +1,4 @@
+import { notificationTemplates } from "../notification/notification.templates.js";
 import { processAllocatedRefund } from './refund-allocation.processing.js';
 import { aggregateGroupRefundStatus, lockRefundResource } from './refund-allocation.plan.js';
 import { walletPaymentFunding } from '../wallet/wallet-payment-ledger.js';
@@ -547,7 +548,7 @@ const finalizeApprovedStripeRefund = async (requestId: string, stripeRefund: Str
         },
       });
       if (payment.purpose === PaymentPurpose.GROUP_PURCHASE) {
-        await notificationService.createNotification({ userId: request.customerId, type: "REFUND_COMPLETED", title: "Refund completed", message: `Your group purchase refund of ${payment.currency} ${request.amount.toFixed(2)} has been completed.` }, tx);
+        await notificationService.createNotification({ userId: request.customerId, type: "REFUND_COMPLETED", title: "Refund completed", message: `Your group purchase refund of ${payment.currency} ${request.amount.toFixed(2)} has been completed.`, translations: notificationTemplates.POLICY_REFUND_COMPLETED(Number(request.amount), payment.currency, true), }, tx);
         await auditLogService.createAuditLog({ userId: null, action: "GROUP_PURCHASE_REFUND_COMPLETED", entityType: "REFUND_REQUEST", entityId: request.id, metadata: { paymentId: payment.id, refundId: request.refundId, providerRefundId: stripeRefund.id } }, tx);
       }
 

@@ -185,6 +185,7 @@ const createGroupPurchase = async (
           if (!packageData) {
             throw new AppError("Package not found", 404);
           }
+
           if (packageData.type !== PackageType.GROUP_PURCHASE_PACKAGE) {
             throw new AppError("Package is not a group purchase package", 422);
           }
@@ -204,6 +205,25 @@ const createGroupPurchase = async (
           if (packageData.salesEndAt && now > packageData.salesEndAt) {
             throw new AppError("Package sale has ended", 422);
           }
+
+          // =================================================
+          // 4.1 VALIDATE PACKAGE VALIDITY
+          // =================================================
+
+          if (
+            packageData.validDays !== null &&
+            (!Number.isSafeInteger(packageData.validDays) ||
+              packageData.validDays <= 0)
+          ) {
+            throw new AppError(
+              "Package validDays must be a positive integer",
+              422,
+            );
+          }
+
+          // Capture the configured validity at purchase time.
+          // This is independent of the refund policy snapshot.
+          const validDaysSnapshot = packageData.validDays;
 
           // =================================================
           // 5. VALIDATE BOOKING AND BRANCH POLICY
@@ -278,6 +298,7 @@ const createGroupPurchase = async (
               if (policy.depositPercentage === null) {
                 throw new AppError("Deposit percentage is not configured", 422);
               }
+
               depositPercentage = new Prisma.Decimal(policy.depositPercentage);
 
               if (depositPercentage.lte(0) || depositPercentage.gte(100)) {
@@ -303,7 +324,6 @@ const createGroupPurchase = async (
             }
 
             const requestedStart = timeToMinutes(payload.startTime!);
-
             const requestedEnd = requestedStart + packageData.durationMinutes;
 
             if (requestedStart < 0 || requestedEnd > 24 * 60) {
@@ -318,8 +338,6 @@ const createGroupPurchase = async (
               throw new AppError("Invalid appointment date", 400);
             }
 
-            // Recheck staff eligibility and slot availability
-            // inside the Serializable transaction.
             const resolvedStaff = await resolveAvailableStaff({
               tx,
               branchId: branch.id,
@@ -539,19 +557,31 @@ const createGroupPurchase = async (
           // =================================================
 
           let purchaseSnapshot: Prisma.InputJsonObject | undefined;
-          let purchaseBranchId: string | null = payload.branchId ?? null;
+
+          const purchaseBranchId: string | null = payload.branchId ?? null;
+
           if (!purchaseBranchId) {
             const assignments = await tx.packageBranch.findMany({
-              where: { packageId: packageData.id },
-              select: { branchId: true },
+              where: {
+                packageId: packageData.id,
+              },
+              select: {
+                branchId: true,
+              },
             });
+
             const configured = await tx.groupPurchaseRefundPolicy.findFirst({
               where: {
-                branchId: { in: assignments.map((item) => item.branchId) },
+                branchId: {
+                  in: assignments.map((item) => item.branchId),
+                },
                 isEnabled: true,
               },
             });
-            if (configured) throw new AppError("PURCHASE_BRANCH_REQUIRED", 422);
+
+            if (configured) {
+              throw new AppError("PURCHASE_BRANCH_REQUIRED", 422);
+            }
           } else {
             if (
               !(await tx.packageBranch.findUnique({
@@ -562,32 +592,44 @@ const createGroupPurchase = async (
                   },
                 },
               }))
-            )
+            ) {
               throw new AppError(
                 "Package is not available at this branch",
                 422,
               );
+            }
+
             const snapshot = await capturePolicy(
               tx,
               purchaseBranchId,
               "GROUP_REFUND",
             );
+
             snapshot.packageValidDays = packageData.validDays;
+
             purchaseSnapshot = snapshot as unknown as Prisma.InputJsonObject;
           }
+
           const groupPurchase = await tx.groupPurchase.create({
             data: {
               purchaseBranchId,
+
               ...(purchaseSnapshot && {
                 refundPolicySnapshot: purchaseSnapshot,
                 refundPolicyVersion: Number(purchaseSnapshot.version),
               }),
+
               customerId,
               packageId: packageData.id,
+
+              // NEW: Immutable validity captured at purchase.
+              validDaysSnapshot,
+
               purchaseFlow,
               bookingMethod: isBookNow
                 ? (payload.bookingMethod as BookingMethod)
                 : null,
+
               quantity: payload.quantity,
               unitPrice,
               amount,
@@ -627,6 +669,7 @@ const createGroupPurchase = async (
             const appointment = await tx.appointment.create({
               data: {
                 ...(await snapshotData(tx, payload.branchId!, "GROUP_CANCEL")),
+
                 customerId,
                 orderNumber: orderNumber!,
                 branchId: payload.branchId!,
@@ -673,6 +716,7 @@ const createGroupPurchase = async (
 
           return {
             ...presentGroupPurchase(groupPurchase),
+
             purchaseId: groupPurchase.id,
             packageId: groupPurchase.packageId,
             purchaseFlow: groupPurchase.purchaseFlow,
@@ -682,19 +726,24 @@ const createGroupPurchase = async (
             amount: Number(groupPurchase.amount),
             paymentStatus: groupPurchase.paymentStatus,
             reservationExpiresAt: groupPurchase.reservationExpiresAt,
+
             depositPercentage:
               groupPurchase.depositPercentage === null
                 ? null
                 : Number(groupPurchase.depositPercentage),
+
             depositAmount:
               groupPurchase.depositAmount === null
                 ? null
                 : Number(groupPurchase.depositAmount),
+
             remainingAmount:
               groupPurchase.remainingAmount === null
                 ? null
                 : Number(groupPurchase.remainingAmount),
+
             firstAppointment,
+
             redemption: {
               purchasedQuantity: groupPurchase.quantity,
               redeemedQuantity: isBookNow ? 1 : 0,
@@ -710,12 +759,10 @@ const createGroupPurchase = async (
         },
       );
     } catch (error) {
-      // 1. Existing transaction conflict
       const isConflict =
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2034";
 
-      // 2. Appointment order number collision
       const isOrderNumberCollision =
         isBookNow &&
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -725,7 +772,6 @@ const createGroupPurchase = async (
           (typeof error.meta?.target === "string" &&
             error.meta.target.includes("orderNumber")));
 
-      // 3. Retry with a newly generated order number
       if (isOrderNumberCollision && attempt < maxRetries) {
         console.warn("[GROUP_PURCHASE] Order number collision. Retrying...");
         continue;
@@ -738,7 +784,6 @@ const createGroupPurchase = async (
         );
       }
 
-      // 4. Preserve existing transaction retry
       if (isConflict && attempt < maxRetries) {
         continue;
       }
@@ -789,17 +834,16 @@ const getMyGroupPurchases = async (
   const now = new Date();
 
   // =====================================================
-  // 3. DEFINE EXPIRED CONDITION
+  // 3. DEFINE EXPIRED PAYMENT CONDITION
   // =====================================================
 
-  // Existing Group Purchase lifecycle:
+  // Preserve existing payment reservation expiry logic.
   //
-  // PENDING + deadline passed -> expired
-  // FAILED                    -> expired
-  // PAID                      -> not payment-expired
+  // PENDING + reservation deadline passed -> expired
+  // FAILED                                -> expired
+  // PAID                                  -> not payment-expired
   //
-  // FAILED is treated as expired because the existing
-  // expiry and late-payment flows use this status.
+  // Voucher validity expiry is calculated separately below.
 
   const expiredCondition: Prisma.GroupPurchaseWhereInput = {
     OR: [
@@ -851,7 +895,9 @@ const getMyGroupPurchases = async (
       },
 
       include: {
-        appointments: { select: initialAppointmentSelect },
+        appointments: {
+          select: initialAppointmentSelect,
+        },
 
         package: {
           select: {
@@ -859,6 +905,9 @@ const getMyGroupPurchases = async (
             name: true,
             translations: true,
             type: true,
+
+            // NEW: Package's currently configured validity.
+            validDays: true,
 
             images: {
               where: {
@@ -995,7 +1044,34 @@ const getMyGroupPurchases = async (
     );
 
     // ===================================================
-    // 8.4 REDEMPTION SUMMARY
+    // 8.4 PURCHASE VOUCHER VALIDITY
+    // ===================================================
+
+    // The validity period is captured when the customer
+    // creates the purchase.
+    //
+    // Expiry countdown begins at purchasedAt, which must
+    // be populated when the purchase becomes paid.
+    //
+    // null validDaysSnapshot means no configured expiry.
+    // null purchasedAt means the countdown has not started.
+
+    const validUntil =
+      purchase.purchasedAt !== null && purchase.validDaysSnapshot !== null
+        ? new Date(
+            purchase.purchasedAt.getTime() +
+              purchase.validDaysSnapshot * 24 * 60 * 60 * 1000,
+          )
+        : null;
+
+    // Expiration boundary is inclusive:
+    // now >= validUntil means the voucher is expired.
+
+    const voucherExpired =
+      validUntil !== null && now.getTime() >= validUntil.getTime();
+
+    // ===================================================
+    // 8.5 REDEMPTION SUMMARY
     // ===================================================
 
     const purchasedQuantity = purchase.quantity;
@@ -1011,10 +1087,12 @@ const getMyGroupPurchases = async (
     );
 
     const canBookAppointment =
-      purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
+      purchase.paymentStatus === PaymentStatus.PAID &&
+      remainingQuantity > 0 &&
+      !voucherExpired;
 
     // ===================================================
-    // 8.5 PRIMARY IMAGE
+    // 8.6 PRIMARY IMAGE
     // ===================================================
 
     const primaryImageObjectKey = purchase.package.images[0]?.objectKey ?? null;
@@ -1024,7 +1102,7 @@ const getMyGroupPurchases = async (
       : null;
 
     // ===================================================
-    // 8.6 FINAL PURCHASE RESPONSE
+    // 8.7 FINAL PURCHASE RESPONSE
     // ===================================================
 
     return {
@@ -1051,6 +1129,9 @@ const getMyGroupPurchases = async (
 
         type: purchase.package.type,
 
+        // NEW: Current package configuration.
+        validDays: purchase.package.validDays,
+
         primaryImageObjectKey,
 
         primaryImageUrl,
@@ -1068,15 +1149,18 @@ const getMyGroupPurchases = async (
       // Frontend-friendly calculated status.
       effectivePaymentStatus,
 
-      // NEW: Shared payment display status.
+      // Shared payment display status.
       paymentDisplayStatus,
 
-      // G5: payment reservation expiry indicator.
+      // Payment reservation expiry indicator.
       paymentExpired,
 
       reservationExpiresAt: purchase.reservationExpiresAt,
 
       purchasedAt: purchase.purchasedAt,
+
+      // NEW: Purchase-specific voucher expiration date.
+      validUntil,
 
       createdAt: purchase.createdAt,
 
@@ -1115,6 +1199,7 @@ const getMyGroupPurchases = async (
     },
   };
 };
+
 const getGroupPurchaseById = async (
   purchaseId: string,
   userId: string,
@@ -1142,6 +1227,9 @@ const getGroupPurchaseById = async (
           regularPrice: true,
           packagePrice: true,
           durationMinutes: true,
+
+          // Current package validity configuration.
+          validDays: true,
 
           images: {
             orderBy: {
@@ -1259,14 +1347,41 @@ const getGroupPurchaseById = async (
       purchase.refundedQuantity,
   );
 
-  const canBookAppointment =
-    purchase.paymentStatus === PaymentStatus.PAID && remainingQuantity > 0;
+  // =====================================================
+  // 5. VOUCHER VALIDITY
+  // =====================================================
 
-  // =====================================================
-  // 5. PAYMENT DISPLAY STATUS
-  // =====================================================
+  // Use the purchase-time snapshot instead of the
+  // current package configuration.
+  //
+  // This ensures that changing Package.validDays later
+  // does not retroactively change existing voucher expiry.
+
+  const validDaysSnapshot = purchase.validDaysSnapshot;
+
+  const validUntil =
+    purchase.purchasedAt !== null &&
+    validDaysSnapshot !== null &&
+    Number.isInteger(validDaysSnapshot) &&
+    validDaysSnapshot > 0
+      ? new Date(
+          purchase.purchasedAt.getTime() +
+            validDaysSnapshot * 24 * 60 * 60 * 1000,
+        )
+      : null;
 
   const now = new Date();
+
+  const voucherExpired = validUntil !== null && validUntil <= now;
+
+  const canBookAppointment =
+    purchase.paymentStatus === PaymentStatus.PAID &&
+    remainingQuantity > 0 &&
+    !voucherExpired;
+
+  // =====================================================
+  // 6. PAYMENT DISPLAY STATUS
+  // =====================================================
 
   const deadlinePassed =
     purchase.reservationExpiresAt !== null &&
@@ -1296,7 +1411,7 @@ const getGroupPurchaseById = async (
   );
 
   // =====================================================
-  // 6. RESPONSE WITH MULTILINGUAL CONTENT
+  // 7. RESPONSE WITH MULTILINGUAL CONTENT
   // =====================================================
 
   return {
@@ -1319,7 +1434,7 @@ const getGroupPurchaseById = async (
     package: {
       id: purchase.package.id,
 
-      // Localized package name
+      // Localized package name.
       name: localizedPackage.name,
 
       type: purchase.package.type,
@@ -1329,6 +1444,9 @@ const getGroupPurchaseById = async (
       packagePrice: Number(purchase.package.packagePrice),
 
       durationMinutes: purchase.package.durationMinutes,
+
+      // Current package validity setting.
+      validDays: purchase.package.validDays,
 
       primaryImageObjectKey:
         purchase.package.images.find((image) => image.isPrimary)?.objectKey ??
@@ -1392,20 +1510,23 @@ const getGroupPurchaseById = async (
     // Calculated payment status.
     effectivePaymentStatus,
 
-    // NEW: Frontend payment display status.
+    // Frontend payment display status.
     paymentDisplayStatus,
 
-    // Payment expiry indicator.
+    // Payment reservation expiry indicator.
     paymentExpired,
 
     reservationExpiresAt: purchase.reservationExpiresAt,
 
     purchasedAt: purchase.purchasedAt,
 
+    // Voucher expiry calculated from purchase-time snapshot.
+    validUntil,
+
     createdAt: purchase.createdAt,
 
     // =====================================================
-    // 7. CUSTOMER-FACING REDEMPTION INFORMATION
+    // 8. CUSTOMER-FACING REDEMPTION INFORMATION
     // =====================================================
 
     redemption: {
@@ -1439,6 +1560,7 @@ const createGroupPurchaseAppointment = async (
     where: {
       id: purchaseId,
     },
+
     include: {
       package: {
         select: {
@@ -1505,7 +1627,7 @@ const createGroupPurchaseAppointment = async (
       return await prisma.$transaction(
         async (tx) => {
           // =============================================
-          // 4.1 RECHECK PURCHASE
+          // 4.1 LOCK PURCHASE ROW
           // =============================================
 
           await tx.$queryRaw`
@@ -1515,10 +1637,15 @@ const createGroupPurchaseAppointment = async (
             FOR UPDATE
           `;
 
+          // =============================================
+          // 4.2 RECHECK PURCHASE
+          // =============================================
+
           const currentPurchase = await tx.groupPurchase.findUnique({
             where: {
               id: purchaseId,
             },
+
             include: {
               package: {
                 select: {
@@ -1527,10 +1654,12 @@ const createGroupPurchaseAppointment = async (
                   translations: true,
                   durationMinutes: true,
                   status: true,
+
                   branches: {
                     where: {
                       branchId,
                     },
+
                     select: {
                       branchId: true,
                     },
@@ -1549,7 +1678,7 @@ const createGroupPurchaseAppointment = async (
           }
 
           // =============================================
-          // 4.2 VERIFY FULL PAYMENT
+          // 4.3 VERIFY FULL PAYMENT
           // =============================================
 
           if (currentPurchase.paymentStatus !== PaymentStatus.PAID) {
@@ -1560,7 +1689,50 @@ const createGroupPurchaseAppointment = async (
           }
 
           // =============================================
-          // 4.3 VALIDATE PACKAGE
+          // 4.4 VALIDATE VOUCHER EXPIRY
+          // =============================================
+
+          // The purchase-time snapshot is the source
+          // of truth for new group purchases.
+          //
+          // Changes to Package.validDays must not
+          // retroactively change purchased vouchers.
+
+          const validDaysSnapshot = currentPurchase.validDaysSnapshot;
+
+          const validUntil =
+            currentPurchase.purchasedAt !== null &&
+            validDaysSnapshot !== null &&
+            Number.isInteger(validDaysSnapshot) &&
+            validDaysSnapshot > 0
+              ? new Date(
+                  currentPurchase.purchasedAt.getTime() +
+                    validDaysSnapshot * 24 * 60 * 60 * 1000,
+                )
+              : null;
+
+          const now = new Date();
+
+          if (validUntil !== null && validUntil <= now) {
+            throw new AppError("Group purchase voucher has expired", 422);
+          }
+
+          // =============================================
+          // 4.5 PRESERVE LEGACY EXPIRY POLICY
+          // =============================================
+
+          // Keep existing legacy expiry handling for
+          // purchases without a validity snapshot.
+          //
+          // Avoid applying an older policy calculation
+          // to new snapshot-based purchases.
+
+          if (validDaysSnapshot === null && purchaseExpired(currentPurchase)) {
+            throw new AppError("Group purchase voucher has expired", 422);
+          }
+
+          // =============================================
+          // 4.6 VALIDATE PACKAGE
           // =============================================
 
           if (currentPurchase.package.status !== PackageStatus.ACTIVE) {
@@ -1575,30 +1747,30 @@ const createGroupPurchaseAppointment = async (
           // 5. CHECK REMAINING PURCHASED QUANTITY
           // =============================================
 
-          // Includes the initial DIRECT_BOOK appointment,
-          // if one was created.
-          //
-          // Cancelled appointments follow the existing
-          // policy and do not consume package quantity.
+          // Includes initial DIRECT_BOOK appointment.
+          // CANCELLED appointments do not consume
+          // package quantity under the existing policy.
 
           const allocatedCount = await tx.appointment.count({
             where: {
               groupPurchaseId: purchaseId,
+
               appointmentStatus: {
                 not: AppointmentStatus.CANCELLED,
               },
             },
           });
 
-          if (purchaseExpired(currentPurchase)) {
-            throw new AppError("GROUP_PURCHASE_EXPIRED", 409);
-          }
+          // =============================================
+          // 5.1 CHECK REFUND IN PROGRESS
+          // =============================================
 
           const refundInProgress = await tx.refundRequest.findFirst({
             where: {
               payment: {
                 groupPurchaseId: purchaseId,
               },
+
               status: {
                 in: ["PENDING", "APPROVED", "PROCESSING"],
               },
@@ -1608,6 +1780,10 @@ const createGroupPurchaseAppointment = async (
           if (refundInProgress) {
             throw new AppError("GROUP_PURCHASE_REFUND_IN_PROGRESS", 409);
           }
+
+          // =============================================
+          // 5.2 CHECK REMAINING QUANTITY
+          // =============================================
 
           if (
             allocatedCount +
@@ -1630,22 +1806,23 @@ const createGroupPurchaseAppointment = async (
 
           const endTime = minutesToTime(requestedEnd);
 
-          const now = new Date();
-
           // =============================================
           // 7. FINAL AVAILABILITY CHECKS
           // =============================================
 
-          const resolvedStaffId = staffId ?? (await resolveAvailableStaff({
-            tx,
-            branchId,
-            packageId: currentPurchase.packageId,
-            date,
-            dateOnly,
-            requestedStart,
-            requestedEnd,
-            now,
-          }));
+          const resolvedStaffId =
+            staffId ??
+            (await resolveAvailableStaff({
+              tx,
+              branchId,
+              packageId: currentPurchase.packageId,
+              date,
+              dateOnly,
+              requestedStart,
+              requestedEnd,
+              now,
+            }));
+
           await assertStaffSlotAvailable(
             tx,
             resolvedStaffId,
@@ -1678,11 +1855,8 @@ const createGroupPurchaseAppointment = async (
           // 9. GENERATE UNIQUE APPOINTMENT QR
           // =============================================
 
-          // QR belongs to the appointment, not the
-          // Group Purchase payment.
-          //
-          // A new QR is generated for each successful
-          // redemption booking.
+          // Each redemption appointment receives
+          // its own QR token.
 
           const qrToken = crypto.randomBytes(32).toString("hex");
 
@@ -1721,18 +1895,15 @@ const createGroupPurchaseAppointment = async (
 
               durationMinutes,
 
-              // Package was already fully paid.
-              // No additional charge for redemption.
+              // Already paid through group purchase.
+              // No additional payment required.
 
               price: new Prisma.Decimal(0),
               currency: "HKD",
 
               holdExpiresAt: null,
 
-              // Unique QR for this appointment.
               qrToken,
-
-              // QR has not been scanned yet.
               qrVerifiedAt: null,
               qrVerifiedBy: null,
             },
@@ -1772,11 +1943,8 @@ const createGroupPurchaseAppointment = async (
             paymentStatus: appointment.paymentStatus,
             staffId: appointment.staffId,
 
-            // Customer can retrieve the QR
-            // through the appointment QR endpoint.
             qrAvailable: true,
 
-            // Group Purchase was already fully paid.
             additionalPaymentRequired: false,
           };
         },
@@ -2158,7 +2326,9 @@ export const recordGroupPurchaseRemainingPayment = async (
             },
             data: {
               paymentStatus: PaymentStatus.PAID,
-              ...(expectedPaymentStatus === PaymentStatus.UNPAID ? { emailPurchaseConfirmedAt: now } : {}),
+              ...(expectedPaymentStatus === PaymentStatus.UNPAID
+                ? { emailPurchaseConfirmedAt: now }
+                : {}),
             },
           });
 

@@ -1,3 +1,4 @@
+import { notificationTemplates } from "../notification/notification.templates.js";
 import { Prisma } from '../../../../generated/prisma/client.js';
 import { prisma } from '../../lib/prisma.js';
 import { stripe } from '../../lib/stripe.js';
@@ -42,7 +43,7 @@ async function finish(tx: Prisma.TransactionClient, requestId: string, purchaseI
         return;
     await finalizePolicyGroupRefund(tx, request);
     await aggregateGroupRefundStatus(tx, purchaseId);
-    await notificationService.createNotification({ userId: request.customerId, type: 'REFUND_COMPLETED', title: 'Refund completed', message: `Your group purchase refund of ${request.payment.currency} ${request.amount.toFixed(2)} has been completed.` }, tx);
+    await notificationService.createNotification({ userId: request.customerId, type: 'REFUND_COMPLETED', title: 'Refund completed', message: `Your group purchase refund of ${request.payment.currency} ${request.amount.toFixed(2)} has been completed.`, translations: notificationTemplates.POLICY_REFUND_COMPLETED(Number(request.amount), request.payment.currency, true), }, tx);
     await auditLogService.createAuditLog({ userId: null, action: 'GROUP_PURCHASE_REFUND_COMPLETED', entityType: 'REFUND_REQUEST', entityId: requestId, metadata: { allocationIds: allocations.map(a => a.id), amount: Number(request.amount) } }, tx);
 }
 async function recordPaymentRefund(tx: Prisma.TransactionClient, paymentId: string) {

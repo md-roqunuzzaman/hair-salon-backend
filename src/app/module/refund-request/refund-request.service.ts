@@ -1,3 +1,4 @@
+import { notificationTemplates } from "../notification/notification.templates.js";
 import { validateAllocationPlan, lockRefundResource } from './refund-allocation.plan.js';
 import { isSnapshot } from "../cancellation-refund/policy.calculation.js";
 import { validatePolicyRefund } from "../cancellation-refund/policy-refund.execution.js";
@@ -600,6 +601,7 @@ const reviewRefundRequest = async (
               `Your refund request for ${currency} ` +
               `${amount.toFixed(2)} was rejected. ` +
               `Reason: ${reviewNote}`,
+            translations: notificationTemplates.REFUND_REQUEST_REJECTED(amount, currency, reviewNote),
           },
           tx,
         );
@@ -800,6 +802,7 @@ const reviewRefundRequest = async (
             `Your refund request for ${currency} ` +
             `${amount.toFixed(2)} has been approved. ` +
             `Your refund will be processed shortly.`,
+          translations: notificationTemplates.REFUND_REQUEST_APPROVED(amount, currency),
         },
         tx,
       );

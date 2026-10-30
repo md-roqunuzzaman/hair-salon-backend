@@ -1,6 +1,42 @@
 import type { INotificationTranslations } from "./notification.interface.js";
+import { notificationName } from './notification.names.js';
 
 export const notificationTemplates = {
+  BOOKING_CONFIRMED_SUCCESS: (): INotificationTranslations => ({
+    en: { title: 'Booking confirmed', message: 'Your appointment has been confirmed successfully.' },
+    'zh-CN': { title: '预约已确认', message: '您的预约已成功确认。' },
+    'zh-HK': { title: '預約已確認', message: '您的預約已成功確認。' },
+  }),
+  POLICY_REFUND_COMPLETED: (amount: number, currency: string, groupPurchase = false): INotificationTranslations => ({
+    en: { title: 'Refund completed', message: `Your ${groupPurchase ? 'group purchase refund' : 'refund'} of ${currency} ${amount.toFixed(2)} has been completed.` },
+    'zh-CN': { title: '退款已完成', message: `您的${groupPurchase ? '团购' : ''}退款 ${currency} ${amount.toFixed(2)} 已完成。` },
+    'zh-HK': { title: '退款已完成', message: `您的${groupPurchase ? '團購' : ''}退款 ${currency} ${amount.toFixed(2)} 已完成。` },
+  }),
+  POLICY_BOOKING_CANCELLED: (awaitingApproval: boolean): INotificationTranslations => ({
+    en: { title: 'Appointment cancelled', message: awaitingApproval ? 'Your appointment was cancelled. Your refund is awaiting merchant approval.' : 'Your appointment has been cancelled.' },
+    'zh-CN': { title: '预约已取消', message: awaitingApproval ? '您的预约已取消，退款正在等待商家审批。' : '您的预约已取消。' },
+    'zh-HK': { title: '預約已取消', message: awaitingApproval ? '您的預約已取消，退款正在等候商家審批。' : '您的預約已取消。' },
+  }),
+  REFUND_REQUEST_APPROVED: (amount: number, currency: string): INotificationTranslations => ({
+    en: { title: 'Refund Request Approved', message: `Your refund request for ${currency} ${amount.toFixed(2)} has been approved. Your refund will be processed shortly.` },
+    'zh-CN': { title: '退款申请已批准', message: `您的 ${currency} ${amount.toFixed(2)} 退款申请已获批准，退款将于稍后处理。` },
+    'zh-HK': { title: '退款申請已獲批准', message: `您的 ${currency} ${amount.toFixed(2)} 退款申請已獲批准，退款將於稍後處理。` },
+  }),
+  REFUND_REQUEST_REJECTED: (amount: number, currency: string, note: string): INotificationTranslations => ({
+    en: { title: 'Refund Request Rejected', message: `Your refund request for ${currency} ${amount.toFixed(2)} was rejected. Reason: ${note}` },
+    'zh-CN': { title: '退款申请已被拒绝', message: `您的 ${currency} ${amount.toFixed(2)} 退款申请已被拒绝。商家备注：${note}` },
+    'zh-HK': { title: '退款申請已被拒絕', message: `您的 ${currency} ${amount.toFixed(2)} 退款申請已被拒絕。商家備註：${note}` },
+  }),
+  GROUP_PURCHASE_EXPIRED: (): INotificationTranslations => ({
+    en: { title: 'Group purchase reservation expired', message: 'Your group purchase reservation expired because payment was not completed before the deadline.' },
+    'zh-CN': { title: '团购预留已过期', message: '由于未能在截止时间前完成付款，您的团购预留已过期。' },
+    'zh-HK': { title: '團購預留已到期', message: '由於未能在截止時間前完成付款，您的團購預留已到期。' },
+  }),
+  APPOINTMENT_REMINDER: (date: string, startTime: string, name: string, names?: unknown): INotificationTranslations => ({
+    en: { title: 'Upcoming appointment', message: `Reminder: ${notificationName(names, 'en', name, 'service')} on ${date} at ${startTime} (Hong Kong time).` },
+    'zh-CN': { title: '预约提醒', message: `您的预约将于 ${date} ${startTime}（香港时间）开始。` },
+    'zh-HK': { title: '預約提醒', message: `您的預約將於 ${date} ${startTime}（香港時間）開始。` },
+  }),
   BOOKING_CANCELLED: (): INotificationTranslations => ({
     en: {
       title: "Booking cancelled",
@@ -138,43 +174,44 @@ export const notificationTemplates = {
   BRANCH_STATUS_CHANGED: (
     branchName: string,
     isActive: boolean,
+    branchTranslations?: unknown,
   ): INotificationTranslations => ({
     en: {
       title: "Branch status updated",
       message: isActive
-        ? `${branchName} is now active and available for bookings.`
-        : `${branchName} is now inactive. Please check your assigned appointments and contact your manager if necessary.`,
+        ? `${notificationName(branchTranslations, 'en', branchName, 'branch')} is now active and available for bookings.`
+        : `${notificationName(branchTranslations, 'en', branchName, 'branch')} is now inactive. Please check your assigned appointments and contact your manager if necessary.`,
     },
 
     "zh-CN": {
       title: "分店状态已更新",
       message: isActive
-        ? `${branchName} 现已恢复营业并接受预约。`
-        : `${branchName} 现已暂停营业。请检查您负责的预约，如有需要请联系经理。`,
+        ? `${notificationName(branchTranslations, 'zh-CN', branchName, 'branch')} 现已恢复营业并接受预约。`
+        : `${notificationName(branchTranslations, 'zh-CN', branchName, 'branch')} 现已暂停营业。请检查您负责的预约，如有需要请联系经理。`,
     },
 
     "zh-HK": {
       title: "分店狀態已更新",
       message: isActive
-        ? `${branchName} 現已恢復營業並接受預約。`
-        : `${branchName} 現已暫停營業。請檢查您負責的預約，如有需要請聯絡經理。`,
+        ? `${notificationName(branchTranslations, 'zh-HK', branchName, 'branch')} 現已恢復營業並接受預約。`
+        : `${notificationName(branchTranslations, 'zh-HK', branchName, 'branch')} 現已暫停營業。請檢查您負責的預約，如有需要請聯絡經理。`,
     },
   }),
 
-  BRANCH_UNAVAILABLE: (branchName: string): INotificationTranslations => ({
+  BRANCH_UNAVAILABLE: (branchName: string, branchTranslations?: unknown): INotificationTranslations => ({
     en: {
       title: "Important update about your appointment",
-      message: `${branchName} is currently unavailable. Your existing appointment has not been automatically cancelled. Please contact the salon to confirm your appointment arrangements.`,
+      message: `${notificationName(branchTranslations, 'en', branchName, 'branch')} is currently unavailable. Your existing appointment has not been automatically cancelled. Please contact the salon to confirm your appointment arrangements.`,
     },
 
     "zh-CN": {
       title: "关于您预约的重要通知",
-      message: `${branchName} 目前暂停营业。您的现有预约不会自动取消。请联系门店确认预约安排。`,
+      message: `${notificationName(branchTranslations, 'zh-CN', branchName, 'branch')} 目前暂停营业。您的现有预约不会自动取消。请联系门店确认预约安排。`,
     },
 
     "zh-HK": {
       title: "關於您預約的重要通知",
-      message: `${branchName} 目前暫停營業。您的現有預約不會自動取消。請聯絡分店確認預約安排。`,
+      message: `${notificationName(branchTranslations, 'zh-HK', branchName, 'branch')} 目前暫停營業。您的現有預約不會自動取消。請聯絡分店確認預約安排。`,
     },
   }),
   PAY_NOW_CONFIRMED: (): INotificationTranslations => ({

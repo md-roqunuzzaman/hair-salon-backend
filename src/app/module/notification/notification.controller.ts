@@ -5,10 +5,17 @@ import httpStatus from "http-status";
 import { catchAsync } from "../../utils/catchAsync.js";
 import { sendResponse } from "../../utils/sendResponse.js";
 
-import { DEFAULT_LANGUAGE, type Language } from "../../utils/language.js";
+import { DEFAULT_LANGUAGE, isLanguage } from "../../utils/language.js";
 
 import { notificationService } from "./notification.service.js";
 import { AppError } from "../../utils/app-error.js";
+
+const responseCopy = {
+  en: { fetched: 'Notifications fetched successfully', read: 'Notification marked as read successfully', allRead: 'All notifications marked as read' },
+  'zh-CN': { fetched: '通知获取成功', read: '通知已标记为已读', allRead: '所有通知已标记为已读' },
+  'zh-HK': { fetched: '通知獲取成功', read: '通知已標記為已讀', allRead: '所有通知已標記為已讀' },
+};
+const copy = (res: Response) => responseCopy[isLanguage(res.locals.language) ? res.locals.language : DEFAULT_LANGUAGE];
 
 // =====================================================
 // GET NOTIFICATIONS
@@ -21,14 +28,7 @@ const getNotifications = catchAsync(async (req: Request, res: Response) => {
   // 1. RESOLVE REQUEST LANGUAGE
   // =====================================================
 
-  const language =
-    req.headers["accept-language"]?.split(",")[0]?.split(";")[0]?.trim() ??
-    DEFAULT_LANGUAGE;
-
-  const supportedLanguage: Language =
-    language === "zh-CN" || language === "zh-HK" || language === "en"
-      ? language
-      : DEFAULT_LANGUAGE;
+  const language = isLanguage(res.locals.language) ? res.locals.language : DEFAULT_LANGUAGE;
 
   // =====================================================
   // 2. FETCH LOCALIZED NOTIFICATIONS
@@ -37,7 +37,7 @@ const getNotifications = catchAsync(async (req: Request, res: Response) => {
   const result = await notificationService.getNotifications(
     userId,
     req.body,
-    supportedLanguage,
+    language,
   );
 
   // =====================================================
@@ -47,7 +47,7 @@ const getNotifications = catchAsync(async (req: Request, res: Response) => {
   sendResponse(res, {
     success: true,
     statusCode: httpStatus.OK,
-    message: "Notifications fetched successfully",
+    message: copy(res).fetched,
     data: result,
   });
 });
@@ -70,7 +70,7 @@ const markAsRead = catchAsync(async (req: Request, res: Response) => {
   sendResponse(res, {
     success: true,
     statusCode: httpStatus.OK,
-    message: "Notification marked as read successfully",
+    message: copy(res).read,
     data: result,
   });
 });
@@ -87,7 +87,7 @@ const markAllAsRead = catchAsync(async (req: Request, res: Response) => {
   sendResponse(res, {
     success: true,
     statusCode: httpStatus.OK,
-    message: "All notifications marked as read",
+    message: copy(res).allRead,
     data: null,
   });
 });

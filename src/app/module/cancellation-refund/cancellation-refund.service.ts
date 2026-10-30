@@ -1,3 +1,4 @@
+import { notificationTemplates } from "../notification/notification.templates.js";
 import { createHmac } from "node:crypto";
 import { Prisma, Role } from "../../../../generated/prisma/client.js";
 import config from "../../config/index.js";
@@ -634,6 +635,7 @@ export async function cancelWithPolicy(
           message: request
             ? "Your appointment was cancelled. Your refund is awaiting merchant approval."
             : "Your appointment has been cancelled.",
+          translations: notificationTemplates.POLICY_BOOKING_CANCELLED(Boolean(request)),
         },
         tx,
       );

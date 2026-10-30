@@ -264,14 +264,14 @@ export class MigrationFixture {
     let allocationRollback=false;
     try{applyMigrations(storage,[...migrations.slice(0,29),{...migrations[29],sql:migrations[29].sql+'; SELECT * FROM deliberately_missing_allocation_table;'}]);}catch{allocationRollback=true;}
     if(!allocationRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==29||storage.sql.exec('PRAGMA table_info(WalletTransaction)').toArray().some(c=>c.name==='paymentId')||storage.sql.exec("SELECT name FROM sqlite_master WHERE name='RefundAllocation'").toArray().length)throw new Error('Allocation migration did not roll back atomically');
-    applyMigrations(storage,migrations);
+    applyMigrations(storage,migrations.slice(0,30));
     for(let i=0;i<financialTables.length;i++){
       const rows=storage.sql.exec(`SELECT * FROM "${financialTables[i]}" ORDER BY id`).toArray();
       for(let j=0;j<rows.length;j++)for(const key of Object.keys(financialBefore[i][j]))if(rows[j][key]!==financialBefore[i][j][key])throw new Error('Allocation migration changed historical money or records');
       if(rows.length!==financialBefore[i].length)throw new Error('Allocation migration invented financial records');
     }
     if(storage.sql.exec('SELECT COUNT(*) AS n FROM RefundAllocation').one().n!==0||storage.sql.exec('SELECT COUNT(*) AS n FROM WalletTransaction WHERE paymentId IS NOT NULL OR ledgerKey IS NOT NULL').one().n!==0)throw new Error('Legacy wallet provenance was guessed');
-    applyMigrations(storage,migrations);
+    applyMigrations(storage,migrations.slice(0,30));
     if(storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==30||storage.sql.exec('SELECT COUNT(*) AS n FROM RefundAllocation').one().n!==0||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Allocation repeated initialization or foreign keys failed');
     const insertAllocation=(id,paymentId,key,amount=100)=>storage.sql.exec("INSERT INTO RefundAllocation (id,refundRequestId,paymentId,amount,provider,idempotencyKey,updatedAt) VALUES (?,'group-request',?,?,'STRIPE',?,1)",id,paymentId,amount,key);
     for(const amount of [1.5,-1,0,10000000000]){let blocked=false;try{insertAllocation('invalid-amount','legacy-payment','invalid-key',amount);}catch{blocked=true;}if(!blocked)throw new Error('Allocation minor-unit amount constraint failed');}
@@ -280,6 +280,24 @@ export class MigrationFixture {
       let rejected=false;try{insertAllocation(id,paymentId,key,amount);}catch{rejected=true;}if(!rejected)throw new Error('Allocation uniqueness/FK/money guard failed');
     }
     storage.sql.exec("DELETE FROM RefundAllocation WHERE id='test-allocation'");
+    const purchasesBeforeSnapshot=storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray();
+    let snapshotRollback=false;
+    try{applyMigrations(storage,[...migrations.slice(0,30),{...migrations[30],sql:migrations[30].sql+'; SELECT * FROM deliberately_missing_validity_table;'}]);}catch{snapshotRollback=true;}
+    if(!snapshotRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==30||storage.sql.exec('PRAGMA table_info(GroupPurchase)').toArray().some(c=>c.name==='validDaysSnapshot')||JSON.stringify(storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray())!==JSON.stringify(purchasesBeforeSnapshot))throw new Error('Validity snapshot upgrade did not roll back atomically');
+    applyMigrations(storage,migrations);
+    const purchasesAfterSnapshot=storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray();
+    if(purchasesBeforeSnapshot.length!==purchasesAfterSnapshot.length)throw new Error('Validity upgrade changed purchase count');
+    for(let i=0;i<purchasesBeforeSnapshot.length;i++){
+      if(purchasesAfterSnapshot[i].validDaysSnapshot!==null)throw new Error('Validity upgrade guessed historical terms');
+      for(const field of Object.keys(purchasesBeforeSnapshot[i]))if(purchasesAfterSnapshot[i][field]!==purchasesBeforeSnapshot[i][field])throw new Error('Validity upgrade changed historical purchase data');
+    }
+    const validityColumn=storage.sql.exec('PRAGMA table_info(GroupPurchase)').toArray().find(c=>c.name==='validDaysSnapshot');
+    if(validityColumn.type!=='INTEGER'||validityColumn.notnull!==0||validityColumn.dflt_value!==null)throw new Error('Validity column must be a nullable integer without a guessed default');
+    storage.sql.exec("UPDATE GroupPurchase SET validDaysSnapshot=30 WHERE id='legacy-direct'");
+    const snapshotState=JSON.stringify(storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray());
+    applyMigrations(storage,migrations);
+    if(storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==31||JSON.stringify(storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray())!==snapshotState||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Validity repeated initialization or foreign keys failed');
+
     if(storage.sql.exec("SELECT cancellationCutoffMinutes FROM BranchBookingPolicy WHERE id='policy'").one().cancellationCutoffMinutes!==300)throw new Error('Hour cutoff not converted to minutes');
     const convertedService=storage.sql.exec("SELECT minimumCancellationMinutes,refundTiers FROM BranchCancellationPolicy WHERE id='minute-service'").one();
     if(convertedService.minimumCancellationMinutes!==120||convertedService.refundTiers!==JSON.stringify([{calculationType:'PERCENTAGE',value:100,minimumMinutesBefore:120},{calculationType:'PERCENTAGE',value:50,minimumMinutesBeforeAppointment:1440}]))throw new Error('Service policy tier conversion failed');

@@ -12,7 +12,7 @@
     "test:errors": "tsx --test src/app/utils/normalize-error.test.ts cloudflare/upload-errors.test.mjs",
     "test:cloudflare": "node --test cloudflare/proof/financial-flow.test.mjs",
     "test:booking": "tsx --test cloudflare/booking-regression.test.mjs",
-    "test:notifications": "tsx --test cloudflare/notification-regression.test.mjs",
+    "test:notifications": "tsx --test cloudflare/notification-regression.test.mjs cloudflare/notification-localization.test.mjs",
     "test:auth": "tsx --test src/app/module/auth/auth.validation.test.ts src/app/utils/jwt.test.ts src/app/utils/auth-cookies.test.ts",
     "cloudflare:generate": "node scripts/prepare-cloudflare.mjs && prisma generate --config cloudflare/prisma.config.ts && node scripts/check-cloudflare-schema.mjs",
     "cloudflare:build": "npm run cloudflare:generate && node scripts/build-cloudflare.mjs",

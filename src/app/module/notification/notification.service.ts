@@ -2,7 +2,8 @@ import { Prisma, Role, type Notification } from "../../../../generated/prisma/cl
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
-import { getLocalizedContent } from "../../utils/localization.js";
+import { localizeNotification, notificationEventTitle } from './notification.localization.js';
+import { notificationName } from './notification.names.js';
 import {
   ICreateNotificationPayload,
   IGetNotificationsQuery,
@@ -39,14 +40,13 @@ const notifyAppointmentTeam = async (
   if (!recipients.length) return;
   const date = appointment.date.toISOString().slice(0, 10);
   const translations = Object.fromEntries((["en", "zh-CN", "zh-HK"] as const).map(language => {
-    const item = getLocalizedContent(appointment.itemNameTranslations, language, { name: appointment.itemName });
-    const title = event.translations?.[language]?.title ?? (event.type === "BOOKING_CREATED"
-      ? { en: "New booking", "zh-CN": "新预约", "zh-HK": "新預約" }[language] : event.title);
+    const itemName = notificationName(appointment.itemNameTranslations, language, appointment.itemName, 'service');
+    const title = event.translations?.[language]?.title || notificationEventTitle(event.type, language);
     const message = language === "en"
-      ? `Appointment ${appointment.id}: ${item.name}, ${date} at ${appointment.startTime}.`
+      ? `Appointment ${appointment.id}: ${itemName}, ${date} at ${appointment.startTime}.`
       : language === "zh-CN"
-        ? `预约 ${appointment.id}：${item.name}，${date} ${appointment.startTime}。`
-        : `預約 ${appointment.id}：${item.name}，${date} ${appointment.startTime}。`;
+        ? `预约 ${appointment.id}：${itemName}，${date} ${appointment.startTime}。`
+        : `預約 ${appointment.id}：${itemName}，${date} ${appointment.startTime}。`;
     return [language, { title, message }];
   }));
   await tx.notification.createMany({ data: recipients.map(userId => ({
@@ -133,10 +133,7 @@ const getNotifications = async (
   // =====================================================
 
   const items = notifications.map((notification) => {
-    const localized = getLocalizedContent(notification.translations, language, {
-      title: notification.title,
-      message: notification.message,
-    });
+    const localized = localizeNotification(notification, language);
 
     return {
       id: notification.id,

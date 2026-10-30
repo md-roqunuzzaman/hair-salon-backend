@@ -491,6 +491,7 @@
       "quantity": "Int",
       "unitPrice": "Decimal",
       "amount": "Decimal",
+      "validDaysSnapshot": "Int",
       "paymentStatus": "PaymentStatus",
       "reservationExpiresAt": "DateTime",
       "purchasedAt": "DateTime",

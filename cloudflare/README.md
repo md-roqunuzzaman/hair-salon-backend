@@ -1,5 +1,19 @@
 # Cloudflare deployment
 
+## Purchase validity snapshot — v31 local candidate
+
+`0031_group_purchase_valid_days_snapshot.sql` adds nullable `GroupPurchase.validDaysSnapshot` as INTEGER. Existing purchases stay NULL; no historical validity, financial data, customer verification state or email delivery history is backfilled or rewritten. The existing transactionSync migration runner makes the column change and ledger insertion atomic. Versions 1–30 remain immutable.
+
+The generated Worker Prisma schema and database-adapter metadata include the field. Build, schema-parity and release checks include v31. The current group-purchase application changes capture package validity when creating a purchase; local Worker API tests cover Buy Later, Direct PAY_NOW, DEPOSIT, RESERVE_NOW, package edits after purchase and nullable validity. This preparation does not edit those application business rules.
+
+Local migration tests exercise injected failure rollback to v30, old row/value preservation, nullable/no-default schema, retained snapshot values on repeat initialization and foreign-key checks. The protected historical v19 backup also restores/upgrades locally through v31 with 13,319 original cells preserved; it is rehearsal input, not a fresh live recovery point.
+
+Before a separately approved staging rollout, verify the current namespace/singleton, immutable ledger and a fresh usable backup while keeping the frontend API online. Run `npm run cloudflare:prepare:staging`; after release approval use the existing `npm run cloudflare:deploy:staging` command. Worker initialization applies only pending SQLite migrations. Never run the PostgreSQL SQL against Workers or reset/recreate the database. A pre-v31 Worker is not an automatic rollback target after v31 because the migration checker rejects extra ledger versions; retain a v31-compatible recovery artifact.
+
+No live deployment, remote migration, secret change or real email/charge/refund is part of this preparation. Existing checked-in delivery flags are retained: staging true under the earlier activation authorization, production false. A future staging deployment retains that automatic-email setting; review the current backlog and provider state as part of release checks. This task does not independently certify current remote settings.
+
+Final local verification on 2026-10-30: `npm run test:regression` exited 0 with **304 TAP tests passed, zero failed/skipped**. The focused Book Now suite passed 27 tests, including four snapshot purchase flows and nullable validity. `npm run cloudflare:prepare:staging` passed typecheck, generated-client/schema parity, migration checks and artifact verification; the manifest records v31, 91 unchanged historical committed SQL files and a 3,616,110-byte Worker JavaScript bundle. Wrangler staging `deploy --dry-run` exited 0 without deployment. The local historical backup rehearsal passed through v31 with 13,319 cells preserved. Ignored evidence is `node_modules/.cloudflare-test/validity-{regression,book-now,migrations,backup,prepare,staging-dry-run}.log`, with explicit exit-code files for regression/preparation/dry-run. None of these checks certifies current live backlog, secrets or ledger state.
+
 ## Cancellation/refund policy minutes — v29 local candidate
 
 Only the requested cancellation/rescheduling, refund-tier and preview fields change from hours to minutes. See the complete field map and current Postman examples in [the policy API guide](../docs/CANCELLATION_REFUND_POLICY_API.md). Existing durations are preserved: 12 hours becomes 720 minutes, 2 becomes 120 and 24 becomes 1440. New requests can set 30/90-minute thresholds. API paths, money calculations, permissions, notifications and unrelated time settings remain unchanged. Frontend clients must update both the field names and units together; old hour request fields are not minute aliases. Preview elapsed-minute values may be fractional.
@@ -16,7 +30,7 @@ Latest standalone TypeScript and Cloudflare build/artifact checks passed; the ma
 
 The registration/verification changes are included in the Cloudflare bundle. SQLite `0028_registration_email_verification.sql` adds User.emailVerified (default false) and nullable emailVerifiedAt. As explicitly requested, customers present during the one-time migration retain access via emailVerified=true; no historical OTP verification timestamp is invented. New registrations remain unverified and repeat initialization never verifies them. Existing customer/account, booking, payment, notification and email history records are retained. v1-v27 SQL is unchanged.
 
-The supplied PostgreSQL schema migration `20261030014939_add_email_verification` is retained unchanged. A separate `20261030020000_preserve_existing_customer_access` migration uses that migration's successful ledger timestamp to preserve access only for customers created before its application. Do not run PostgreSQL migrations against Workers. PostgreSQL schema validation is not a live PostgreSQL upgrade rehearsal.
+The supplied PostgreSQL schema migration `20261030014939_add_email_verification` is retained unchanged. The unapplied `20261030020000_preserve_existing_customer_access` migration uses its read-only verified historical start time, `2026-10-30 01:49:40.572383 UTC`, as a fixed cutoff so shadow replay does not depend on an internal migration ledger. It preserves access only for older customers and leaves new registrations unverified. Verify this deployment-specific cutoff before using the migration on any other PostgreSQL database. Do not run PostgreSQL migrations against Workers. PostgreSQL schema validation is not a live PostgreSQL upgrade rehearsal.
 
 Public requests (JSON, no owner token required):
 

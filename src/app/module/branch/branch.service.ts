@@ -1004,6 +1004,7 @@ const updateBranchStatus = async (
     const staffTranslations = notificationTemplates.BRANCH_STATUS_CHANGED(
       result.name,
       isActive,
+      result.translations,
     );
 
     for (const recipientId of recipientIds) {
@@ -1064,6 +1065,7 @@ const updateBranchStatus = async (
 
       const customerTranslations = notificationTemplates.BRANCH_UNAVAILABLE(
         result.name,
+        result.translations,
       );
 
       for (const customerId of customerIds) {

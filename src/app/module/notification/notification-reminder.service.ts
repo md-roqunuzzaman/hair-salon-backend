@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
 import { Prisma } from "../../../../generated/prisma/client.js";
+import { notificationTemplates } from './notification.templates.js';
 
 // Stored date-only values represent Hong Kong calendar dates, like the booking engine.
 export const sendAppointmentReminders = async (now = new Date()) => {
@@ -15,7 +16,7 @@ export const sendAppointmentReminders = async (now = new Date()) => {
           lte: new Date(`${localDate(until)}T00:00:00Z`),
         },
       },
-      select: { id: true, customerId: true, date: true, startTime: true, itemName: true },
+      select: { id: true, customerId: true, date: true, startTime: true, itemName: true, itemNameTranslations: true },
     });
     let reminderCount = 0;
     for (const appointment of appointments) {
@@ -26,13 +27,11 @@ export const sendAppointmentReminders = async (now = new Date()) => {
       // A rescheduled slot gets its own reminder; mark-as-read does not reset it.
       const id = createHash("sha256").update(`reminder:${appointment.id}:${date}:${appointment.startTime}`).digest("hex");
       if (await tx.notification.findUnique({ where: { id }, select: { id: true } })) continue;
+      const translations = notificationTemplates.APPOINTMENT_REMINDER(date, appointment.startTime, appointment.itemName, appointment.itemNameTranslations);
       await tx.notification.create({ data: {
         id, userId: appointment.customerId, type: "APPOINTMENT_REMINDER", title: "Upcoming appointment",
-        message: `Reminder: ${appointment.itemName} on ${date} at ${appointment.startTime} (Hong Kong time).`,
-        translations: {
-          "zh-CN": { title: "预约提醒", message: `您的预约将于 ${date} ${appointment.startTime} (Hong Kong time) 开始。` },
-          "zh-HK": { title: "預約提醒", message: `您的預約將於 ${date} ${appointment.startTime} (Hong Kong time) 開始。` },
-        },
+        message: translations.en!.message!,
+        translations: translations as Prisma.InputJsonObject,
       } });
       reminderCount++;
     }

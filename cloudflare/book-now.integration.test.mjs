@@ -294,3 +294,33 @@ test('45-minute AUTO availability preview stays bookable with a different fair s
  // Manual assignment remains available for the other, non-conflicting staff.
  await api('/api/v1/appointments/reserve', { body: { ...body, staffId: preview.staffId }, status: 201 });
 });
+
+test('Worker purchase validity snapshot persists across package edits for every purchase flow',async t=>{
+ const {api,fixture,state}=await setup(t,'true');
+ const control=body=>api('/__policy-test',{body});
+ for(const [index,method]of ['BUY_LATER','PAY_NOW','DEPOSIT','RESERVE_NOW'].entries())await t.test(method,async()=>{
+  await control({packageId:fixture.packageId,validDays:7});
+  const body=method==='BUY_LATER'?{packageId:fixture.packageId,quantity:1,purchaseFlow:'BUY_NOW_BOOK_LATER'}:{...fixture,quantity:1,purchaseFlow:'DIRECT_BOOK',bookingMethod:method,startTime:`${10+index}:00`};
+  const id=(await api('/api/v1/group-purchases',{body,status:201})).data.purchaseId;
+  assert.equal((await state()).purchases.find(p=>p.id===id).validDaysSnapshot,7);
+  await control({packageId:fixture.packageId,validDays:365});
+  assert.equal((await api(`/api/v1/group-purchases/${id}`)).data.validUntil,null,'Unpaid/reserved purchase has no started validity countdown');
+  if(method==='RESERVE_NOW')return;
+  await api(`/api/v1/group-purchases/${id}/pay-with-wallet`,{body:{useBonus:false}});
+  const persisted=(await state()).purchases.find(p=>p.id===id);
+  const expected=new Date(new Date(persisted.purchasedAt).getTime()+7*86400000).toISOString();
+  const detail=(await api(`/api/v1/group-purchases/${id}`)).data;
+  assert.equal(detail.package.validDays,365);assert.equal(detail.validUntil,expected);
+  const list=(await api('/api/v1/group-purchases/my')).data;
+  assert.equal(list.items.find(p=>p.id===id).validUntil,expected);
+ });
+});
+test('Worker nullable purchase validity remains NULL after later package configuration',async t=>{
+ const {api,fixture,state}=await setup(t,'true');
+ await api('/__policy-test',{body:{packageId:fixture.packageId,validDays:null}});
+ const id=(await api('/api/v1/group-purchases',{body:{packageId:fixture.packageId,quantity:1,purchaseFlow:'BUY_NOW_BOOK_LATER'},status:201})).data.purchaseId;
+ await api(`/api/v1/group-purchases/${id}/pay-with-wallet`,{body:{useBonus:false}});
+ await api('/__policy-test',{body:{packageId:fixture.packageId,validDays:30}});
+ assert.equal((await state()).purchases.find(p=>p.id===id).validDaysSnapshot,null);
+ assert.equal((await api(`/api/v1/group-purchases/${id}`)).data.validUntil,null);
+});

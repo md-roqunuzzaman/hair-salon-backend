@@ -736,6 +736,7 @@ const payAppointmentWithWallet = async (
               type: "BOOKING_CONFIRMED",
               title: "Booking confirmed",
               message: "Your appointment has been confirmed successfully.",
+              translations: notificationTemplates.BOOKING_CONFIRMED_SUCCESS(),
             },
             tx,
           );
