@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { contentModerationService } from "./app/module/contentModeration/contentModeration.service.js";
+import { logUnexpectedError } from "./app/utils/normalize-error.js";
 
 const testModeration = async () => {
   try {
@@ -10,7 +11,7 @@ const testModeration = async () => {
     console.log(result);
   } catch (error) {
     console.error("Moderation test failed:");
-    console.error(error);
+    logUnexpectedError(error, { source: "moderation.manual-test" });
   }
 };
 

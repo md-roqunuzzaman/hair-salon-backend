@@ -15,14 +15,15 @@ export class Sessions {
   }
   async get(key) { return this.read(key)?.value ?? null; }
   async set(key, value, options = {}) {
-    if (options.NX && this.read(key)) return null;
     const seconds = options.EX ?? (options.expiration?.type === 'EX' ? options.expiration.value : undefined);
     if (seconds !== undefined && (!Number.isInteger(seconds) || seconds <= 0)) throw new Error('Invalid session expiry');
+    if (options.NX && this.read(key)) return null;
     const expires = seconds === undefined ? null : Date.now() + seconds * 1000;
     this.storage.sql.exec('INSERT INTO _Sessions VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires=excluded.expires', key, String(value), expires).toArray();
     return 'OK';
   }
   async del(key) {
+    if (!this.read(key)) return 0;
     this.storage.sql.exec('DELETE FROM _Sessions WHERE key = ?', key).toArray();
     return this.storage.sql.exec('SELECT changes() AS n').one().n;
   }
@@ -32,7 +33,9 @@ export class Sessions {
     return !row ? -2 : row.expires === null ? -1 : Math.max(0, Math.floor((row.expires - Date.now()) / 1000));
   }
   async expire(key, seconds) {
+    if (!Number.isInteger(seconds)) throw new Error('Invalid session expiry');
     if (!this.read(key)) return 0;
+    if (seconds <= 0) return this.del(key);
     this.storage.sql.exec('UPDATE _Sessions SET expires = ? WHERE key = ?', Date.now() + seconds * 1000, key).toArray();
     return 1;
   }
@@ -55,6 +58,18 @@ export class Sessions {
     // is one SQLite transaction, including counters, TTLs and OTP consumption.
     const normalized = script.replace(/--[^\n]*/g, '').replace(/\s+/g, ' ');
     const { keys, arguments: args } = options;
+    if (keys.length === 2 && normalized.includes('local accountCount = tonumber(redis.call("GET", KEYS[1]) or "0")') && normalized.includes('local ipCount = tonumber(redis.call("GET", KEYS[2]) or "0")')) {
+      return this.storage.transaction(async () => {
+        const accountCount = Number(await this.get(keys[0]) ?? 0);
+        const ipCount = Number(await this.get(keys[1]) ?? 0);
+        if (accountCount >= Number(args[0]) || ipCount >= Number(args[1])) {
+          return Math.max(await this.ttl(keys[0]), await this.ttl(keys[1]), 1);
+        }
+        if (await this.incr(keys[0]) === 1) await this.expire(keys[0], Number(args[2]));
+        if (await this.incr(keys[1]) === 1) await this.expire(keys[1], Number(args[2]));
+        return 0;
+      });
+    }
     if (keys.length === 1 && normalized.includes('local count = redis.call("INCR", KEYS[1])')) {
       return this.storage.transaction(async () => {
         const count = await this.incr(keys[0]);
@@ -110,11 +125,11 @@ export class Sessions {
         return keys.length === 2 ? 1 : 0;
       });
     }
-    if (options.keys.length === 2 && script.includes('redis.call("SET", KEYS[2]')) {
+    if (keys.length === 2 && normalized.includes('if redis.call("GET", KEYS[1]) == "valid" then') && normalized.includes('redis.call("SET", KEYS[2], "valid", "EX", ARGV[1])')) {
       return this.storage.transaction(async () => {
-        if (!await this.get(options.keys[0])) return 0;
-        await this.del(options.keys[0]);
-        await this.set(options.keys[1], 'valid', { EX: Number(options.arguments[0]) });
+        if (await this.get(keys[0]) !== 'valid') return 0;
+        await this.del(keys[0]);
+        await this.set(keys[1], 'valid', { EX: Number(args[0]) });
         return 1;
       });
     }

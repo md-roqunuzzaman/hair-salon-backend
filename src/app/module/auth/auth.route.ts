@@ -4,6 +4,7 @@ import { validateRequest } from "../../middleware/validateRequest.js";
 import { authController } from "./auth.controller.js";
 import { auth } from "../../middleware/auth.js";
 import { registrationRateLimit } from "../../middleware/registration-rate-limit.js";
+import { loginRateLimit } from "../../middleware/login-rate-limit.js";
 
 const router = Router();
 
@@ -29,10 +30,15 @@ router.post(
 router.post(
   "/login",
   validateRequest(authValidation.LoginZodSchema),
+  loginRateLimit,
   authController.loginUser,
 );
 
-router.post("/logout", auth(), authController.logoutUser);
+router.post(
+  "/logout",
+  auth({ allowPasswordChangeRequired: true }),
+  authController.logoutUser,
+);
 router.post("/refresh-token", authController.refreshToken);
 router.post(
   "/forgot-password",

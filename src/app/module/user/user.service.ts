@@ -9,6 +9,9 @@ import {
 import { invalidateUserRefreshSessions } from "../auth/auth.service.js";
 import { AppError } from "../../utils/app-error.js";
 import { uploadService } from "../upload/upload.service.js";
+import { logUnexpectedError } from "../../utils/normalize-error.js";
+import { UserStatus } from "../../../../generated/prisma/enums.js";
+import { assertBcryptPasswordLength } from "../../utils/password-security.js";
 
 const getMe = async (userId: string) => {
   // =====================================================
@@ -25,6 +28,7 @@ const getMe = async (userId: string) => {
       name: true,
       email: true,
       phone: true,
+      mustChangePassword: true,
 
       avatarObjectKey: true,
 
@@ -71,6 +75,7 @@ const getMe = async (userId: string) => {
     email: user.email,
 
     phone: user.phone,
+    mustChangePassword: user.mustChangePassword,
 
     avatarObjectKey: user.avatarObjectKey,
 
@@ -229,15 +234,38 @@ const changePassword = async (
   userId: string,
   payload: IChangePasswordPayload,
 ) => {
+  // =====================================================
+  // S5 SECURITY: ENFORCE BCRYPT 72-BYTE PASSWORD LIMIT
+  // =====================================================
+
+  assertBcryptPasswordLength(payload.newPassword);
+
+  // =====================================================
+  // 1. FIND ACTIVE USER
+  // =====================================================
+
   const user = await prisma.user.findUnique({
     where: {
       id: userId,
+    },
+    select: {
+      id: true,
+      status: true,
+      passwordHash: true,
     },
   });
 
   if (!user) {
     throw new AppError("User not found", 404);
   }
+
+  if (user.status !== UserStatus.ACTIVE) {
+    throw new AppError("User account is inactive", 403);
+  }
+
+  // =====================================================
+  // 2. VERIFY CURRENT PASSWORD
+  // =====================================================
 
   const isPasswordMatched = await bcrypt.compare(
     payload.currentPassword,
@@ -247,6 +275,10 @@ const changePassword = async (
   if (!isPasswordMatched) {
     throw new AppError("Current password is incorrect", 401);
   }
+
+  // =====================================================
+  // 3. PREVENT PASSWORD REUSE
+  // =====================================================
 
   const isSamePassword = await bcrypt.compare(
     payload.newPassword,
@@ -260,14 +292,24 @@ const changePassword = async (
     );
   }
 
+  // =====================================================
+  // 4. HASH NEW PASSWORD
+  // =====================================================
+
   const hashedPassword = await bcrypt.hash(
     payload.newPassword,
     Number(config.bcrypt_salt_rounds),
   );
 
-  await prisma.user.update({
+  // =====================================================
+  // 5. UPDATE PASSWORD + CLEAR REQUIRED FLAG
+  // =====================================================
+
+  const updated = await prisma.user.updateMany({
     where: {
-      id: userId,
+      id: user.id,
+      status: UserStatus.ACTIVE,
+      passwordHash: user.passwordHash,
     },
     data: {
       passwordHash: hashedPassword,
@@ -275,7 +317,36 @@ const changePassword = async (
     },
   });
 
-  await invalidateUserRefreshSessions(user.id);
+  if (updated.count !== 1) {
+    throw new AppError(
+      "Password was changed by another request. Please try again.",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 6. INVALIDATE REFRESH SESSIONS
+  // =====================================================
+
+  try {
+    await invalidateUserRefreshSessions(user.id);
+  } catch (error) {
+    logUnexpectedError(error, {
+      source: "users.changePassword.invalidateSessions",
+    });
+
+    throw new AppError(
+      "Password updated, but existing sessions could not be revoked. Please contact support.",
+      503,
+    );
+  }
+
+  // =====================================================
+  // 7. RETURN
+  // =====================================================
+
+  // Existing controller response contract remains unchanged.
+  // Frontend should clear tokens/cookies and require login again.
 
   return null;
 };

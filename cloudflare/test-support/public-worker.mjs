@@ -40,6 +40,6 @@ export async function setup(t, flag, emailOutboxEnabled = 'false', durableObject
   const cron = async () => { const namespace = await mf.getDurableObjectNamespace('SALON_DB'); const response = await namespace.get(namespace.idFromName('salon-v1')).fetch('https://internal/__internal/cron'); assert.equal(response.status, 200, await response.text()); };
   const scheduled = async () => { const worker = await mf.getWorker(); const event = await worker.scheduled({ cron: '* * * * *' }); assert.equal(event.outcome, 'ok'); };
   const direct = async (path,body) => {const namespace=await mf.getDurableObjectNamespace('SALON_DB');const response=await namespace.get(namespace.idFromName('salon-v1')).fetch('https://internal'+path,{method:'POST',body:JSON.stringify(body)});return response.json();};
-  return { restart:async()=>{if(!durableObjectsPersist)throw new Error('Persistent local fixture required');await mf.dispose();mf=new Miniflare(options);}, api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron, scheduled, direct };
+  return { fetch:(...args)=>mf.dispatchFetch(...args), restart:async()=>{if(!durableObjectsPersist)throw new Error('Persistent local fixture required');await mf.dispose();mf=new Miniflare(options);}, api, ownerToken, managerToken, otherManagerToken, fixture, state, webhook, cron, scheduled, direct };
 }
 

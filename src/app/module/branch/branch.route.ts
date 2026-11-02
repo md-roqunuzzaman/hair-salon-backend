@@ -122,7 +122,7 @@ router.get(
   "/:branchId/appointments",
   (req: Request, res: Response, next: NextFunction) => {
     console.log("========== ROUTE HIT ==========");
-    console.log("URL:", req.originalUrl);
+    console.log("PATH:", req.path);
     console.log("Branch ID:", req.params.branchId);
     console.log("===============================");
     next();

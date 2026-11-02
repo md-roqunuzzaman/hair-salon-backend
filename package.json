@@ -3,17 +3,22 @@
   "version": "1.0.0",
   "main": "dist/src/server.js",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/src/server.js",
     "typecheck": "tsc --noEmit",
-    "test:database": "tsx --test src/app/utils/retry-database.test.ts",
+    "test:database": "tsx --test src/app/utils/retry-database.test.ts cloudflare/sqlite-errors.test.mjs",
     "test:errors": "tsx --test src/app/utils/normalize-error.test.ts cloudflare/upload-errors.test.mjs",
+    "test:security": "tsx --test cloudflare/moderation-security.test.mjs cloudflare/http-security.test.mjs",
+    "test:cloudflare:security": "node scripts/build-cloudflare.mjs --test && node --test cloudflare/security.integration.test.mjs",
     "test:cloudflare": "node --test cloudflare/proof/financial-flow.test.mjs",
     "test:booking": "tsx --test cloudflare/booking-regression.test.mjs",
     "test:notifications": "tsx --test cloudflare/notification-regression.test.mjs cloudflare/notification-localization.test.mjs",
-    "test:auth": "tsx --test src/app/module/auth/auth.validation.test.ts src/app/utils/jwt.test.ts src/app/utils/auth-cookies.test.ts",
+    "test:auth": "tsx --test src/app/module/auth/auth.validation.test.ts src/app/utils/jwt.test.ts src/app/utils/auth-cookies.test.ts src/app/middleware/login-rate-limit.test.ts src/app/utils/auth-session.test.ts src/app/utils/password-security.test.ts src/app/module/user/user.validation.test.ts src/app/module/auth/auth.session.test.ts",
     "cloudflare:generate": "node scripts/prepare-cloudflare.mjs && prisma generate --config cloudflare/prisma.config.ts && node scripts/check-cloudflare-schema.mjs",
     "cloudflare:build": "npm run cloudflare:generate && node scripts/build-cloudflare.mjs",
     "cloudflare:prepare:staging": "npm run typecheck && npm run cloudflare:build && npm run test:cloudflare:migrations && node scripts/verify-unified-email-release.mjs",
@@ -23,7 +28,7 @@
     "cloudflare:deploy": "npm run cloudflare:build && wrangler deploy",
     "cloudflare:deploy:staging": "npm run cloudflare:build && wrangler deploy --env staging",
     "test:cloudflare:database": "node scripts/build-cloudflare.mjs && node scripts/test-cloudflare-runtime.mjs",
-    "test:cloudflare:api": "node scripts/build-cloudflare.mjs --test && node --test cloudflare/runtime.integration.test.mjs cloudflare/remaining-payment.integration.test.mjs cloudflare/banner-carousel.integration.test.mjs cloudflare/registration-email.integration.test.mjs",
+    "test:cloudflare:api": "node scripts/build-cloudflare.mjs --test && node --test cloudflare/runtime.integration.test.mjs cloudflare/remaining-payment.integration.test.mjs cloudflare/banner-carousel.integration.test.mjs cloudflare/registration-email.integration.test.mjs cloudflare/login-rate-limit.integration.test.mjs cloudflare/password-change.integration.test.mjs cloudflare/auth-session.integration.test.mjs",
     "test:regression": "prisma generate --config cloudflare/node-client.config.ts && npm run build && npm run test:errors && npm run test:auth && npm run test:smtp && npm run test:database && npm run test:booking && npm run test:notifications && npm run test:group-refunds && npm run test:cloudflare && npm run cloudflare:generate && npm run test:merchant-email && npm run test:business-email && npm run test:cloudflare:database && npm run test:cloudflare:migrations && npm run test:cloudflare:api && npm run test:book-now && npm run test:policy && npm run test:policy:api && node scripts/inventory-routes.mjs",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
@@ -70,10 +75,21 @@
     "redis": "^6.2.1",
     "resend": "^6.32.1",
     "stripe": "^22.6.2",
+    "ws": "^8.22.1",
     "zod": "^4.6.5"
   },
+  "overrides": {
+    "wrangler": {
+      "esbuild": "0.28.2"
+    },
+    "miniflare": {
+      "sharp": "0.35.5",
+      "undici": "7.30.1",
+      "ws": "8.22.1"
+    }
+  },
   "devDependencies": {
-    "@cloudflare/workers-types": "4.20251014.0",
+    "@cloudflare/workers-types": "4.20260426.1",
     "@types/bcrypt": "^6.0.0",
     "@types/cookie-parser": "^1.4.9",
     "@types/cors": "^2.8.19",
@@ -82,10 +98,10 @@
     "@types/node": "^24.10.1",
     "@types/pg": "^8.15.6",
     "esbuild": "0.28.2",
-    "miniflare": "3.20250718.3",
+    "miniflare": "4.20260426.0",
     "prisma": "^7.10.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "wrangler": "4.45.0"
+    "wrangler": "4.86.0"
   }
 }

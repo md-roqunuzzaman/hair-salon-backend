@@ -4,13 +4,15 @@ import { businessEmailTestControl } from './business-email-fixture.mjs';
 import { runGroupSafety } from './group-safety-fixture.mjs';
 import { completionFixture } from './completion-fixture.mjs';
 import { emailTestControl, emailMockSocket } from './email-test-fixture.mjs';
+import { authSessionTestControl } from './auth-session-fixture.mjs';
+import { captureSecurityLog, securityTestControl } from './security-fixture.mjs';
 import worker, { SalonDatabase } from '../worker.mjs';
 import { failureResponse } from './errors.mjs';
 import bcrypt from 'bcryptjs';
 import { sendAppointmentReminders } from '../../src/app/module/notification/notification-reminder.service.ts';
 import { appointmentService } from '../../src/app/module/appointment/appointment.service.ts';
 // Existing services print detailed traces; keep test output focused on failures.
-console.log = () => {};
+console.log = captureSecurityLog;
 export class SalonTestDatabase extends SalonDatabase {
   constructor(ctx, env) {
     const outbox = [];
@@ -22,6 +24,28 @@ export class SalonTestDatabase extends SalonDatabase {
   async fetch(request) {
     if (new URL(request.url).pathname === '/__business-email-test') return this.enqueue(async () => Response.json(await businessEmailTestControl(this.db, this.ctx.storage, await request.json())));
     const url = new URL(request.url);
+    if (url.pathname === '/__security-test-control') return this.enqueue(async () =>
+      Response.json(await securityTestControl(this.db, await request.json())));
+    if (url.pathname === '/__auth-session-test') return this.enqueue(async () =>
+      Response.json(await authSessionTestControl(this.sessions, this.ctx.storage, await request.json())));
+    if (url.pathname === '/__login-rate-test') return this.enqueue(async () => {
+      const body = await request.json();
+      if (body.passwordRequiredUser) await this.db.user.update({
+        where: { email: body.passwordRequiredUser }, data: { mustChangePassword: true },
+      });
+      if (body.expire) this.ctx.storage.sql.exec("UPDATE _Sessions SET expires = 0 WHERE key LIKE 'rate-limit:login:%'").toArray();
+      if (body.failAccountDelete) {
+        const original = this.sessions.del.bind(this.sessions);
+        this.sessions.del = async key => {
+          if (key.startsWith('rate-limit:login:account:')) throw new Error('synthetic login cleanup failure');
+          return original(key);
+        };
+      }
+      return Response.json({
+        counters: this.ctx.storage.sql.exec("SELECT key, value, expires FROM _Sessions WHERE key LIKE 'rate-limit:login:%' ORDER BY key").toArray(),
+        refreshSessions: this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM _Sessions WHERE key LIKE 'auth:refresh:%'").one().n,
+      });
+    });
     if (url.pathname === '/__email-test-control') return this.enqueue(async () => Response.json(await emailTestControl(this.db, this.sessions, await request.json())));
     if (url.pathname === '/__completion-test') return this.enqueue(async () => {
       try { return Response.json(await completionFixture(this.db, this.ctx.storage, await request.json())); }

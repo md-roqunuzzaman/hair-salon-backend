@@ -3,6 +3,7 @@ import { JwtPayload } from "jsonwebtoken";
 import { Role, UserStatus } from "../../../generated/prisma/enums.js";
 import { catchAsync } from "../utils/catchAsync.js";
 import { jwtUtils } from "../utils/jwt.js";
+import { assertActiveAuthSession } from "../utils/auth-session.js";
 import config from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "../utils/app-error.js";
@@ -20,7 +21,19 @@ declare global {
   }
 }
 
-export const auth = (...requiredRoles: Role[]) => {
+type AuthOptions = {
+  allowPasswordChangeRequired?: boolean;
+};
+
+export const auth = (...args: (Role | AuthOptions)[]) => {
+  const requiredRoles = args.filter(
+    (arg): arg is Role => typeof arg === "string",
+  );
+
+  const options = args.find(
+    (arg): arg is AuthOptions => typeof arg === "object" && arg !== null,
+  );
+
   return catchAsync(async (req: Request, res: Response, next: NextFunction) => {
     // =====================================================
     // 1. EXTRACT ACCESS TOKEN
@@ -42,7 +55,7 @@ export const auth = (...requiredRoles: Role[]) => {
     }
 
     // =====================================================
-    // 2. VERIFY JWT
+    // 2. VERIFY JWT SIGNATURE AND EXPIRATION
     // =====================================================
 
     const verifiedToken = jwtUtils.verifyToken(token, config.jwt_access_secret);
@@ -54,22 +67,48 @@ export const auth = (...requiredRoles: Role[]) => {
       );
     }
 
-    const { userId, email } = verifiedToken.data as JwtPayload;
+    const data = verifiedToken.data as JwtPayload;
 
-    if (typeof userId !== "string" || !userId.trim()) {
+    // =====================================================
+    // 3. VALIDATE TOKEN CLAIMS
+    // =====================================================
+
+    const { userId, sid } = data;
+
+    if (
+      typeof userId !== "string" ||
+      !userId.trim() ||
+      typeof sid !== "string" ||
+      !sid.trim()
+    ) {
       throw new AppError(
-        "Authentication token is invalid. Please log in again",
+        "Authentication token is invalid. Please log in again.",
         401,
       );
     }
 
     // =====================================================
-    // 3. FIND USER
+    // 4. VERIFY ACTIVE SESSION (S4)
+    // =====================================================
+
+    await assertActiveAuthSession(userId, sid);
+
+    // =====================================================
+    // 5. FETCH CURRENT USER
     // =====================================================
 
     const user = await prisma.user.findUnique({
       where: {
         id: userId,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        status: true,
+        emailVerified: true,
+        mustChangePassword: true,
       },
     });
 
@@ -78,7 +117,7 @@ export const auth = (...requiredRoles: Role[]) => {
     }
 
     // =====================================================
-    // 4. CHECK ACCOUNT STATUS
+    // 6. ACCOUNT STATUS
     // =====================================================
 
     if (user.status !== UserStatus.ACTIVE) {
@@ -86,7 +125,7 @@ export const auth = (...requiredRoles: Role[]) => {
     }
 
     // =====================================================
-    // 5. CHECK EMAIL VERIFICATION (CUSTOMER ONLY)
+    // 7. CUSTOMER EMAIL VERIFICATION
     // =====================================================
 
     if (user.role === Role.CUSTOMER && !user.emailVerified) {
@@ -97,10 +136,21 @@ export const auth = (...requiredRoles: Role[]) => {
     }
 
     // =====================================================
-    // 6. CHECK ROLE PERMISSION
+    // 8. PASSWORD CHANGE REQUIREMENT (S3)
     // =====================================================
 
-    if (requiredRoles.length && !requiredRoles.includes(user.role)) {
+    if (user.mustChangePassword && !options?.allowPasswordChangeRequired) {
+      throw new AppError(
+        "Password change required. Please change your temporary password before continuing.",
+        403,
+      );
+    }
+
+    // =====================================================
+    // 9. ROLE AUTHORIZATION
+    // =====================================================
+
+    if (requiredRoles.length > 0 && !requiredRoles.includes(user.role)) {
       throw new AppError(
         "Forbidden. You don't have permission to access this resource.",
         403,
@@ -108,7 +158,7 @@ export const auth = (...requiredRoles: Role[]) => {
     }
 
     // =====================================================
-    // 7. ATTACH AUTHENTICATED USER
+    // 10. ATTACH AUTHENTICATED USER
     // =====================================================
 
     req.user = {

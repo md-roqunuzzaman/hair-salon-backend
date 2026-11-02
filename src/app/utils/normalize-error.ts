@@ -103,7 +103,7 @@ export function normalizeError(error: unknown): { body: ErrorBody; unexpected: b
   // Inspect bounded causes for real SQLite errors wrapped by Prisma/DO storage.
   for (const cause of chain(error)) {
     const text = cause.originalMessage ?? cause.message;
-    const message = typeof text === "string" ? text.replace(/: SQLITE_[A-Z_]+\s*$/, "") : "";
+    const message = typeof text === "string" ? text.replace(/: SQLITE_[A-Z_]+(?: \(extended: SQLITE_[A-Z_]+\))?\s*$/, "") : "";
     const unique = message.match(/^(?:D1_ERROR: |SqliteError: )?(?:UNIQUE|PRIMARY KEY) constraint failed: ([\w., ]+)$/);
     if (unique) {
       const table = unique[1].split(".")[0];

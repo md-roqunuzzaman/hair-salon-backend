@@ -35,6 +35,8 @@ if (process.argv.includes('--audit')) {
   };
   let approvedUpdates = 0;
   let approvedRetirements = 0;
+  let loginLimitsChecked = 0;
+  let passwordChangeExceptionsChecked = 0;
   for (const r of old) {
     const now = inventory.filter(n=>n.method===r.method&&n.path===r.path);
     // User approved retaining automatic completion and keeping this manual route
@@ -53,20 +55,48 @@ if (process.argv.includes('--audit')) {
       if(JSON.stringify(r.middleware)!==JSON.stringify(['validateRequest(authValidation.registerValidationSchema)']))throw Error('Registration baseline changed unexpectedly');
       expected=['validateRequest(authValidation.registerValidationSchema)','registrationRateLimit'];
     }
+    // User-added login throttling: retain the historical baseline and require
+    // exactly this security middleware after validation, with the same handler.
+    if (r.method==='POST' && r.path==='/api/v1/auth/login') {
+      if(JSON.stringify(r.middleware)!==JSON.stringify(['validateRequest(authValidation.LoginZodSchema)']))throw Error('Login baseline changed unexpectedly');
+      expected=['validateRequest(authValidation.LoginZodSchema)','loginRateLimit'];
+      loginLimitsChecked++;
+    }
+    // Current user-approved forced-password-change flow keeps only logout and
+    // authenticated own-password changes accessible before the flag is cleared.
+    if (r.method==='POST' && r.path==='/api/v1/auth/logout') {
+      if(JSON.stringify(r.middleware)!==JSON.stringify(['auth()']))throw Error('Logout baseline changed unexpectedly');
+      expected=['auth({ allowPasswordChangeRequired: true })'];
+      passwordChangeExceptionsChecked++;
+    }
+    if (r.method==='PATCH' && r.path==='/api/v1/users/me/password') {
+      if(JSON.stringify(r.middleware)!==JSON.stringify(['auth()','validateRequest(userValidation.changePasswordValidationSchema)']))throw Error('Password-change baseline changed unexpectedly');
+      expected=['auth({ allowPasswordChangeRequired: true })','validateRequest(userValidation.changePasswordValidationSchema)'];
+      passwordChangeExceptionsChecked++;
+    }
     if (r.method==='GET' && r.path==='/api/v1/staff/:staffId') {
       if (JSON.stringify(r.middleware)!==JSON.stringify(approvedStaffRead.before)) throw Error('Staff baseline changed unexpectedly');
       expected = approvedStaffRead.after;
       approvedUpdates++;
     }
+    // S7 changes only this debug log sink; preserve the historical baseline and
+    // every other byte of middleware, auth/validation order and controller.
+    if (r.method==='GET' && r.path==='/api/v1/branches/:branchId/appointments') {
+      const before='console.log("URL:", req.originalUrl)';
+      if (!r.middleware[0]?.includes(before)) throw Error('Branch logging baseline changed unexpectedly');
+      expected=r.middleware.map((middleware,index)=>index===0?middleware.replace(before,'console.log("PATH:", req.path)'):middleware);
+    }
     if (JSON.stringify(now[0].middleware)!==JSON.stringify(expected)||now[0].controller!==r.controller) throw Error(`Existing route middleware/controller changed: ${r.method} ${r.path}`);
   }
   if (approvedUpdates!==1) throw Error('Approved staff read contract was not checked');
   if (approvedRetirements!==1) throw Error('Approved manual completion retirement was not checked');
+  if (loginLimitsChecked!==1) throw Error('Login rate-limit contract was not checked');
+  if (passwordChangeExceptionsChecked!==2) throw Error('Required-password-change exceptions were not checked');
   const seen = new Set();
   for (const r of inventory) {
     const key = r.method+' '+r.path;
     if (seen.has(key)) throw Error('Duplicate route '+key);
     seen.add(key);
   }
-  console.log(`${old.length} historical routes checked; ${approvedUpdates} approved contract update; ${approvedRetirements} approved retirement; ${inventory.length-old.length+approvedRetirements} new routes; no method/path collisions`);
+  console.log(`${old.length} historical routes checked; ${approvedUpdates} approved contract update; ${approvedRetirements} approved retirement; login rate-limit contract checked; ${inventory.length-old.length+approvedRetirements} new routes; no method/path collisions`);
 }

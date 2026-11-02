@@ -4,6 +4,7 @@ import { Role, UserStatus } from "../../../generated/prisma/client.js";
 
 import config from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
+import { assertBcryptPasswordLength } from "./password-security.js";
 
 export const seedBrandOwner = async () => {
   const name = config.brand_owner_name?.trim();
@@ -14,6 +15,12 @@ export const seedBrandOwner = async () => {
   if (!name || !email || !password) {
     throw new Error("Brand Owner seed credentials are missing");
   }
+
+  // =====================================================
+  // S5 — PREVENT BCRYPT PASSWORD TRUNCATION
+  // =====================================================
+
+  assertBcryptPasswordLength(password);
 
   const existingByEmail = await prisma.user.findUnique({
     where: {

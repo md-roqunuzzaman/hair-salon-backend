@@ -4,6 +4,7 @@ import { PrismaClient } from '../../generated/sqlite/client.ts';
 import { Prisma } from '../../generated/sqlite/client.ts';
 import metadata from './model-metadata.json';
 import { AppError } from '../../src/app/utils/app-error.ts';
+import { safeSqliteErrorMessage } from './sqlite-errors.mjs';
 
 // Only the adapter's SQL/result conversion is reused. Atomicity comes from the
 // enclosing Durable Object storage transaction, never D1's no-op transactions.
@@ -16,9 +17,7 @@ function sqliteBinding(storage) {
         catch (error) {
           // The upstream adapter logs driver exceptions before wrapping them.
           // Retain only recognized constraint metadata, never SQL/provider text.
-          const message = error.message.replace(/: SQLITE_[A-Z_]+\s*$/, '');
-          const safe = /^(?:(?:UNIQUE|PRIMARY KEY) constraint failed: [\w., ]+|FOREIGN KEY constraint failed|NOT NULL constraint failed: [\w.]+|CHECK constraint failed(?:: \w+)?|Money precision exceeded|database is (?:locked|busy))$/.test(message);
-          throw new Error(safe ? message : 'SQLite operation failed');
+          throw new Error(safeSqliteErrorMessage(error));
         }
       };
       const statement = {

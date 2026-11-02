@@ -64,6 +64,22 @@ for (const [message, status] of [
   assert.doesNotMatch(JSON.stringify(result.body), /SQLITE|constraint failed|Staff.name|valid_amount/);
 });
 
+test("extended SQLite codes retain public classification without leaking schema or SQL", () => {
+  for (const [message, code, status] of [
+    ["UNIQUE constraint failed: User.email", "SQLITE_CONSTRAINT_UNIQUE", 409],
+    ["FOREIGN KEY constraint failed", "SQLITE_CONSTRAINT_FOREIGNKEY", 400],
+    ["NOT NULL constraint failed: Staff.name", "SQLITE_CONSTRAINT_NOTNULL", 400],
+    ["CHECK constraint failed: valid_amount", "SQLITE_CONSTRAINT_CHECK", 400],
+  ] as const) {
+    const result = normalizeError(new Error(`${message}: SQLITE_CONSTRAINT (extended: ${code})`));
+    assert.equal(result.body.statusCode, status);
+    assert.doesNotMatch(JSON.stringify(result.body), /SQLITE|constraint failed|Staff.name|valid_amount/);
+  }
+  const unknown = normalizeError(new Error("SELECT private_value: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_UNIQUE)"));
+  assert.equal(unknown.body.statusCode, 500);
+  assert.doesNotMatch(JSON.stringify(unknown.body), /SELECT|private_value|SQLITE/);
+});
+
 test("Zod retains all public issue paths and custom messages", () => {
   const result = z.object({ email: z.email("Invalid email address"), staffId: z.uuid("Invalid staff ID") }).safeParse({ email: "bad", staffId: "bad" });
   assert.equal(result.success, false);

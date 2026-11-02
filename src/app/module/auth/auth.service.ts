@@ -23,6 +23,9 @@ import {
   EmailProviderError,
 } from "../brand-email-setting/brand-email-setting.errors.js";
 import { AppError } from "../../utils/app-error.js";
+import { clearSuccessfulLoginAccountLimit } from "../../middleware/login-rate-limit.js";
+import { assertBcryptPasswordLength } from "../../utils/password-security.js";
+import { withAuthSessionStorage } from "../../utils/auth-session.js";
 
 const OTP_TTL_SECONDS = 5 * 60; // 5 minutes
 const RESET_TOKEN_TTL_SECONDS = 10 * 60; // 10 minutes
@@ -38,8 +41,9 @@ const refreshTokenKey = (userId: string, tokenId: string) =>
   `auth:refresh:${userId}:${tokenId}`;
 
 export const invalidateUserRefreshSessions = async (userId: string) => {
-  await redisClient.eval(
-    `
+  const invalidated = await withAuthSessionStorage(() =>
+    redisClient.eval(
+      `
       local cursor = "0"
       repeat
         local result = redis.call("SCAN", cursor, "MATCH", ARGV[1], "COUNT", 100)
@@ -48,8 +52,12 @@ export const invalidateUserRefreshSessions = async (userId: string) => {
       until cursor == "0"
       return 1
     `,
-    { arguments: [`auth:refresh:${userId}:*`], keys: [] },
+      { arguments: [`auth:refresh:${userId}:*`], keys: [] },
+    ),
   );
+  if (invalidated !== 1) {
+    throw new AppError("Authentication service temporarily unavailable.", 503);
+  }
 };
 
 const hashEmailVerificationOtp = (userId: string, otp: string): string => {
@@ -83,6 +91,12 @@ const hashPasswordResetOtp = (userId: string, otp: string): string => {
 
 const registerUser = async (payload: IRegisterUserPayload) => {
   const { name, password } = payload;
+
+  // =====================================================
+  // S5 SECURITY: ENFORCE BCRYPT 72-BYTE PASSWORD LIMIT
+  // =====================================================
+
+  assertBcryptPasswordLength(password);
 
   const normalizedName = name.trim();
   const email = payload.email.trim().toLowerCase();
@@ -699,7 +713,15 @@ const resendVerificationOtp = async (payload: { email: string }) => {
 };
 
 const loginUser = async (payload: ILoginUserPayload) => {
+  // =====================================================
+  // 1. NORMALIZE EMAIL
+  // =====================================================
+
   const email = payload.email.trim().toLowerCase();
+
+  // =====================================================
+  // 2. FIND USER
+  // =====================================================
 
   const user = await prisma.user.findUnique({
     where: {
@@ -711,9 +733,17 @@ const loginUser = async (payload: ILoginUserPayload) => {
     throw new AppError("Invalid email or password", 401);
   }
 
+  // =====================================================
+  // 3. CHECK ACCOUNT STATUS
+  // =====================================================
+
   if (user.status !== UserStatus.ACTIVE) {
     throw new AppError("User account is inactive", 403);
   }
+
+  // =====================================================
+  // 4. VERIFY PASSWORD
+  // =====================================================
 
   const isPasswordMatched = await bcrypt.compare(
     payload.password,
@@ -725,7 +755,7 @@ const loginUser = async (payload: ILoginUserPayload) => {
   }
 
   // =====================================================
-  // EMAIL VERIFICATION CHECK — CUSTOMER ONLY
+  // 5. CUSTOMER EMAIL VERIFICATION
   // =====================================================
 
   if (user.role === Role.CUSTOMER && !user.emailVerified) {
@@ -736,25 +766,45 @@ const loginUser = async (payload: ILoginUserPayload) => {
   }
 
   // =====================================================
-  // ACCESS TOKEN PAYLOAD
+  // 6. PASSWORD CHANGE REQUIREMENT
+  // =====================================================
+
+  // Login remains allowed so users with temporary
+  // passwords can access the password-change endpoint.
+
+  const mustChangePassword = user.mustChangePassword;
+
+  // =====================================================
+  // 7. CREATE SESSION IDENTIFIER
+  // =====================================================
+
+  const sessionId = crypto.randomUUID();
+
+  // =====================================================
+  // 8. ACCESS TOKEN PAYLOAD
   // =====================================================
 
   const accessTokenPayload = {
     userId: user.id,
     email: user.email,
     role: user.role,
+    sid: sessionId,
   };
 
   // =====================================================
-  // REFRESH TOKEN PAYLOAD
+  // 9. REFRESH TOKEN PAYLOAD
   // =====================================================
 
   const refreshTokenPayload = {
     userId: user.id,
     email: user.email,
     role: user.role,
-    jti: crypto.randomUUID(),
+    jti: sessionId,
   };
+
+  // =====================================================
+  // 10. GENERATE ACCESS TOKEN
+  // =====================================================
 
   const accessToken = jwtUtils.createToken(
     accessTokenPayload,
@@ -762,20 +812,65 @@ const loginUser = async (payload: ILoginUserPayload) => {
     config.jwt_access_expires_in as SignOptions["expiresIn"],
   );
 
+  // =====================================================
+  // 11. GENERATE REFRESH TOKEN
+  // =====================================================
+
   const refreshToken = jwtUtils.createToken(
     refreshTokenPayload,
     config.jwt_refresh_secret,
     config.jwt_refresh_expires_in as SignOptions["expiresIn"],
   );
 
-  const sessionKey = refreshTokenKey(user.id, refreshTokenPayload.jti);
+  // =====================================================
+  // 12. STORE REFRESH SESSION
+  // =====================================================
 
-  await redisClient.set(sessionKey, "valid", {
-    expiration: {
-      type: "EX",
-      value: jwtUtils.getRemainingLifetimeSeconds(refreshToken),
-    },
-  });
+  const sessionKey = refreshTokenKey(user.id, sessionId);
+
+  const storedSession = await withAuthSessionStorage(() =>
+    redisClient.set(sessionKey, "valid", {
+      expiration: {
+        type: "EX",
+        value: jwtUtils.getRemainingLifetimeSeconds(refreshToken),
+      },
+    }),
+  );
+  if (storedSession !== "OK") {
+    throw new AppError("Authentication service temporarily unavailable.", 503);
+  }
+
+  // =====================================================
+  // 13. CLEAR SUCCESSFUL LOGIN RATE LIMIT
+  // =====================================================
+
+  try {
+    await clearSuccessfulLoginAccountLimit(email);
+  } catch (error) {
+    // Never leave a refresh session active when
+    // login security cleanup fails.
+
+    try {
+      await redisClient.del(sessionKey);
+    } catch (cleanupError) {
+      logUnexpectedError(cleanupError, {
+        source: "auth.loginUser.sessionCleanup",
+      });
+    }
+
+    logUnexpectedError(error, {
+      source: "auth.loginUser.clearAccountRateLimit",
+    });
+
+    throw new AppError(
+      "Login temporarily unavailable. Please try again later.",
+      503,
+    );
+  }
+
+  // =====================================================
+  // 14. RETURN LOGIN RESULT
+  // =====================================================
 
   return {
     user: {
@@ -786,6 +881,7 @@ const loginUser = async (payload: ILoginUserPayload) => {
       role: user.role,
       status: user.status,
       emailVerified: user.emailVerified,
+      mustChangePassword,
     },
 
     accessToken,
@@ -794,6 +890,10 @@ const loginUser = async (payload: ILoginUserPayload) => {
 };
 
 const refreshToken = async (token: string) => {
+  // =====================================================
+  // 1. VERIFY REFRESH TOKEN
+  // =====================================================
+
   const verifiedRefreshToken = jwtUtils.verifyToken(
     token,
     config.jwt_refresh_secret,
@@ -804,6 +904,23 @@ const refreshToken = async (token: string) => {
   }
 
   const data = verifiedRefreshToken.data as JwtPayload;
+
+  // =====================================================
+  // 2. VALIDATE REFRESH TOKEN CLAIMS
+  // =====================================================
+
+  if (
+    typeof data.userId !== "string" ||
+    !data.userId.trim() ||
+    typeof data.jti !== "string" ||
+    !data.jti.trim()
+  ) {
+    throw new AppError("Invalid refresh token", 401);
+  }
+
+  // =====================================================
+  // 3. FETCH USER
+  // =====================================================
 
   const user = await prisma.user.findUnique({
     where: {
@@ -816,7 +933,7 @@ const refreshToken = async (token: string) => {
   }
 
   // =====================================================
-  // EMAIL VERIFICATION CHECK — CUSTOMER ONLY
+  // 4. CUSTOMER EMAIL VERIFICATION
   // =====================================================
 
   if (user.role === Role.CUSTOMER && !user.emailVerified) {
@@ -826,30 +943,37 @@ const refreshToken = async (token: string) => {
     );
   }
 
-  if (typeof data.jti !== "string") {
-    throw new AppError("Invalid refresh token", 401);
-  }
+  // =====================================================
+  // 5. GENERATE NEW SESSION IDENTIFIER
+  // =====================================================
+
+  const newSessionId = crypto.randomUUID();
 
   // =====================================================
-  // ACCESS TOKEN PAYLOAD
+  // 6. ACCESS TOKEN PAYLOAD
   // =====================================================
 
   const accessTokenPayload = {
     userId: user.id,
     email: user.email,
     role: user.role,
+    sid: newSessionId,
   };
 
   // =====================================================
-  // REFRESH TOKEN PAYLOAD
+  // 7. REFRESH TOKEN PAYLOAD
   // =====================================================
 
   const newRefreshTokenPayload = {
     userId: user.id,
     email: user.email,
     role: user.role,
-    jti: crypto.randomUUID(),
+    jti: newSessionId,
   };
+
+  // =====================================================
+  // 8. GENERATE NEW ACCESS TOKEN
+  // =====================================================
 
   const accessToken = jwtUtils.createToken(
     accessTokenPayload,
@@ -857,35 +981,57 @@ const refreshToken = async (token: string) => {
     config.jwt_access_expires_in as SignOptions["expiresIn"],
   );
 
+  // =====================================================
+  // 9. GENERATE NEW REFRESH TOKEN
+  // =====================================================
+
   const newRefreshToken = jwtUtils.createToken(
     newRefreshTokenPayload,
     config.jwt_refresh_secret,
     config.jwt_refresh_expires_in as SignOptions["expiresIn"],
   );
 
-  const oldSessionKey = refreshTokenKey(user.id, data.jti);
-  const newSessionKey = refreshTokenKey(user.id, newRefreshTokenPayload.jti);
+  // =====================================================
+  // 10. PREPARE SESSION ROTATION
+  // =====================================================
 
-  const rotated = await redisClient.eval(
-    `
-      if redis.call("GET", KEYS[1]) then
+  const oldSessionKey = refreshTokenKey(user.id, data.jti);
+
+  const newSessionKey = refreshTokenKey(user.id, newSessionId);
+
+  const newSessionTtl = jwtUtils.getRemainingLifetimeSeconds(newRefreshToken);
+
+  // =====================================================
+  // 11. ATOMIC REFRESH SESSION ROTATION
+  // =====================================================
+
+  const rotated = await withAuthSessionStorage(() =>
+    redisClient.eval(
+      `
+      if redis.call("GET", KEYS[1]) == "valid" then
         redis.call("DEL", KEYS[1])
         redis.call("SET", KEYS[2], "valid", "EX", ARGV[1])
         return 1
       end
       return 0
     `,
-    {
-      keys: [oldSessionKey, newSessionKey],
-      arguments: [
-        String(jwtUtils.getRemainingLifetimeSeconds(newRefreshToken)),
-      ],
-    },
+      {
+        keys: [oldSessionKey, newSessionKey],
+        arguments: [String(newSessionTtl)],
+      },
+    ),
   );
 
+  if (rotated !== 0 && rotated !== 1) {
+    throw new AppError("Authentication service temporarily unavailable.", 503);
+  }
   if (rotated !== 1) {
     throw new AppError("Refresh session expired or invalid", 401);
   }
+
+  // =====================================================
+  // 12. RETURN ROTATED TOKENS
+  // =====================================================
 
   return {
     accessToken,
@@ -894,6 +1040,10 @@ const refreshToken = async (token: string) => {
 };
 
 const logoutUser = async (userId: string, refreshToken: string) => {
+  // =====================================================
+  // 1. VERIFY REFRESH TOKEN
+  // =====================================================
+
   const verifiedRefreshToken = jwtUtils.verifyToken(
     refreshToken,
     config.jwt_refresh_secret,
@@ -905,11 +1055,33 @@ const logoutUser = async (userId: string, refreshToken: string) => {
 
   const data = verifiedRefreshToken.data as JwtPayload;
 
-  if (data.userId !== userId || typeof data.jti !== "string") {
+  // =====================================================
+  // 2. VALIDATE TOKEN OWNERSHIP AND SESSION ID
+  // =====================================================
+
+  if (
+    data.userId !== userId ||
+    typeof data.jti !== "string" ||
+    !data.jti.trim()
+  ) {
     throw new AppError("Invalid refresh token", 401);
   }
 
-  await redisClient.del(refreshTokenKey(userId, data.jti));
+  // Capture validated session ID as a local constant.
+  // This preserves TypeScript narrowing inside callbacks.
+  const sessionId = data.jti;
+
+  // =====================================================
+  // 3. REVOKE SESSION
+  // =====================================================
+
+  await withAuthSessionStorage(() =>
+    redisClient.del(refreshTokenKey(userId, sessionId)),
+  );
+
+  // =====================================================
+  // 4. RETURN
+  // =====================================================
 
   return null;
 };
@@ -1250,6 +1422,12 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
   const { resetToken, newPassword } = payload;
 
   // =====================================================
+  // S5 SECURITY: ENFORCE BCRYPT 72-BYTE PASSWORD LIMIT
+  // =====================================================
+
+  assertBcryptPasswordLength(newPassword);
+
+  // =====================================================
   // 1. VALIDATE RESET TOKEN FORMAT
   // =====================================================
 
@@ -1334,7 +1512,9 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
     // =====================================================
 
     const user = await prisma.user.findUnique({
-      where: { id: tokenData.userId },
+      where: {
+        id: tokenData.userId,
+      },
       select: {
         id: true,
         name: true,
@@ -1377,6 +1557,7 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
       },
       data: {
         passwordHash: hashedPassword,
+        mustChangePassword: false,
       },
     });
 
@@ -1385,11 +1566,35 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
     }
 
     // =====================================================
-    // 9. CONSUME RESET TOKEN
+    // 9. INVALIDATE ALL EXISTING AUTH SESSIONS (S4)
     // =====================================================
 
+    // Attempt revocation immediately after the password
+    // update, before reset-token cleanup.
+
+    let sessionRevocationFailed = false;
+
     try {
-      await redisClient.eval(
+      await invalidateUserRefreshSessions(user.id);
+    } catch (error) {
+      sessionRevocationFailed = true;
+
+      logUnexpectedError(error, {
+        source: "auth.resetPassword.invalidateSessions",
+      });
+    }
+
+    // =====================================================
+    // 10. CONSUME RESET TOKEN
+    // =====================================================
+
+    // Cleanup must still be attempted even if session
+    // revocation failed.
+
+    let tokenCleanupFailed = false;
+
+    try {
+      const consumed = await redisClient.eval(
         `
           if redis.call("GET", KEYS[1]) == ARGV[1] then
             return redis.call("DEL", KEYS[1])
@@ -1402,39 +1607,38 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
           arguments: [stored],
         },
       );
+
+      if (consumed !== 1) {
+        tokenCleanupFailed = true;
+      }
     } catch (error) {
+      tokenCleanupFailed = true;
+
       logUnexpectedError(error, {
         source: "auth.resetPassword.consumeToken",
       });
-
-      // The password was already updated.
-      // Do not retry the database update automatically.
-      throw new AppError(
-        "Password updated, but security cleanup could not be completed. Please contact support.",
-        503,
-      );
     }
 
     // =====================================================
-    // 10. INVALIDATE EXISTING REFRESH SESSIONS
+    // 11. HANDLE SECURITY CLEANUP FAILURES
     // =====================================================
 
-    try {
-      await invalidateUserRefreshSessions(user.id);
-    } catch (error) {
-      logUnexpectedError(error, {
-        source: "auth.resetPassword.invalidateSessions",
-      });
-
-      // This is a security-sensitive failure.
+    if (sessionRevocationFailed) {
       throw new AppError(
         "Password updated, but existing sessions could not be revoked. Please contact support.",
         503,
       );
     }
 
+    if (tokenCleanupFailed) {
+      throw new AppError(
+        "Password updated, but reset token cleanup could not be completed. Please contact support.",
+        503,
+      );
+    }
+
     // =====================================================
-    // 11. SEND PASSWORD RESET SUCCESS EMAIL
+    // 12. SEND PASSWORD RESET SUCCESS EMAIL
     // =====================================================
 
     try {
@@ -1464,18 +1668,18 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
         brandId,
       });
 
-      // Password reset is already successful.
+      // Password reset already succeeded.
       // Notification failure must not roll it back.
     }
 
     // =====================================================
-    // 12. RETURN SUCCESS
+    // 13. RETURN SUCCESS
     // =====================================================
 
     return null;
   } finally {
     // =====================================================
-    // 13. RELEASE ONLY THE LOCK OWNED BY THIS REQUEST
+    // 14. RELEASE ONLY THE LOCK OWNED BY THIS REQUEST
     // =====================================================
 
     try {

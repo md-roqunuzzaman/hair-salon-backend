@@ -101,7 +101,7 @@ const getAvailableSlots = async (
     excludeAppointmentId,
   } = query;
 
-  console.log("🔥 AVAILABILITY FUNCTION CALLED", query);
+  console.log("🔥 AVAILABILITY FUNCTION CALLED");
 
   // =====================================================
   // AUTO STAFF MODE

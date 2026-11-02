@@ -1375,9 +1375,7 @@ const getActiveBanners = async (query: IGetActiveBannersQuery) => {
   const { branchId } = query;
 
   const page = Math.max(1, Number(query.page ?? 1));
-
   const limit = Math.min(50, Math.max(1, Number(query.limit ?? 10)));
-
   const skip = (page - 1) * limit;
 
   const now = new Date();
@@ -1447,7 +1445,6 @@ const getActiveBanners = async (query: IGetActiveBannersQuery) => {
       },
     ],
 
-    // Banner must have at least one attached media.
     media: {
       some: {},
     },
@@ -1467,8 +1464,8 @@ const getActiveBanners = async (query: IGetActiveBannersQuery) => {
     ],
   };
 
-  // 4. Fetch banners and total count
-  const [banners, total] = await Promise.all([
+  // 4. Fetch banners, total count and carousel settings
+  const [banners, total, carouselSettings] = await Promise.all([
     prisma.banner.findMany({
       where,
 
@@ -1522,6 +1519,17 @@ const getActiveBanners = async (query: IGetActiveBannersQuery) => {
     prisma.banner.count({
       where,
     }),
+
+    // Fetch branch-specific carousel settings
+    prisma.bannerCarouselSetting.findUnique({
+      where: {
+        branchId,
+      },
+      select: {
+        imageIntervalMs: true,
+        videoIntervalMs: true,
+      },
+    }),
   ]);
 
   // 5. Generate signed R2 URLs
@@ -1553,11 +1561,16 @@ const getActiveBanners = async (query: IGetActiveBannersQuery) => {
   // 6. Pagination
   const totalPages = Math.ceil(total / limit);
 
+  // 7. Return active banners with carousel settings
   return {
     branch: {
       id: branch.id,
       name: branch.name,
     },
+
+    // Carousel interval configuration
+    imageIntervalMs: carouselSettings?.imageIntervalMs ?? 5000,
+    videoIntervalMs: carouselSettings?.videoIntervalMs ?? 15000,
 
     items,
 

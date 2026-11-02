@@ -6,6 +6,12 @@ import { createHash } from 'node:crypto';
 import migrations from '../cloudflare/.build/migrations.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
+const packageLock = await readFile('package-lock.json');
+const toolPackages = await Promise.all(['wrangler','miniflare','esbuild','prisma'].map(async name =>
+  [name, JSON.parse(await readFile(`node_modules/${name}/package.json`,'utf8'))]));
+const tooling = Object.fromEntries(toolPackages);
+assert.equal(tooling.miniflare.version, tooling.wrangler.dependencies.miniflare, 'Tests and Wrangler must use the same Miniflare version');
+const toolVersions = Object.fromEntries(toolPackages.map(([name, value])=>[name,value.version]));
 const config = JSON.parse(await readFile('wrangler.jsonc','utf8'));
 assert.equal(config.vars.EMAIL_OUTBOX_ENABLED,'false');
 assert.ok(['false','true'].includes(config.env.staging.vars.EMAIL_OUTBOX_ENABLED));
@@ -39,21 +45,27 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
 const metadata=JSON.parse(await readFile('cloudflare/runtime/model-metadata.json','utf8'));
 assert.equal(metadata.GroupPurchase.scalars.validDaysSnapshot,'Int','Snapshot field missing from Worker adapter metadata');
 const bundle = await readFile(config.main);
+assert.ok(!bundle.includes('__login-rate-test'),'Login test control leaked into production Worker');
+assert.ok(!bundle.includes('__auth-session-test'),'Session test control leaked into production Worker');
 const map = JSON.parse(await readFile(`${config.main}.map`,'utf8'));
-for (const required of ['brand-email-setting.sender.ts','brand-email-setting.auth.ts','brand-email-setting.events.ts','brand-email-setting.outbox-processor.ts','banner.service.ts','registration-rate-limit.ts','runtime/request-client-ip.mjs','runtime/sessions.mjs']) assert.ok(map.sources.some(source=>source.endsWith(required)),`Missing ${required}`);
+assert.ok(map.sources.some(source=>source.endsWith('runtime/sqlite-errors.mjs')), 'SQLite error compatibility normalizer missing');
+assert.ok(map.sources.some(source=>source.endsWith('utils/auth-session.ts')), 'Active-session enforcement missing');
+assert.ok(!map.sources.some(source=>source.endsWith('runtime/auth-session-fixture.mjs')), 'Session fixture leaked into production Worker');
+for (const required of ['brand-email-setting.sender.ts','brand-email-setting.auth.ts','brand-email-setting.events.ts','brand-email-setting.outbox-processor.ts','banner.service.ts','registration-rate-limit.ts','login-rate-limit.ts','runtime/request-client-ip.mjs','runtime/sessions.mjs']) assert.ok(map.sources.some(source=>source.endsWith(required)),`Missing ${required}`);
 assert.ok((await readFile('cloudflare/.build/templates.mjs','utf8')).includes('"verify-email.ejs"'),'Verification template missing from compiled templates');
 // MIME composition is intentionally shared by Worker SMTP and Graph. Only the
 // native Node SMTP transport/connection and local fixtures must be absent.
 for (const excluded of ['runtime/integration-fixture.mjs','runtime/business-email-fixture.mjs','runtime/email-test-fixture.mjs','src/app/lib/merchant-smtp.ts','nodemailer/dist/esm/smtp-transport/','nodemailer/dist/esm/smtp-connection/','nodemailer/lib/smtp-transport/','nodemailer/lib/smtp-connection/']) assert.ok(!map.sources.some(source=>source.includes(excluded)),`Unsupported production source: ${excluded}`);
 const report = {
   scope:'LOCAL_ONLY_NO_DEPLOY',createdAt:new Date().toISOString(),
+  packageLockSha256:hash(packageLock),nodeVersion:process.version,toolVersions,
   workerSha256:hash(bundle),workerBytes:bundle.length,
   migrationVersion:migrations.at(-1).version,
   migrationChecksums:migrations.map(({version,checksum})=>({version,checksum})),
   historicalMigrationFilesUnchanged:immutable.length,
   stagingBusinessDelivery:config.env.staging.vars.EMAIL_OUTBOX_ENABLED==='true',productionBusinessDelivery:false,
   merchantOnlyRoutingIncluded:true,nativeSmtpAndTestFixturesExcluded:true,
-  registrationVerificationIncluded:true,groupPurchaseValiditySnapshotIncluded:true,
+  registrationVerificationIncluded:true,groupPurchaseValiditySnapshotIncluded:true,loginRateLimitingIncluded:true,
 };
 await writeFile('cloudflare/.build/unified-merchant-email-release-manifest.json',JSON.stringify(report,null,2)+'\n');
 console.log(JSON.stringify({scope:report.scope,migrationVersion:report.migrationVersion,historicalMigrationFilesUnchanged:immutable.length,workerBytes:bundle.length,stagingBusinessDelivery:report.stagingBusinessDelivery,productionBusinessDelivery:false,bundleIsolation:true}));

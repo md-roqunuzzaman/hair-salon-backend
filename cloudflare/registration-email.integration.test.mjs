@@ -22,13 +22,17 @@ async function fixture(t,configured=true){
 }
 
 test('registration on Workers: Gmail OTP, hash/TTL, unverified gates, verify/login and replay protection',async t=>{
-  const {api,register,verify,state,ownerToken,root}=await fixture(t);
+  const {api,direct,register,verify,state,ownerToken,root}=await fixture(t);
   const email='registration@example.com';
   const user=(await register(email)).data;
   assert.equal(user.emailVerified,false);assert.equal(user.passwordHash,undefined);
   await api('/api/v1/auth/login',{body:{email,password},status:403});
   const token=jwt.sign({userId:user.id,email,role:'CUSTOMER'},'test-access-secret-'.repeat(3),{expiresIn:'5m'});
-  await api('/api/v1/wallet',{roleToken:token,status:403});
+  await api('/api/v1/wallet',{roleToken:token,status:401});
+  const sid='unverified-customer-session';
+  await direct('/__auth-session-test',{operation:'set',key:`auth:refresh:${user.id}:${sid}`,value:'valid',options:{EX:300}});
+  const sessionToken=jwt.sign({userId:user.id,sid,email,role:'CUSTOMER'},'test-access-secret-'.repeat(3),{expiresIn:'5m'});
+  await api('/api/v1/wallet',{roleToken:sessionToken,status:403});
   const before=await state(email),otp=before.verification.otp;
   assert.match(otp,/^\d{6}$/);assert.match(before.verification.hash,/^[a-f0-9]{64}$/);
   assert.notEqual(before.verification.hash,otp);assert.ok(before.verification.ttl>0&&before.verification.ttl<=300);

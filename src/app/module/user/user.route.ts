@@ -17,7 +17,7 @@ router.patch(
 
 router.patch(
   "/me/password",
-  auth(),
+  auth({ allowPasswordChangeRequired: true }),
   validateRequest(userValidation.changePasswordValidationSchema),
   userController.changePassword,
 );

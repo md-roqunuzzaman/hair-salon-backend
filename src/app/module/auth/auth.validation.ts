@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isWithinBcryptPasswordLimit } from "../../utils/password-security.js";
 
 const registerValidationSchema = z.object({
   body: z.object({
@@ -24,7 +25,10 @@ const registerValidationSchema = z.object({
       .regex(
         /[^A-Za-z0-9]/,
         "Password must contain at least 1 Special Character",
-      ),
+      )
+      .refine(isWithinBcryptPasswordLimit, {
+        message: "Password must not exceed 72 UTF-8 bytes",
+      }),
   }),
 });
 
@@ -74,7 +78,10 @@ const resetPasswordValidationSchema = z.object({
       .regex(
         /[^A-Za-z0-9]/,
         "Password must contain at least 1 special character",
-      ),
+      )
+      .refine(isWithinBcryptPasswordLimit, {
+        message: "Password must not exceed 72 UTF-8 bytes",
+      }),
   }),
 });
 
