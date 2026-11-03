@@ -1212,33 +1212,50 @@ const updateBranchStatus = async (
 // =====================================================
 
 const getBusinessHours = async (branchId: string) => {
+  // =====================================================
+  // 1. VERIFY BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
-    where: {
-      id: branchId,
-    },
+    where: { id: branchId },
+    select: { id: true },
   });
 
   if (!branch) {
     throw new AppError("Branch not found", 404);
   }
 
+  // =====================================================
+  // 2. FETCH BUSINESS HOURS WITH BREAKS
+  // =====================================================
+
   const businessHours = await prisma.branchBusinessHour.findMany({
-    where: {
-      branchId,
-    },
+    where: { branchId },
 
     select: {
       day: true,
-
       isClosed: true,
-
       openTime: true,
-
       closeTime: true,
+
+      breaks: {
+        select: {
+          startTime: true,
+          endTime: true,
+        },
+        orderBy: {
+          startTime: "asc",
+        },
+      },
     },
   });
 
+  // =====================================================
+  // 3. RETURN RESPONSE
+  // =====================================================
+
   return {
+    branchId,
     hours: businessHours,
   };
 };
@@ -1254,7 +1271,7 @@ const updateBusinessHours = async (
   role: Role,
 ) => {
   // =====================================================
-  // 1. ROLE VALIDATION
+  // 1. ROLE AUTHORIZATION
   // =====================================================
 
   if (role !== Role.BRAND_OWNER && role !== Role.BRANCH_MANAGER) {
@@ -1265,16 +1282,12 @@ const updateBusinessHours = async (
   }
 
   // =====================================================
-  // 2. CHECK BRANCH
+  // 2. VERIFY BRANCH
   // =====================================================
 
   const branch = await prisma.branch.findUnique({
-    where: {
-      id: branchId,
-    },
-    select: {
-      id: true,
-    },
+    where: { id: branchId },
+    select: { id: true },
   });
 
   if (!branch) {
@@ -1282,20 +1295,15 @@ const updateBusinessHours = async (
   }
 
   // =====================================================
-  // 3. BRANCH MANAGER SCOPE VALIDATION
+  // 3. BRANCH MANAGER SCOPE
   // =====================================================
 
   if (role === Role.BRANCH_MANAGER) {
     const managerBranch = await prisma.branchManagerBranch.findUnique({
       where: {
-        userId_branchId: {
-          userId,
-          branchId,
-        },
+        userId_branchId: { userId, branchId },
       },
-      select: {
-        userId: true,
-      },
+      select: { userId: true },
     });
 
     if (!managerBranch) {
@@ -1304,37 +1312,215 @@ const updateBusinessHours = async (
   }
 
   // =====================================================
-  // 4. VALIDATE DUPLICATE DAYS
+  // 4. DUPLICATE DAY VALIDATION
   // =====================================================
 
   const days = payload.hours.map((hour) => hour.day);
 
-  const uniqueDays = new Set(days);
-
-  if (uniqueDays.size !== days.length) {
+  if (new Set(days).size !== days.length) {
     throw new AppError("Duplicate business hour day is not allowed", 400);
   }
 
   // =====================================================
-  // 5. UPDATE BUSINESS HOURS
+  // 5. TIME HELPERS
   // =====================================================
 
-  await prisma.$transaction(
-    payload.hours.map((hour) =>
-      prisma.branchBusinessHour.upsert({
+  const toMinutes = (time: string) => {
+    const [hours, minutes] = time.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+
+  const overlaps = (
+    startA: number,
+    endA: number,
+    startB: number,
+    endB: number,
+  ) => startA < endB && endA > startB;
+
+  const dayNames = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+  ];
+
+  // =====================================================
+  // 6. TRANSACTION: VALIDATE + SAVE
+  // =====================================================
+
+  await prisma.$transaction(async (tx) => {
+    const now = new Date();
+
+    for (const hour of payload.hours) {
+      const existingHour = await tx.branchBusinessHour.findUnique({
         where: {
           branchId_day: {
             branchId,
             day: hour.day,
           },
         },
+        include: {
+          breaks: true,
+        },
+      });
 
+      // -------------------------------------------------
+      // 6A. RESOLVE FINAL BREAK CONFIGURATION
+      // -------------------------------------------------
+
+      const finalBreaks = hour.isClosed
+        ? []
+        : hour.breaks !== undefined
+          ? hour.breaks
+          : (existingHour?.breaks ?? []).map((item) => ({
+              startTime: item.startTime,
+              endTime: item.endTime,
+            }));
+
+      // -------------------------------------------------
+      // 6B. VALIDATE FINAL HOURS + BREAKS
+      // -------------------------------------------------
+
+      if (!hour.isClosed) {
+        if (!hour.openTime || !hour.closeTime) {
+          throw new AppError("Open and close times are required", 400);
+        }
+
+        if (hour.openTime >= hour.closeTime) {
+          throw new AppError("Close time must be later than open time", 400);
+        }
+
+        const sortedBreaks = [...finalBreaks].sort((a, b) =>
+          a.startTime.localeCompare(b.startTime),
+        );
+
+        for (let i = 0; i < sortedBreaks.length; i++) {
+          const current = sortedBreaks[i];
+
+          if (
+            current.startTime <= hour.openTime ||
+            current.endTime >= hour.closeTime
+          ) {
+            throw new AppError(
+              `Branch break must be inside opening hours on ${hour.day}`,
+              400,
+            );
+          }
+
+          if (i > 0 && sortedBreaks[i - 1].endTime > current.startTime) {
+            throw new AppError(
+              `Branch breaks cannot overlap on ${hour.day}`,
+              400,
+            );
+          }
+        }
+      }
+
+      // -------------------------------------------------
+      // 6C. CHECK EXISTING ACTIVE APPOINTMENTS
+      // -------------------------------------------------
+
+      // Weekly business-hour changes can affect future
+      // appointments on the same weekday.
+
+      const activeAppointments = await tx.appointment.findMany({
+        where: {
+          branchId,
+          date: {
+            gte: new Date(
+              Date.UTC(
+                now.getUTCFullYear(),
+                now.getUTCMonth(),
+                now.getUTCDate(),
+              ),
+            ),
+          },
+          OR: [
+            {
+              appointmentStatus: {
+                in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
+              },
+            },
+            {
+              appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+              holdExpiresAt: {
+                gt: now,
+              },
+            },
+          ],
+        },
+        select: {
+          id: true,
+          date: true,
+          startTime: true,
+          endTime: true,
+        },
+      });
+
+      for (const appointment of activeAppointments) {
+        const appointmentDay = dayNames[appointment.date.getUTCDay()];
+
+        if (appointmentDay !== hour.day) {
+          continue;
+        }
+
+        const appointmentStart = toMinutes(appointment.startTime);
+
+        const appointmentEnd = toMinutes(appointment.endTime);
+
+        if (hour.isClosed) {
+          throw new AppError(
+            `Cannot close ${hour.day}: existing appointment ${appointment.id} conflicts`,
+            409,
+          );
+        }
+
+        const openMinutes = toMinutes(hour.openTime!);
+        const closeMinutes = toMinutes(hour.closeTime!);
+
+        if (appointmentStart < openMinutes || appointmentEnd > closeMinutes) {
+          throw new AppError(
+            `Cannot update ${hour.day}: appointment ${appointment.id} is outside business hours`,
+            409,
+          );
+        }
+
+        const hasBreakConflict = finalBreaks.some((businessBreak) =>
+          overlaps(
+            appointmentStart,
+            appointmentEnd,
+            toMinutes(businessBreak.startTime),
+            toMinutes(businessBreak.endTime),
+          ),
+        );
+
+        if (hasBreakConflict) {
+          throw new AppError(
+            `Cannot update ${hour.day}: appointment ${appointment.id} overlaps a branch break`,
+            409,
+          );
+        }
+      }
+
+      // -------------------------------------------------
+      // 6D. UPSERT BUSINESS HOURS
+      // -------------------------------------------------
+
+      const savedHour = await tx.branchBusinessHour.upsert({
+        where: {
+          branchId_day: {
+            branchId,
+            day: hour.day,
+          },
+        },
         update: {
           isClosed: hour.isClosed,
           openTime: hour.isClosed ? null : hour.openTime,
           closeTime: hour.isClosed ? null : hour.closeTime,
         },
-
         create: {
           branchId,
           day: hour.day,
@@ -1342,29 +1528,54 @@ const updateBusinessHours = async (
           openTime: hour.isClosed ? null : hour.openTime,
           closeTime: hour.isClosed ? null : hour.closeTime,
         },
-      }),
-    ),
-  );
+      });
+
+      // -------------------------------------------------
+      // 6E. REPLACE BREAKS WHEN EXPLICITLY REQUESTED
+      // -------------------------------------------------
+
+      if (hour.isClosed || hour.breaks !== undefined) {
+        await tx.branchBusinessBreak.deleteMany({
+          where: {
+            businessHourId: savedHour.id,
+          },
+        });
+
+        if (!hour.isClosed && finalBreaks.length > 0) {
+          await tx.branchBusinessBreak.createMany({
+            data: finalBreaks.map((businessBreak) => ({
+              businessHourId: savedHour.id,
+              startTime: businessBreak.startTime,
+              endTime: businessBreak.endTime,
+            })),
+          });
+        }
+      }
+    }
+  });
 
   // =====================================================
-  // 6. FETCH UPDATED BUSINESS HOURS
+  // 7. RETURN UPDATED BUSINESS HOURS
   // =====================================================
 
   const businessHours = await prisma.branchBusinessHour.findMany({
-    where: {
-      branchId,
-    },
+    where: { branchId },
     select: {
       day: true,
       isClosed: true,
       openTime: true,
       closeTime: true,
+      breaks: {
+        select: {
+          startTime: true,
+          endTime: true,
+        },
+        orderBy: {
+          startTime: "asc",
+        },
+      },
     },
   });
-
-  // =====================================================
-  // 7. RETURN EXISTING RESPONSE CONTRACT
-  // =====================================================
 
   return {
     branchId,

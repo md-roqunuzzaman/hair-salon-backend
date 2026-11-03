@@ -35,17 +35,35 @@ export interface IUpdateBranchStatusPayload {
   status: "ACTIVE" | "INACTIVE";
 }
 
+// export interface IBusinessHour {
+//   day: DayOfWeek;
+//   isClosed: boolean;
+//   openTime?: string | null;
+//   closeTime?: string | null;
+// }
+
+// export interface IUpdateBusinessHoursPayload {
+//   hours: IBusinessHour[];
+// }
+
+export interface IBusinessBreak {
+  startTime: string;
+  endTime: string;
+}
+
 export interface IBusinessHour {
   day: DayOfWeek;
   isClosed: boolean;
   openTime?: string | null;
   closeTime?: string | null;
+
+  // H05: Branch-wide breaks
+  breaks?: IBusinessBreak[];
 }
 
 export interface IUpdateBusinessHoursPayload {
   hours: IBusinessHour[];
 }
-
 export interface IUpdateBookingPolicyPayload {
   slotIntervalMinutes: number;
 

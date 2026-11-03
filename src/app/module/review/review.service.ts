@@ -1911,13 +1911,48 @@ const saveReviewReply = async (
   // 6. AUTOMATED REPLY MODERATION
   // =====================================================
 
+  // let moderationResult;
+
+  // try {
+  //   moderationResult = await contentModerationService.moderateText(
+  //     payload.reply,
+  //   );
+  // } catch {
+  //   throw new AppError("REVIEW_REPLY_MODERATION_UNAVAILABLE", 503);
+  // }
+
+  // if (!moderationResult.safe) {
+  //   throw new AppError("REVIEW_REPLY_CONTENT_NOT_ALLOWED", 422);
+  // }
+  // =====================================================
+  // 6. AUTOMATED REPLY MODERATION
+  // =====================================================
+
+  // =====================================================
+  // 6. AUTOMATED REPLY MODERATION
+  // =====================================================
+
   let moderationResult;
 
   try {
     moderationResult = await contentModerationService.moderateText(
       payload.reply,
     );
-  } catch {
+  } catch (error) {
+    logUnexpectedError(error, {
+      source: "review.service.ts:saveReviewReply:moderateText",
+    });
+
+    const status =
+      error !== null && typeof error === "object" && "status" in error
+        ? error.status
+        : undefined;
+
+    console.error("Review reply moderation failure", {
+      provider: "OpenAI",
+      status: typeof status === "number" ? status : undefined,
+    });
+
     throw new AppError("REVIEW_REPLY_MODERATION_UNAVAILABLE", 503);
   }
 

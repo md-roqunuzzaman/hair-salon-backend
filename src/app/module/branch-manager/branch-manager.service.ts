@@ -12,6 +12,7 @@ import {
   IUpdateBranchManagerBranchesPayload,
   IUpdateBranchManagerStatusPayload,
 } from "./branch-manager.interface.js";
+import { generateTemporaryPassword } from "../staff/staff.service.js";
 
 const createBranchManager = async (payload: ICreateBranchManagerPayload) => {
   const name = payload.name.trim();
@@ -82,7 +83,7 @@ const createBranchManager = async (payload: ICreateBranchManagerPayload) => {
   // 4. GENERATE TEMPORARY PASSWORD
   // =====================================================
 
-  const temporaryPassword = crypto.randomBytes(12).toString("base64url");
+  const temporaryPassword = generateTemporaryPassword();
 
   const passwordHash = await bcrypt.hash(
     temporaryPassword,

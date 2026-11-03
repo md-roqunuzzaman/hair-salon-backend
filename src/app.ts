@@ -38,6 +38,7 @@ import { CancellationRefundRoutes } from "./app/module/cancellation-refund/cance
 import { BannerRoutes } from "./app/module/banner/banner.router.js";
 import { staffPortfolioRoutes } from "./app/module/staff-portfolio/staff-portfolio.route.js";
 import { BrandEmailSettingRoutes } from "./app/module/brand-email-setting/brand-email-setting.route.js";
+import { branchPortfolioRoutes } from "./app/module/branch-portfolio/branch-portfolio.route.js";
 
 // =====================================================
 // 1. CREATE EXPRESS APPLICATION
@@ -219,6 +220,7 @@ app.use("/api/v1/uploads", UploadRoutes);
 app.use("/api/v1/banners", BannerRoutes);
 
 app.use("/api/v1/staff", staffPortfolioRoutes);
+app.use("/api/v1/branches", branchPortfolioRoutes);
 
 // =====================================================
 // 16. REFUND & POLICY ROUTES

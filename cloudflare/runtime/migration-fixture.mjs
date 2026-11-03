@@ -306,15 +306,37 @@ export class MigrationFixture {
     let indexesRollback=false;
     try{applyMigrations(storage,[...migrations.slice(0,31),{...migrations[31],sql:migrations[31].sql+'; SELECT * FROM deliberately_missing_index_table;'}]);}catch{indexesRollback=true;}
     if(!indexesRollback||storedRows()!==beforeIndexes||JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray())!==oldLedger||indexNames.some(name=>storage.sql.exec("SELECT name FROM sqlite_master WHERE type='index' AND name=?",name).toArray().length))throw new Error('Lookup index upgrade did not roll back indexes, rows and ledger atomically');
-    applyMigrations(storage,migrations);
+    applyMigrations(storage,migrations.slice(0,32));
     for(const [name,columns]of [[indexNames[0],['status','latitude','longitude']],[indexNames[1],['status','lockedUntil']]]){
       const actual=storage.sql.exec(`PRAGMA index_info("${name}")`).toArray().map(row=>row.name);
       if(JSON.stringify(actual)!==JSON.stringify(columns))throw new Error('Lookup index columns are incorrect');
     }
     if(storedRows()!==beforeIndexes||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==32)throw new Error('Lookup indexes changed existing rows or failed to record v32');
     const indexLedger=JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray());
-    applyMigrations(storage,migrations);
+    applyMigrations(storage,migrations.slice(0,32));
     if(storedRows()!==beforeIndexes||JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray())!==indexLedger||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Lookup index repeat initialization changed rows, ledger or foreign keys');
+
+    let breakRollback=false;
+    try{applyMigrations(storage,[...migrations.slice(0,32),{...migrations[32],sql:migrations[32].sql+'; SELECT * FROM deliberately_missing_break_table;'}]);}catch{breakRollback=true;}
+    if(!breakRollback||storedRows()!==beforeIndexes||JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray())!==indexLedger||storage.sql.exec("SELECT name FROM sqlite_master WHERE name IN ('BranchBusinessBreak','BranchBusinessBreak_businessHourId_idx')").toArray().length)throw new Error('Branch break migration did not roll back table, index, rows and ledger atomically');
+    applyMigrations(storage,migrations.slice(0,33));
+    if(storedRows()!==beforeIndexes||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==33||storage.sql.exec('SELECT COUNT(*) AS n FROM BranchBusinessBreak').one().n!==0)throw new Error('Break upgrade modified historical data or invented break intervals');
+    const breakColumns=storage.sql.exec('PRAGMA index_info("BranchBusinessBreak_businessHourId_idx")').toArray().map(row=>row.name);
+    const breakForeignKey=storage.sql.exec('PRAGMA foreign_key_list("BranchBusinessBreak")').one();
+    if(JSON.stringify(breakColumns)!==JSON.stringify(['businessHourId'])||breakForeignKey.table!=='BranchBusinessHour'||breakForeignKey.from!=='businessHourId'||breakForeignKey.on_delete!=='CASCADE'||breakForeignKey.on_update!=='CASCADE')throw new Error('Break index or parent cascade definition is incorrect');
+    storage.sql.exec("INSERT INTO Branch (id,name,address,updatedAt) VALUES ('break-branch','Break branch','HK',1)");
+    storage.sql.exec("INSERT INTO BranchBusinessHour (id,branchId,day,openTime,closeTime,updatedAt) VALUES ('break-hour','break-branch','MONDAY','09:00','18:00',1)");
+    storage.sql.exec("INSERT INTO BranchBusinessBreak (id,businessHourId,startTime,endTime) VALUES ('break-row','break-hour','13:00','14:00')");
+    let orphanBreak=false;try{storage.sql.exec("INSERT INTO BranchBusinessBreak (id,businessHourId,startTime,endTime) VALUES ('orphan-break','missing','13:00','14:00')");}catch{orphanBreak=true;}
+    if(!orphanBreak)throw new Error('Break parent foreign key is missing');
+    const breakState=JSON.stringify(storage.sql.exec('SELECT * FROM BranchBusinessBreak ORDER BY id').toArray());
+    const breakLedger=JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray());
+    applyMigrations(storage,migrations.slice(0,33));
+    if(JSON.stringify(storage.sql.exec('SELECT * FROM BranchBusinessBreak ORDER BY id').toArray())!==breakState||JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray())!==breakLedger)throw new Error('Repeated initialization changed break records or duplicated migrations');
+    storage.sql.exec("UPDATE BranchBusinessHour SET id='break-hour-updated' WHERE id='break-hour'");
+    if(storage.sql.exec("SELECT businessHourId FROM BranchBusinessBreak WHERE id='break-row'").one().businessHourId!=='break-hour-updated')throw new Error('Break parent update did not cascade');
+    storage.sql.exec("DELETE FROM Branch WHERE id='break-branch'");
+    if(storage.sql.exec('SELECT COUNT(*) AS n FROM BranchBusinessBreak').one().n!==0||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Branch deletion did not cascade through business hours to breaks');
 
     if(storage.sql.exec("SELECT cancellationCutoffMinutes FROM BranchBookingPolicy WHERE id='policy'").one().cancellationCutoffMinutes!==300)throw new Error('Hour cutoff not converted to minutes');
     const convertedService=storage.sql.exec("SELECT minimumCancellationMinutes,refundTiers FROM BranchCancellationPolicy WHERE id='minute-service'").one();

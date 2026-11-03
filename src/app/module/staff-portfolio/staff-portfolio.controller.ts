@@ -116,26 +116,49 @@ const getPublishedPortfolioCaseById = catchAsync(
 
 const getAdminPortfolioCases = catchAsync(
   async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. VALIDATE STAFF ID
+    // =====================================================
+
     const staffId = z.uuid().parse(req.params.staffId);
+
+    // =====================================================
+    // 2. VALIDATE QUERY PARAMETERS
+    // =====================================================
 
     const query = z
       .object({
         page: z.coerce.number().int().min(1).default(1),
+
         limit: z.coerce.number().int().min(1).max(100).default(20),
 
         status: z.nativeEnum(StaffPortfolioStatus).optional(),
+
+        // NEW: Filter staff portfolio by branch
+        branchId: z.uuid().optional(),
       })
       .parse(req.query);
+
+    // =====================================================
+    // 3. RESOLVE REQUESTED LANGUAGE
+    // =====================================================
 
     const language: Language =
       (req.headers["accept-language"]?.split(",")[0]?.trim() as Language) ||
       DEFAULT_LANGUAGE;
 
-    // Uses authenticated user populated by your auth middleware.
+    // =====================================================
+    // 4. AUTHENTICATED REQUESTER
+    // =====================================================
+
     const requester = {
       id: req.user!.userId,
       role: req.user!.role,
     };
+
+    // =====================================================
+    // 5. FETCH ADMIN STAFF PORTFOLIO CASES
+    // =====================================================
 
     const result = await staffPortfolioService.getAdminPortfolioCases(
       staffId,
@@ -143,6 +166,10 @@ const getAdminPortfolioCases = catchAsync(
       query,
       language,
     );
+
+    // =====================================================
+    // 6. SEND RESPONSE
+    // =====================================================
 
     sendResponse(res, {
       statusCode: 200,
@@ -158,7 +185,15 @@ const getAdminPortfolioCases = catchAsync(
 // =====================================================
 
 const createPortfolioCase = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. VALIDATE STAFF ID
+  // =====================================================
+
   const staffId = z.uuid().parse(req.params.staffId);
+
+  // =====================================================
+  // 2. TRANSLATION VALIDATION
+  // =====================================================
 
   const translationSchema = z
     .object({
@@ -167,11 +202,18 @@ const createPortfolioCase = catchAsync(async (req: Request, res: Response) => {
     })
     .strict();
 
+  // =====================================================
+  // 3. VALIDATE REQUEST BODY
+  // =====================================================
+
   const body = z
     .object({
       title: z.string().trim().min(1).max(200),
 
       description: z.string().trim().max(5000).nullable().optional(),
+
+      // NEW: Branch association
+      branchId: z.uuid().nullable().optional(),
 
       serviceId: z.uuid().nullable().optional(),
 
@@ -193,16 +235,28 @@ const createPortfolioCase = catchAsync(async (req: Request, res: Response) => {
     .strict()
     .parse(req.body);
 
+  // =====================================================
+  // 4. AUTHENTICATED REQUESTER
+  // =====================================================
+
   const requester = {
     id: req.user!.userId,
     role: req.user!.role,
   };
+
+  // =====================================================
+  // 5. CREATE STAFF PORTFOLIO CASE
+  // =====================================================
 
   const result = await staffPortfolioService.createPortfolioCase(
     staffId,
     requester,
     body,
   );
+
+  // =====================================================
+  // 6. SEND RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     statusCode: 201,
@@ -459,6 +513,60 @@ const deletePortfolioCase = catchAsync(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+const updateBranchPortfolioVisibility = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. VALIDATE STAFF ID AND CASE ID
+    // =====================================================
+
+    const staffId = z.uuid().parse(req.params.staffId);
+    const caseId = z.uuid().parse(req.params.caseId);
+
+    // =====================================================
+    // 2. VALIDATE REQUEST BODY
+    // =====================================================
+
+    const payload = z
+      .object({
+        showInBranchPortfolio: z.boolean(),
+      })
+      .strict()
+      .parse(req.body);
+
+    // =====================================================
+    // 3. AUTHENTICATED REQUESTER
+    // =====================================================
+
+    const requester = {
+      id: req.user!.userId,
+      role: req.user!.role,
+    };
+
+    // =====================================================
+    // 4. UPDATE BRANCH PORTFOLIO VISIBILITY
+    // =====================================================
+
+    const result = await staffPortfolioService.updateBranchPortfolioVisibility(
+      staffId,
+      caseId,
+      requester,
+      payload,
+    );
+
+    // =====================================================
+    // 5. SEND RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message: "Branch portfolio visibility updated successfully",
+      data: result,
+    });
+  },
+);
+
 export const staffPortfolioController = {
   getStaffPortfolio,
   getPublishedPortfolioCases,
@@ -470,4 +578,5 @@ export const staffPortfolioController = {
   reorderPortfolioImages,
   deletePortfolioImage,
   deletePortfolioCase,
+  updateBranchPortfolioVisibility,
 };

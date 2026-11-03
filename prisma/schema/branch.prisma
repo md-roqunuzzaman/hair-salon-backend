@@ -9,6 +9,10 @@ model Branch {
   latitude       Float?
   longitude      Float?
 
+  // Portfolio relations
+  branchPortfolioCases BranchPortfolioCase[]
+  staffPortfolioCases  StaffPortfolioCase[]
+
   bannerCarouselSettings          BannerCarouselSetting[]
   status                          BranchStatus                     @default(ACTIVE)
   bookingPolicy                   BranchBookingPolicy?
@@ -28,8 +32,9 @@ model Branch {
   groupPurchaseCancellationPolicy GroupPurchaseCancellationPolicy?
 
   policyPurchases GroupPurchase[] @relation("PurchasePolicyBranch")
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([status, latitude, longitude])
 }

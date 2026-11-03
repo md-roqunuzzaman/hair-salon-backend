@@ -1,6 +1,7 @@
 model StaffPortfolioCase {
   id        String  @id @default(uuid())
   staffId   String
+  branchId  String?
   serviceId String?
 
   title       String
@@ -9,10 +10,13 @@ model StaffPortfolioCase {
 
   translations Json?
 
-  status    StaffPortfolioStatus @default(DRAFT)
-  sortOrder Int                  @default(0)
-  staff     Staff                @relation(fields: [staffId], references: [id], onDelete: Cascade)
-  service   Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  status                StaffPortfolioStatus @default(DRAFT)
+  sortOrder             Int                  @default(0)
+  showInBranchPortfolio Boolean              @default(true)
+
+  staff   Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch  Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
 
   images StaffPortfolioCaseImage[]
 
@@ -20,9 +24,11 @@ model StaffPortfolioCase {
   updatedAt DateTime @updatedAt
 
   @@index([staffId])
+  @@index([branchId])
   @@index([serviceId])
   @@index([staffId, status])
   @@index([staffId, sortOrder])
+  @@index([branchId, status, showInBranchPortfolio])
 }
 
 model StaffPortfolioCaseImage {

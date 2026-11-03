@@ -313,7 +313,7 @@ export const resolveAvailableStaff = async ({
   const day = dayNames[new Date(`${date}T00:00:00.000Z`).getUTCDay()];
 
   // =====================================================
-  // 3. VALIDATE BRANCH BUSINESS HOURS
+  // 3. VALIDATE BRANCH BUSINESS HOURS + BREAKS (H05)
   // =====================================================
 
   const businessHour = await tx.branchBusinessHour.findFirst({
@@ -325,6 +325,17 @@ export const resolveAvailableStaff = async ({
       isClosed: true,
       openTime: true,
       closeTime: true,
+
+      // H05: Branch-wide recurring breaks
+      breaks: {
+        select: {
+          startTime: true,
+          endTime: true,
+        },
+        orderBy: {
+          startTime: "asc",
+        },
+      },
     },
   });
 
@@ -343,6 +354,34 @@ export const resolveAvailableStaff = async ({
   ) {
     throw new AppError(
       "Requested booking time is outside branch business hours",
+      409,
+    );
+  }
+
+  // =====================================================
+  // H05: BRANCH-WIDE BREAK VALIDATION
+  // =====================================================
+
+  // The entire booking duration must not overlap
+  // any branch-wide break.
+  //
+  // Example:
+  // Branch break: 13:00 - 14:00
+  // Booking:      12:30 - 13:15 -> REJECT
+  // Booking:      13:45 - 14:30 -> REJECT
+  // Booking:      14:00 - 14:45 -> ALLOW (if otherwise valid)
+
+  const hasBranchBreakConflict = businessHour.breaks.some((businessBreak) => {
+    const breakStart = timeToMinutes(businessBreak.startTime);
+
+    const breakEnd = timeToMinutes(businessBreak.endTime);
+
+    return intervalsOverlap(requestedStart, requestedEnd, breakStart, breakEnd);
+  });
+
+  if (hasBranchBreakConflict) {
+    throw new AppError(
+      "The selected time slot overlaps with a branch break",
       409,
     );
   }
@@ -409,9 +448,11 @@ export const resolveAvailableStaff = async ({
       staffId: {
         in: staffIds,
       },
+
       branchId,
       day,
     },
+
     select: {
       staffId: true,
       startTime: true,
@@ -428,8 +469,10 @@ export const resolveAvailableStaff = async ({
       staffId: {
         in: staffIds,
       },
+
       date: dateOnly,
     },
+
     select: {
       staffId: true,
       startTime: true,
@@ -465,6 +508,7 @@ export const resolveAvailableStaff = async ({
         },
         {
           appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
           holdExpiresAt: {
             gt: now,
           },
@@ -491,10 +535,16 @@ export const resolveAvailableStaff = async ({
   ) => startA < endB && endA > startB;
 
   const availableStaffIds: string[] = [];
+
   for (const staff of eligibleStaff) {
-    // Check schedule covers the complete booking.
+    // -------------------------------------------------
+    // STAFF SCHEDULE MUST COVER COMPLETE BOOKING
+    // -------------------------------------------------
+
     const hasValidSchedule = schedules.some((schedule) => {
-      if (schedule.staffId !== staff.id) return false;
+      if (schedule.staffId !== staff.id) {
+        return false;
+      }
 
       return (
         requestedStart >= timeToMinutes(schedule.startTime) &&
@@ -502,11 +552,18 @@ export const resolveAvailableStaff = async ({
       );
     });
 
-    if (!hasValidSchedule) continue;
+    if (!hasValidSchedule) {
+      continue;
+    }
 
-    // Check breaks, leave and other unavailability.
+    // -------------------------------------------------
+    // STAFF BREAK / LEAVE / UNAVAILABILITY
+    // -------------------------------------------------
+
     const isUnavailable = unavailability.some((item) => {
-      if (item.staffId !== staff.id) return false;
+      if (item.staffId !== staff.id) {
+        return false;
+      }
 
       return overlaps(
         requestedStart,
@@ -516,11 +573,18 @@ export const resolveAvailableStaff = async ({
       );
     });
 
-    if (isUnavailable) continue;
+    if (isUnavailable) {
+      continue;
+    }
 
-    // Check existing appointments and active holds.
+    // -------------------------------------------------
+    // EXISTING APPOINTMENTS / ACTIVE HOLDS
+    // -------------------------------------------------
+
     const hasAppointmentConflict = blockingAppointments.some((appointment) => {
-      if (appointment.staffId !== staff.id) return false;
+      if (appointment.staffId !== staff.id) {
+        return false;
+      }
 
       return overlaps(
         requestedStart,
@@ -530,21 +594,43 @@ export const resolveAvailableStaff = async ({
       );
     });
 
-    if (hasAppointmentConflict) continue;
+    if (hasAppointmentConflict) {
+      continue;
+    }
 
-    // Staff is eligible and available.
-    if (staffId) return staff.id;
+    // -------------------------------------------------
+    // VALID STAFF
+    // -------------------------------------------------
+
+    if (staffId) {
+      return staff.id;
+    }
+
     availableStaffIds.push(staff.id);
   }
 
-  if (availableStaffIds.length === 1) return availableStaffIds[0]!;
+  // =====================================================
+  // 9. AUTO STAFF FAIR ASSIGNMENT
+  // =====================================================
+
+  if (availableStaffIds.length === 1) {
+    return availableStaffIds[0]!;
+  }
+
   if (availableStaffIds.length > 1) {
-    // Fairness uses the existing booking calendar date, across services/packages.
-    // Active payment holds still block slots above, but do not count as workload.
+    // Preserve existing fairness logic:
+    // Count daily workload across services/packages.
+    // Active payment holds block availability but
+    // do not count toward completed workload.
+
     const dailyAppointments = await tx.appointment.findMany({
       where: {
-        staffId: { in: availableStaffIds },
+        staffId: {
+          in: availableStaffIds,
+        },
+
         date: dateOnly,
+
         appointmentStatus: {
           in: [
             AppointmentStatus.RESERVED,
@@ -553,22 +639,30 @@ export const resolveAvailableStaff = async ({
           ],
         },
       },
-      select: { staffId: true },
+
+      select: {
+        staffId: true,
+      },
     });
+
     const counts = new Map(availableStaffIds.map((id) => [id, 0]));
+
     for (const appointment of dailyAppointments) {
       counts.set(
         appointment.staffId,
         (counts.get(appointment.staffId) ?? 0) + 1,
       );
     }
+
     const minimum = Math.min(...counts.values());
+
     const tied = availableStaffIds.filter((id) => counts.get(id) === minimum);
+
     return tied.length === 1 ? tied[0]! : tied[crypto.randomInt(tied.length)]!;
   }
 
   // =====================================================
-  // 9. NO STAFF AVAILABLE
+  // 10. NO STAFF AVAILABLE
   // =====================================================
 
   throw new AppError(
@@ -3861,21 +3955,31 @@ const rescheduleAppointment = async (
 
           const now = new Date();
 
-          // final staff check
-          const resolvedStaffId =
-            staffId ??
-            (await resolveAvailableStaff({
-              tx,
-              branchId: appointment.branchId,
-              serviceId: appointment.serviceId,
-              packageId: appointment.packageId,
-              date,
-              dateOnly: newDateOnly,
-              requestedStart,
-              requestedEnd,
-              now,
-              excludeAppointmentId: appointmentId,
-            }));
+          // =============================================
+          // H05: FINAL STAFF + BRANCH BREAK VALIDATION
+          // =============================================
+
+          // Always call resolveAvailableStaff.
+          // Do not bypass it when staffId is provided.
+          //
+          // This validates branch-wide breaks,
+          // business hours, staff schedules,
+          // eligibility and appointment conflicts.
+
+          const resolvedStaffId = await resolveAvailableStaff({
+            tx,
+            branchId: current.branchId,
+            serviceId: appointment.serviceId ?? undefined,
+            packageId: appointment.packageId ?? undefined,
+            staffId: staffId ?? undefined,
+            date,
+            dateOnly: newDateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+            excludeAppointmentId: appointmentId,
+          });
+
           await assertStaffSlotAvailable(
             tx,
             resolvedStaffId,
@@ -3886,7 +3990,10 @@ const rescheduleAppointment = async (
             appointmentId,
           );
 
-          // final branch capacity check
+          // =============================================
+          // FINAL BRANCH CAPACITY CHECK
+          // =============================================
+
           await assertBranchHourlyCapacityAvailable(
             tx,
             current.branchId,
@@ -3898,6 +4005,10 @@ const rescheduleAppointment = async (
             appointmentId,
           );
 
+          // =============================================
+          // UPDATE APPOINTMENT
+          // =============================================
+
           const updatedAppointment = await tx.appointment.update({
             where: {
               id: appointmentId,
@@ -3908,7 +4019,17 @@ const rescheduleAppointment = async (
               date: newDateOnly,
               startTime,
               endTime,
-              ...(current.date.getTime() !== newDateOnly.getTime() || current.startTime !== startTime || current.endTime !== endTime || current.staffId !== resolvedStaffId ? { emailScheduleRevision: { increment: 1 } } : {}),
+
+              ...(current.date.getTime() !== newDateOnly.getTime() ||
+              current.startTime !== startTime ||
+              current.endTime !== endTime ||
+              current.staffId !== resolvedStaffId
+                ? {
+                    emailScheduleRevision: {
+                      increment: 1,
+                    },
+                  }
+                : {}),
             },
 
             select: {
@@ -3919,9 +4040,9 @@ const rescheduleAppointment = async (
             },
           });
 
-          // =====================================================
+          // =============================================
           // CREATE MULTILINGUAL RESCHEDULE NOTIFICATION
-          // =====================================================
+          // =============================================
 
           const translations = notificationTemplates.BOOKING_RESCHEDULED(
             date,
@@ -3932,11 +4053,34 @@ const rescheduleAppointment = async (
             {
               appointmentId: current.id,
               previousStaffId: current.staffId,
+
               emailIntent: {
                 appointmentId: current.id,
-                previous: { date: current.date.toISOString(), startTime: current.startTime, endTime: current.endTime, staffId: current.staffId },
-                target: { date: newDateOnly.toISOString(), startTime, endTime, staffId: resolvedStaffId, revision: current.emailScheduleRevision + (current.date.getTime() !== newDateOnly.getTime() || current.startTime !== startTime || current.endTime !== endTime || current.staffId !== resolvedStaffId ? 1 : 0) },
+
+                previous: {
+                  date: current.date.toISOString(),
+                  startTime: current.startTime,
+                  endTime: current.endTime,
+                  staffId: current.staffId,
+                },
+
+                target: {
+                  date: newDateOnly.toISOString(),
+                  startTime,
+                  endTime,
+                  staffId: resolvedStaffId,
+
+                  revision:
+                    current.emailScheduleRevision +
+                    (current.date.getTime() !== newDateOnly.getTime() ||
+                    current.startTime !== startTime ||
+                    current.endTime !== endTime ||
+                    current.staffId !== resolvedStaffId
+                      ? 1
+                      : 0),
+                },
               },
+
               userId: current.customerId,
 
               type: "BOOKING_RESCHEDULED",

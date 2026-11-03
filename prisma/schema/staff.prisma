@@ -2,14 +2,15 @@ model Staff {
   id     String @id @default(uuid())
   userId String @unique
 
-  name            String
-  email           String  @unique
-  phone           String?
-  roleTitle       String
-  specialization  String?
-  description     String?
-  avatarObjectKey String?
-  translations    Json?
+  name                 String
+  email                String                @unique
+  phone                String?
+  roleTitle            String
+  specialization       String?
+  description          String?
+  avatarObjectKey      String?
+  translations         Json?
+  branchPortfolioCases BranchPortfolioCase[]
 
   status StaffStatus @default(ACTIVE)
 

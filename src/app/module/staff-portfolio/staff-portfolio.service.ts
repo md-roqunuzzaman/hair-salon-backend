@@ -651,11 +651,12 @@ const getAdminPortfolioCases = async (
     page?: number | string;
     limit?: number | string;
     status?: StaffPortfolioStatus;
+    branchId?: string;
   },
   language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
-  // 1. ONLY BRAND OWNER ACCESS
+  // 1. AUTHORIZATION
   // =====================================================
 
   if (requester.role !== Role.BRAND_OWNER) {
@@ -709,16 +710,38 @@ const getAdminPortfolioCases = async (
   }
 
   // =====================================================
-  // 4. BUILD FILTER
+  // 4. VERIFY OPTIONAL BRANCH FILTER
+  // =====================================================
+
+  if (query.branchId !== undefined) {
+    const branch = await prisma.branch.findUnique({
+      where: {
+        id: query.branchId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!branch) {
+      throw new AppError("Branch not found", 404);
+    }
+  }
+
+  // =====================================================
+  // 5. BUILD FILTER
   // =====================================================
 
   const where: Prisma.StaffPortfolioCaseWhereInput = {
     staffId,
-    ...(query.status ? { status: query.status } : {}),
+
+    ...(query.status !== undefined ? { status: query.status } : {}),
+
+    ...(query.branchId !== undefined ? { branchId: query.branchId } : {}),
   };
 
   // =====================================================
-  // 5. FETCH CASES + TOTAL COUNT
+  // 6. FETCH CASES + TOTAL COUNT
   // =====================================================
 
   const [cases, total] = await Promise.all([
@@ -732,15 +755,29 @@ const getAdminPortfolioCases = async (
       select: {
         id: true,
         staffId: true,
+        branchId: true,
         serviceId: true,
+
         title: true,
         description: true,
         tags: true,
         translations: true,
+
         status: true,
         sortOrder: true,
+        showInBranchPortfolio: true,
+
         createdAt: true,
         updatedAt: true,
+
+        branch: {
+          select: {
+            id: true,
+            name: true,
+            translations: true,
+            status: true,
+          },
+        },
 
         service: {
           select: {
@@ -762,11 +799,13 @@ const getAdminPortfolioCases = async (
       },
     }),
 
-    prisma.staffPortfolioCase.count({ where }),
+    prisma.staffPortfolioCase.count({
+      where,
+    }),
   ]);
 
   // =====================================================
-  // 6. LOCALIZE CASES + GENERATE IMAGE URLS
+  // 7. LOCALIZE CASES + GENERATE IMAGE URLS
   // =====================================================
 
   const items = await Promise.all(
@@ -793,15 +832,37 @@ const getAdminPortfolioCases = async (
       const coverImage =
         images.find((image) => image.isCover) ?? images[0] ?? null;
 
+      // =================================================
+      // LOCALIZE SERVICE
+      // =================================================
+
       const localizedService = portfolioCase.service
         ? getLocalizedContent(portfolioCase.service.translations, language, {
             name: portfolioCase.service.name,
           })
         : null;
 
+      // =================================================
+      // LOCALIZE BRANCH
+      // =================================================
+
+      const localizedBranch = portfolioCase.branch
+        ? getLocalizedContent(portfolioCase.branch.translations, language, {
+            name: portfolioCase.branch.name,
+          })
+        : null;
+
+      // =================================================
+      // FINAL ITEM
+      // =================================================
+
       return {
         id: portfolioCase.id,
         staffId: portfolioCase.staffId,
+
+        // NEW: Branch association
+        branchId: portfolioCase.branchId,
+
         serviceId: portfolioCase.serviceId,
 
         title: localizedCase.title,
@@ -813,6 +874,19 @@ const getAdminPortfolioCases = async (
         status: portfolioCase.status,
         sortOrder: portfolioCase.sortOrder,
 
+        // NEW: Branch gallery visibility
+        showInBranchPortfolio: portfolioCase.showInBranchPortfolio,
+
+        // NEW: Branch details
+        branch: portfolioCase.branch
+          ? {
+              id: portfolioCase.branch.id,
+              name: localizedBranch!.name,
+              status: portfolioCase.branch.status,
+            }
+          : null,
+
+        // Existing service details
         service: portfolioCase.service
           ? {
               id: portfolioCase.service.id,
@@ -831,10 +905,14 @@ const getAdminPortfolioCases = async (
   );
 
   // =====================================================
-  // 7. FINAL RESPONSE
+  // 8. PAGINATION
   // =====================================================
 
-  const totalPages = Math.ceil(total / limit);
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+  // =====================================================
+  // 9. FINAL RESPONSE
+  // =====================================================
 
   return {
     staff: {
@@ -869,6 +947,7 @@ const createPortfolioCase = async (
   payload: {
     title: string;
     description?: string | null;
+    branchId?: string | null;
     serviceId?: string | null;
     tags?: string[];
     translations?: {
@@ -890,7 +969,7 @@ const createPortfolioCase = async (
   },
 ) => {
   // =====================================================
-  // 1. ONLY BRAND OWNER ACCESS
+  // 1. AUTHORIZATION
   // =====================================================
 
   if (requester.role !== Role.BRAND_OWNER) {
@@ -901,7 +980,7 @@ const createPortfolioCase = async (
   }
 
   // =====================================================
-  // 2. VERIFY STAFF
+  // 2. VERIFY STAFF + ASSIGNMENTS
   // =====================================================
 
   const staff = await prisma.staff.findUnique({
@@ -911,13 +990,11 @@ const createPortfolioCase = async (
     select: {
       id: true,
       name: true,
-
       branches: {
         select: {
           branchId: true,
         },
       },
-
       services: {
         select: {
           serviceId: true,
@@ -930,8 +1007,40 @@ const createPortfolioCase = async (
     throw new AppError("Staff not found", 404);
   }
 
+  const staffBranchIds = new Set(staff.branches.map((item) => item.branchId));
+
   // =====================================================
-  // 3. VALIDATE RELATED SERVICE
+  // 3. VALIDATE BRANCH
+  // =====================================================
+
+  const branchId = payload.branchId ?? null;
+
+  if (branchId !== null) {
+    if (!staffBranchIds.has(branchId)) {
+      throw new AppError("Branch is not assigned to this staff", 400);
+    }
+
+    const branch = await prisma.branch.findUnique({
+      where: {
+        id: branchId,
+      },
+      select: {
+        id: true,
+        status: true,
+      },
+    });
+
+    if (!branch) {
+      throw new AppError("Branch not found", 404);
+    }
+
+    if (branch.status !== "ACTIVE") {
+      throw new AppError("Branch is not active", 400);
+    }
+  }
+
+  // =====================================================
+  // 4. VALIDATE RELATED SERVICE
   // =====================================================
 
   if (payload.serviceId) {
@@ -942,7 +1051,6 @@ const createPortfolioCase = async (
       select: {
         id: true,
         status: true,
-
         branches: {
           select: {
             branchId: true,
@@ -959,7 +1067,6 @@ const createPortfolioCase = async (
       throw new AppError("Service is not active", 400);
     }
 
-    // Verify service is assigned to staff.
     const isAssignedToStaff = staff.services.some(
       (item) => item.serviceId === payload.serviceId,
     );
@@ -968,33 +1075,46 @@ const createPortfolioCase = async (
       throw new AppError("Service is not assigned to this staff", 400);
     }
 
-    // Verify staff and service share at least one branch.
-    const staffBranchIds = new Set(staff.branches.map((item) => item.branchId));
-
-    const hasCommonBranch = service.branches.some((item) =>
-      staffBranchIds.has(item.branchId),
+    const serviceBranchIds = new Set(
+      service.branches.map((item) => item.branchId),
     );
 
-    if (!hasCommonBranch) {
-      throw new AppError(
-        "Service is not available in any assigned staff branch",
-        400,
+    if (branchId !== null) {
+      // When a specific branch is selected, the service
+      // must be available in that exact branch.
+      if (!serviceBranchIds.has(branchId)) {
+        throw new AppError(
+          "Service is not available in the selected branch",
+          400,
+        );
+      }
+    } else {
+      // Preserve the existing behavior when branchId
+      // is omitted: staff and service must share a branch.
+      const hasCommonBranch = [...staffBranchIds].some((id) =>
+        serviceBranchIds.has(id),
       );
+
+      if (!hasCommonBranch) {
+        throw new AppError(
+          "Service is not available in any assigned staff branch",
+          400,
+        );
+      }
     }
   }
 
   // =====================================================
-  // 4. CREATE PORTFOLIO CASE
+  // 5. CREATE STAFF PORTFOLIO CASE
   // =====================================================
 
   const portfolioCase = await prisma.staffPortfolioCase.create({
     data: {
       staffId,
-
+      branchId,
       serviceId: payload.serviceId ?? null,
 
       title: payload.title.trim(),
-
       description: payload.description?.trim() || null,
 
       tags: payload.tags ?? [],
@@ -1004,27 +1124,34 @@ const createPortfolioCase = async (
         : Prisma.JsonNull,
 
       status: payload.status ?? StaffPortfolioStatus.DRAFT,
-
       sortOrder: payload.sortOrder ?? 0,
+
+      // Manager-controlled field; not accepted from payload.
+      showInBranchPortfolio: true,
     },
 
     select: {
       id: true,
       staffId: true,
+      branchId: true,
       serviceId: true,
+
       title: true,
       description: true,
       tags: true,
       translations: true,
+
       status: true,
       sortOrder: true,
+      showInBranchPortfolio: true,
+
       createdAt: true,
       updatedAt: true,
     },
   });
 
   // =====================================================
-  // 5. FINAL RESPONSE
+  // 6. FINAL RESPONSE
   // =====================================================
 
   return {
@@ -1049,6 +1176,7 @@ const updatePortfolioCase = async (
   payload: {
     title?: string;
     description?: string | null;
+    branchId?: string | null;
     serviceId?: string | null;
     tags?: string[];
     translations?: {
@@ -1070,7 +1198,7 @@ const updatePortfolioCase = async (
   },
 ) => {
   // =====================================================
-  // 1. ONLY BRAND OWNER ACCESS
+  // 1. AUTHORIZATION
   // =====================================================
 
   if (requester.role !== Role.BRAND_OWNER) {
@@ -1081,14 +1209,13 @@ const updatePortfolioCase = async (
   }
 
   // =====================================================
-  // 2. VERIFY STAFF
+  // 2. VERIFY STAFF + ASSIGNMENTS
   // =====================================================
 
   const staff = await prisma.staff.findUnique({
     where: {
       id: staffId,
     },
-
     select: {
       id: true,
       name: true,
@@ -1111,8 +1238,12 @@ const updatePortfolioCase = async (
     throw new AppError("Staff not found", 404);
   }
 
+  const staffBranchIds = new Set(staff.branches.map((item) => item.branchId));
+
+  const staffServiceIds = new Set(staff.services.map((item) => item.serviceId));
+
   // =====================================================
-  // 3. VERIFY PORTFOLIO CASE BELONGS TO STAFF
+  // 3. VERIFY EXISTING PORTFOLIO CASE
   // =====================================================
 
   const existingCase = await prisma.staffPortfolioCase.findFirst({
@@ -1120,11 +1251,12 @@ const updatePortfolioCase = async (
       id: caseId,
       staffId,
     },
-
     select: {
       id: true,
+      branchId: true,
       serviceId: true,
       status: true,
+      showInBranchPortfolio: true,
     },
   });
 
@@ -1133,15 +1265,62 @@ const updatePortfolioCase = async (
   }
 
   // =====================================================
-  // 4. VALIDATE SERVICE IF CHANGED
+  // 4. RESOLVE EFFECTIVE VALUES
   // =====================================================
 
-  if (payload.serviceId !== undefined && payload.serviceId !== null) {
+  const effectiveBranchId =
+    payload.branchId !== undefined ? payload.branchId : existingCase.branchId;
+
+  const effectiveServiceId =
+    payload.serviceId !== undefined
+      ? payload.serviceId
+      : existingCase.serviceId;
+
+  const branchChanged =
+    payload.branchId !== undefined &&
+    payload.branchId !== existingCase.branchId;
+
+  const serviceChanged =
+    payload.serviceId !== undefined &&
+    payload.serviceId !== existingCase.serviceId;
+
+  // =====================================================
+  // 5. VALIDATE BRANCH
+  // =====================================================
+
+  if (branchChanged && effectiveBranchId !== null) {
+    if (!staffBranchIds.has(effectiveBranchId)) {
+      throw new AppError("Branch is not assigned to this staff", 400);
+    }
+
+    const branch = await prisma.branch.findUnique({
+      where: {
+        id: effectiveBranchId,
+      },
+      select: {
+        id: true,
+        status: true,
+      },
+    });
+
+    if (!branch) {
+      throw new AppError("Branch not found", 404);
+    }
+
+    if (branch.status !== "ACTIVE") {
+      throw new AppError("Branch is not active", 400);
+    }
+  }
+
+  // =====================================================
+  // 6. VALIDATE SERVICE + BRANCH COMPATIBILITY
+  // =====================================================
+
+  if (effectiveServiceId !== null && (branchChanged || serviceChanged)) {
     const service = await prisma.service.findUnique({
       where: {
-        id: payload.serviceId,
+        id: effectiveServiceId,
       },
-
       select: {
         id: true,
         status: true,
@@ -1162,33 +1341,47 @@ const updatePortfolioCase = async (
       throw new AppError("Service is not active", 400);
     }
 
-    const isAssignedToStaff = staff.services.some(
-      (item) => item.serviceId === payload.serviceId,
-    );
-
-    if (!isAssignedToStaff) {
+    if (!staffServiceIds.has(effectiveServiceId)) {
       throw new AppError("Service is not assigned to this staff", 400);
     }
 
-    const staffBranchIds = new Set(staff.branches.map((item) => item.branchId));
-
-    const hasCommonBranch = service.branches.some((item) =>
-      staffBranchIds.has(item.branchId),
+    const serviceBranchIds = new Set(
+      service.branches.map((item) => item.branchId),
     );
 
-    if (!hasCommonBranch) {
-      throw new AppError(
-        "Service is not available in any assigned staff branch",
-        400,
+    if (effectiveBranchId !== null) {
+      // Validate selected branch.
+      if (!staffBranchIds.has(effectiveBranchId)) {
+        throw new AppError("Staff is not assigned to the selected branch", 400);
+      }
+
+      // Service must be available at the selected branch.
+      if (!serviceBranchIds.has(effectiveBranchId)) {
+        throw new AppError(
+          "Service is not available in the selected branch",
+          400,
+        );
+      }
+    } else {
+      // Preserve existing behavior for cases without branchId.
+      const hasCommonBranch = [...staffBranchIds].some((branchId) =>
+        serviceBranchIds.has(branchId),
       );
+
+      if (!hasCommonBranch) {
+        throw new AppError(
+          "Service is not available in any assigned staff branch",
+          400,
+        );
+      }
     }
   }
 
   // =====================================================
-  // 5. BUILD PARTIAL UPDATE DATA
+  // 7. BUILD PARTIAL UPDATE DATA
   // =====================================================
 
-  const updateData: Prisma.StaffPortfolioCaseUpdateInput = {};
+  const updateData: Prisma.StaffPortfolioCaseUncheckedUpdateInput = {};
 
   if (payload.title !== undefined) {
     updateData.title = payload.title.trim();
@@ -1218,19 +1411,27 @@ const updatePortfolioCase = async (
     updateData.sortOrder = payload.sortOrder;
   }
 
-  if (payload.serviceId !== undefined) {
-    updateData.service =
-      payload.serviceId === null
-        ? { disconnect: true }
-        : {
-            connect: {
-              id: payload.serviceId,
-            },
-          };
+  // =====================================================
+  // 8. UPDATE BRANCH ID
+  // =====================================================
+
+  if (payload.branchId !== undefined) {
+    updateData.branchId = payload.branchId;
   }
 
   // =====================================================
-  // 6. UPDATE PORTFOLIO CASE
+  // 9. UPDATE SERVICE ID
+  // =====================================================
+
+  if (payload.serviceId !== undefined) {
+    updateData.serviceId = payload.serviceId;
+  }
+
+  // showInBranchPortfolio is intentionally not updated here.
+  // It will be controlled by a dedicated manager API.
+
+  // =====================================================
+  // 10. UPDATE PORTFOLIO CASE
   // =====================================================
 
   const updatedCase = await prisma.staffPortfolioCase.update({
@@ -1243,6 +1444,7 @@ const updatePortfolioCase = async (
     select: {
       id: true,
       staffId: true,
+      branchId: true,
       serviceId: true,
 
       title: true,
@@ -1252,12 +1454,20 @@ const updatePortfolioCase = async (
 
       status: true,
       sortOrder: true,
+      showInBranchPortfolio: true,
 
       createdAt: true,
       updatedAt: true,
 
       images: {
-        orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        orderBy: [
+          {
+            sortOrder: "asc",
+          },
+          {
+            createdAt: "asc",
+          },
+        ],
 
         select: {
           id: true,
@@ -1270,28 +1480,36 @@ const updatePortfolioCase = async (
   });
 
   // =====================================================
-  // 7. GENERATE SIGNED IMAGE URLS
+  // 11. GENERATE SIGNED R2 IMAGE URLS
   // =====================================================
 
   const images = await Promise.all(
     updatedCase.images.map(async (image) => ({
       id: image.id,
       objectKey: image.objectKey,
+
       imageUrl: await uploadService.getImageUrl(image.objectKey),
+
       isCover: image.isCover,
       sortOrder: image.sortOrder,
     })),
   );
 
+  // =====================================================
+  // 12. SELECT COVER IMAGE
+  // =====================================================
+
   const coverImage = images.find((image) => image.isCover) ?? images[0] ?? null;
 
   // =====================================================
-  // 8. FINAL RESPONSE
+  // 13. FINAL RESPONSE
   // =====================================================
 
   return {
     id: updatedCase.id,
     staffId: updatedCase.staffId,
+
+    branchId: updatedCase.branchId,
     serviceId: updatedCase.serviceId,
 
     title: updatedCase.title,
@@ -1302,6 +1520,8 @@ const updatePortfolioCase = async (
 
     status: updatedCase.status,
     sortOrder: updatedCase.sortOrder,
+
+    showInBranchPortfolio: updatedCase.showInBranchPortfolio,
 
     coverImage,
     images,
@@ -2041,6 +2261,89 @@ const deletePortfolioCase = async (
   };
 };
 
+const updateBranchPortfolioVisibility = async (
+  staffId: string,
+  caseId: string,
+  requester: {
+    id: string;
+    role: Role;
+  },
+  payload: {
+    showInBranchPortfolio: boolean;
+  },
+) => {
+  // =====================================================
+  // 1. ONLY BRAND OWNER ACCESS
+  // =====================================================
+
+  if (requester.role !== Role.BRAND_OWNER) {
+    throw new AppError(
+      "Only brand owners can manage branch portfolio visibility",
+      403,
+    );
+  }
+
+  // =====================================================
+  // 2. VERIFY PORTFOLIO CASE
+  // =====================================================
+
+  const portfolioCase = await prisma.staffPortfolioCase.findFirst({
+    where: {
+      id: caseId,
+      staffId,
+    },
+    select: {
+      id: true,
+      staffId: true,
+      branchId: true,
+      status: true,
+      showInBranchPortfolio: true,
+    },
+  });
+
+  if (!portfolioCase) {
+    throw new AppError("Staff portfolio case not found", 404);
+  }
+
+  // =====================================================
+  // 3. REQUIRE BRANCH ASSOCIATION
+  // =====================================================
+
+  if (!portfolioCase.branchId) {
+    throw new AppError(
+      "This staff portfolio case is not associated with a branch",
+      400,
+    );
+  }
+
+  // =====================================================
+  // 4. UPDATE BRANCH PORTFOLIO VISIBILITY
+  // =====================================================
+
+  const updatedCase = await prisma.staffPortfolioCase.update({
+    where: {
+      id: portfolioCase.id,
+    },
+    data: {
+      showInBranchPortfolio: payload.showInBranchPortfolio,
+    },
+    select: {
+      id: true,
+      staffId: true,
+      branchId: true,
+      status: true,
+      showInBranchPortfolio: true,
+      updatedAt: true,
+    },
+  });
+
+  // =====================================================
+  // 5. FINAL RESPONSE
+  // =====================================================
+
+  return updatedCase;
+};
+
 export const staffPortfolioService = {
   getStaffPortfolio,
   getPublishedPortfolioCases,
@@ -2052,4 +2355,5 @@ export const staffPortfolioService = {
   reorderPortfolioImages,
   deletePortfolioImage,
   deletePortfolioCase,
+  updateBranchPortfolioVisibility,
 };

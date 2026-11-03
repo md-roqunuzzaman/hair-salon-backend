@@ -221,6 +221,8 @@
   "Branch": {
     "money": {},
     "relations": {
+      "branchPortfolioCases": "BranchPortfolioCase",
+      "staffPortfolioCases": "StaffPortfolioCase",
       "bannerCarouselSettings": "BannerCarouselSetting",
       "bookingPolicy": "BranchBookingPolicy",
       "businessHours": "BranchBusinessHour",
@@ -258,7 +260,8 @@
   "BranchBusinessHour": {
     "money": {},
     "relations": {
-      "branch": "Branch"
+      "branch": "Branch",
+      "breaks": "BranchBusinessBreak"
     },
     "arrays": [],
     "scalars": {
@@ -315,6 +318,19 @@
       "createdAt": "DateTime"
     }
   },
+  "BranchBusinessBreak": {
+    "money": {},
+    "relations": {
+      "businessHour": "BranchBusinessHour"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "businessHourId": "String",
+      "startTime": "String",
+      "endTime": "String"
+    }
+  },
   "BranchHourlyCapacity": {
     "money": {},
     "relations": {
@@ -326,6 +342,46 @@
       "branchId": "String",
       "day": "DayOfWeek",
       "maxBookingsPerHour": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "BranchPortfolioCase": {
+    "money": {},
+    "relations": {
+      "branch": "Branch",
+      "service": "Service",
+      "staff": "Staff",
+      "images": "BranchPortfolioCaseImage"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "branchId": "String",
+      "serviceId": "String",
+      "staffId": "String",
+      "title": "String",
+      "description": "String",
+      "tags": "Json",
+      "translations": "Json",
+      "status": "StaffPortfolioStatus",
+      "sortOrder": "Int",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "BranchPortfolioCaseImage": {
+    "money": {},
+    "relations": {
+      "portfolioCase": "BranchPortfolioCase"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "caseId": "String",
+      "objectKey": "String",
+      "isCover": "Boolean",
+      "sortOrder": "Int",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }
@@ -898,6 +954,7 @@
     },
     "relations": {
       "staffPortfolioCases": "StaffPortfolioCase",
+      "branchPortfolioCases": "BranchPortfolioCase",
       "images": "ServiceImage",
       "branches": "ServiceBranch",
       "packages": "PackageService",
@@ -956,6 +1013,7 @@
   "Staff": {
     "money": {},
     "relations": {
+      "branchPortfolioCases": "BranchPortfolioCase",
       "user": "User",
       "branches": "StaffBranch",
       "services": "StaffService",
@@ -1062,6 +1120,7 @@
     "money": {},
     "relations": {
       "staff": "Staff",
+      "branch": "Branch",
       "service": "Service",
       "images": "StaffPortfolioCaseImage"
     },
@@ -1071,6 +1130,7 @@
     "scalars": {
       "id": "String",
       "staffId": "String",
+      "branchId": "String",
       "serviceId": "String",
       "title": "String",
       "description": "String",
@@ -1078,6 +1138,7 @@
       "translations": "Json",
       "status": "StaffPortfolioStatus",
       "sortOrder": "Int",
+      "showInBranchPortfolio": "Boolean",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }

@@ -286,6 +286,10 @@ model Branch {
   latitude       Float?
   longitude      Float?
 
+  // Portfolio relations
+  branchPortfolioCases BranchPortfolioCase[]
+  staffPortfolioCases  StaffPortfolioCase[]
+
   bannerCarouselSettings          BannerCarouselSetting[]
   status                          BranchStatus                     @default(ACTIVE)
   bookingPolicy                   BranchBookingPolicy?
@@ -305,8 +309,9 @@ model Branch {
   groupPurchaseCancellationPolicy GroupPurchaseCancellationPolicy?
 
   policyPurchases GroupPurchase[] @relation("PurchasePolicyBranch")
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([status, latitude, longitude])
 }
@@ -323,7 +328,8 @@ model BranchBusinessHour {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch Branch                @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  breaks BranchBusinessBreak[]
 
   @@unique([branchId, day])
 }
@@ -362,6 +368,18 @@ model BranchManagerBranch {
   @@index([branchId])
 }
 
+model BranchBusinessBreak {
+  id             String @id @default(uuid())
+  businessHourId String
+
+  startTime String
+  endTime   String
+
+  businessHour BranchBusinessHour @relation(fields: [businessHourId], references: [id], onDelete: Cascade)
+
+  @@index([businessHourId])
+}
+
 model BranchHourlyCapacity {
   id String @id @default(uuid())
 
@@ -377,6 +395,57 @@ model BranchHourlyCapacity {
 
   @@unique([branchId, day])
   @@index([branchId])
+}
+
+model BranchPortfolioCase {
+  id        String  @id @default(uuid())
+  branchId  String
+  serviceId String?
+  staffId   String?
+
+  title       String
+  description String?
+  tags        Json    @default("[]")
+
+  translations Json?
+
+  status    StaffPortfolioStatus @default(DRAFT)
+  sortOrder Int                  @default(0)
+
+  // Relations
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  images BranchPortfolioCaseImage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([branchId])
+  @@index([serviceId])
+  @@index([staffId])
+  @@index([branchId, status])
+  @@index([branchId, sortOrder])
+}
+
+model BranchPortfolioCaseImage {
+  id        String @id @default(uuid())
+  caseId    String
+  objectKey String
+
+  isCover   Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  portfolioCase BranchPortfolioCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([caseId])
+  @@index([caseId, sortOrder])
 }
 
 model Brand {
@@ -405,106 +474,106 @@ model Brand {
 }
 
 model BrandEmailSetting {
-    id       String        @id @default(uuid())
-    brandId  String        @unique
-    provider EmailProvider
+  id       String        @id @default(uuid())
+  brandId  String        @unique
+  provider EmailProvider
 
-    // Sender information
-    fromName  String
-    fromEmail String
+  // Sender information
+  fromName  String
+  fromEmail String
 
-    // SMTP configuration
-    smtpHost     String?
-    smtpPort     Int?
-    smtpSecure   Boolean?
-    smtpUsername String?
+  // SMTP configuration
+  smtpHost     String?
+  smtpPort     Int?
+  smtpSecure   Boolean?
+  smtpUsername String?
 
-    // Encrypted SMTP password / authorization code
-    encryptedCredential String?
+  // Encrypted SMTP password / authorization code
+  encryptedCredential String?
 
-    // Microsoft 365 OAuth credentials/tokens
-    oauthDataEncrypted String?
+  // Microsoft 365 OAuth credentials/tokens
+  oauthDataEncrypted String?
 
-    // Configuration status
-    isEnabled            Boolean   @default(true)
-    isVerified           Boolean   @default(false)
-    configurationVersion Int       @default(1)
-    providerData         Json?
-    lastTestAt           DateTime?
-    lastErrorCode        String?
+  // Configuration status
+  isEnabled            Boolean   @default(true)
+  isVerified           Boolean   @default(false)
+  configurationVersion Int       @default(1)
+  providerData         Json?
+  lastTestAt           DateTime?
+  lastErrorCode        String?
 
-    // Relations
-    brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  // Relations
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
 
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model EmailOutbox {
-    id String @id @default(uuid())
+  id String @id @default(uuid())
 
-    brandId       String
-    userId        String?
-    appointmentId String?
+  brandId       String
+  userId        String?
+  appointmentId String?
 
-    eventType      String
-    idempotencyKey String @unique
+  eventType      String
+  idempotencyKey String @unique
 
-    recipientEmail String
-    subject        String
-    html           String
+  recipientEmail String
+  subject        String
+  html           String
 
-    status      String @default("PENDING")
-    attempts    Int    @default(0)
-    maxAttempts Int    @default(3)
+  status      String @default("PENDING")
+  attempts    Int    @default(0)
+  maxAttempts Int    @default(3)
 
-    nextAttemptAt  DateTime             @default(now())
-    lockedUntil    DateTime?
-    claimToken     String?
-    attemptedAt    DateTime?
-    text           String?
-    validationData Json?
-    skipReason     String?
-    terminalAt     DateTime?
-    history        EmailOutboxHistory[]
+  nextAttemptAt  DateTime             @default(now())
+  lockedUntil    DateTime?
+  claimToken     String?
+  attemptedAt    DateTime?
+  text           String?
+  validationData Json?
+  skipReason     String?
+  terminalAt     DateTime?
+  history        EmailOutboxHistory[]
 
-    sentAt            DateTime?
-    lastError         String?
-    provider          String?
-    providerMessageId String?
+  sentAt            DateTime?
+  lastError         String?
+  provider          String?
+  providerMessageId String?
 
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-    @@index([status, nextAttemptAt])
-    @@index([status, lockedUntil])
-    @@index([brandId, createdAt])
-    @@index([appointmentId])
+  @@index([status, nextAttemptAt])
+  @@index([status, lockedUntil])
+  @@index([brandId, createdAt])
+  @@index([appointmentId])
 }
 
 model EmailOutboxHistory {
-    id        String      @id @default(uuid())
-    outboxId  String
-    outbox    EmailOutbox @relation(fields: [outboxId], references: [id], onDelete: Restrict)
-    status    String
-    sequence  Int
-    attempt   Int
-    code      String?
-    provider  String?
-    actorId   String?
-    createdAt DateTime    @default(now())
+  id        String      @id @default(uuid())
+  outboxId  String
+  outbox    EmailOutbox @relation(fields: [outboxId], references: [id], onDelete: Restrict)
+  status    String
+  sequence  Int
+  attempt   Int
+  code      String?
+  provider  String?
+  actorId   String?
+  createdAt DateTime    @default(now())
 
-    @@unique([outboxId, sequence])
-    @@index([outboxId, createdAt, id])
+  @@unique([outboxId, sequence])
+  @@index([outboxId, createdAt, id])
 }
 
 // Committed business records are reconciled independently of their transactions.
 // Each bounded scan cycles from a fixed restoration cutoff to catch late commits.
 model EmailEventCursor {
-    id        String    @id
-    startedAt DateTime  @default(now())
-    afterAt   DateTime?
-    afterId   String?
+  id        String    @id
+  startedAt DateTime  @default(now())
+  afterAt   DateTime?
+  afterId   String?
 }
 
 enum Role {
@@ -910,8 +979,8 @@ model Payment {
   groupPurchase        GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
   settledGroupPurchase GroupPurchase? @relation("GroupPurchaseSettlement")
 
-  refunds Refund[]
-  refundAllocations RefundAllocation[]
+  refunds            Refund[]
+  refundAllocations  RefundAllocation[]
   walletTransactions WalletTransaction[]
 
   walletTopupId String?
@@ -957,9 +1026,9 @@ model Refund {
 
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  refundRequest RefundRequest?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  refundRequest    RefundRequest?
   refundAllocation RefundAllocation?
 
   @@index([paymentId])
@@ -1059,11 +1128,11 @@ model RefundRequest {
   customer User  @relation("CustomerRefundRequests", fields: [customerId], references: [id], onDelete: Restrict)
   reviewer User? @relation("ReviewedRefundRequests", fields: [reviewedBy], references: [id], onDelete: SetNull)
 
-  payment     Payment           @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  refund      Refund?           @relation(fields: [refundId], references: [id], onDelete: SetNull)
+  payment     Payment            @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund      Refund?            @relation(fields: [refundId], references: [id], onDelete: SetNull)
   allocations RefundAllocation[]
   // Type of refund/cancellation request
-  requestType RefundRequestType @default(APPOINTMENT_CANCELLATION)
+  requestType RefundRequestType  @default(APPOINTMENT_CANCELLATION)
 
   // Original policy used to calculate eligibility
   policySnapshot Json?
@@ -1092,21 +1161,22 @@ model RefundRequest {
 }
 
 model RefundAllocation {
-  id String @id @default(uuid())
+  id              String          @id @default(uuid())
   refundRequestId String
-  paymentId String
-  refundId String? @unique
-  amount BigInt
-  provider PaymentProvider
-  status String @default("RESERVED")
-  idempotencyKey String @unique
-  submittedAt DateTime?
-  lastErrorCode String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  request RefundRequest @relation(fields: [refundRequestId], references: [id], onDelete: Restrict)
-  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  refund Refund? @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  paymentId       String
+  refundId        String?         @unique
+  amount          BigInt
+  provider        PaymentProvider
+  status          String          @default("RESERVED")
+  idempotencyKey  String          @unique
+  submittedAt     DateTime?
+  lastErrorCode   String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  request         RefundRequest   @relation(fields: [refundRequestId], references: [id], onDelete: Restrict)
+  payment         Payment         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund          Refund?         @relation(fields: [refundId], references: [id], onDelete: Restrict)
+
   @@unique([refundRequestId, paymentId])
   @@index([paymentId, status])
   @@index([status])
@@ -1186,16 +1256,17 @@ model Service {
   status          ServiceStatus @default(ACTIVE)
 
   // Service display information
-  isPopular           Boolean              @default(false)
-  processSteps        Json             @default("[]")
-  bookingNotes        Json             @default("[]")
-  staffPortfolioCases StaffPortfolioCase[]
-  images              ServiceImage[]
-  branches            ServiceBranch[]
-  packages            PackageService[]
-  staff               StaffService[]
-  appointments        Appointment[]
-  promotions          PromotionService[]
+  isPopular            Boolean               @default(false)
+  processSteps         Json              @default("[]")
+  bookingNotes         Json              @default("[]")
+  staffPortfolioCases  StaffPortfolioCase[]
+  branchPortfolioCases BranchPortfolioCase[]
+  images               ServiceImage[]
+  branches             ServiceBranch[]
+  packages             PackageService[]
+  staff                StaffService[]
+  appointments         Appointment[]
+  promotions           PromotionService[]
 
   // Multilingual support
   translations Json?
@@ -1238,14 +1309,15 @@ model Staff {
   id     String @id @default(uuid())
   userId String @unique
 
-  name            String
-  email           String  @unique
-  phone           String?
-  roleTitle       String
-  specialization  String?
-  description     String?
-  avatarObjectKey String?
-  translations    Json?
+  name                 String
+  email                String                @unique
+  phone                String?
+  roleTitle            String
+  specialization       String?
+  description          String?
+  avatarObjectKey      String?
+  translations         Json?
+  branchPortfolioCases BranchPortfolioCase[]
 
   status StaffStatus @default(ACTIVE)
 
@@ -1344,6 +1416,7 @@ model StaffUnavailability {
 model StaffPortfolioCase {
   id        String  @id @default(uuid())
   staffId   String
+  branchId  String?
   serviceId String?
 
   title       String
@@ -1352,10 +1425,13 @@ model StaffPortfolioCase {
 
   translations Json?
 
-  status    StaffPortfolioStatus @default(DRAFT)
-  sortOrder Int                  @default(0)
-  staff     Staff                @relation(fields: [staffId], references: [id], onDelete: Cascade)
-  service   Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  status                StaffPortfolioStatus @default(DRAFT)
+  sortOrder             Int                  @default(0)
+  showInBranchPortfolio Boolean              @default(true)
+
+  staff   Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch  Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
 
   images StaffPortfolioCaseImage[]
 
@@ -1363,9 +1439,11 @@ model StaffPortfolioCase {
   updatedAt DateTime @updatedAt
 
   @@index([staffId])
+  @@index([branchId])
   @@index([serviceId])
   @@index([staffId, status])
   @@index([staffId, sortOrder])
+  @@index([branchId, status, showInBranchPortfolio])
 }
 
 model StaffPortfolioCaseImage {
@@ -1448,9 +1526,9 @@ model WalletTransaction {
   amount BigInt
 
   referenceId String?
-  paymentId String?
-  ledgerKey String? @unique
-  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  paymentId   String?
+  ledgerKey   String?  @unique
+  payment     Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 
   wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
 

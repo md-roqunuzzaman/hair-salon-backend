@@ -126,7 +126,7 @@ const localizeStaffSummary = <
   };
 };
 
-const generateTemporaryPassword = () => {
+export const generateTemporaryPassword = () => {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
   const lower = "abcdefghijkmnopqrstuvwxyz";
   const numbers = "23456789";

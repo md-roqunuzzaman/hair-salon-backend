@@ -16,7 +16,9 @@ const config = JSON.parse(await readFile('wrangler.jsonc','utf8'));
 assert.equal(config.vars.EMAIL_OUTBOX_ENABLED,'false');
 assert.ok(['false','true'].includes(config.env.staging.vars.EMAIL_OUTBOX_ENABLED));
 assert.equal(config.main,'cloudflare/.build/worker.mjs');
-assert.equal(migrations.length,32);
+assert.equal(migrations.length,34);
+assert.match(migrations[33].sql, /CREATE TABLE "BranchPortfolioCase"/);
+assert.match(migrations[32].sql, /CREATE TABLE "BranchBusinessBreak"/);
 assert.match(migrations[31].sql, /CREATE INDEX "Branch_status_latitude_longitude_idx"/);
 assert.match(migrations[31].sql, /CREATE INDEX "EmailOutbox_status_lockedUntil_idx"/);
 // Prior versioned SQL may still be uncommitted locally. Protect the prior
@@ -37,6 +39,8 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
     if(name.startsWith('0030_')||name==='20261030100000_refund_allocations')continue;
     if(name==='0031_group_purchase_valid_days_snapshot.sql'||name==='20261030110000_group_purchase_valid_days_snapshot')continue;
     if(name==='0032_branch_location_outbox_lock_indexes.sql')continue;
+    if(name==='0033_branch_business_break.sql'||name==='20261103015042_add_branch_business_break')continue;
+    if(name==='0034_branch_portfolio.sql'||['20261103082916_add_branch_portfolio','20261103084502_add_staff_portfolio_branch_relation'].includes(name))continue;
     // Current PostgreSQL index candidates are retained verbatim; Workers use v32 SQLite.
     if(directory==='prisma/migrations'&&['20261102082512_email_outbox_stale_lock_index','20261102083831_email_outbox_stale_lock_index'].includes(name))continue;
     const file = `${directory}/${name}${directory.startsWith('prisma')?'/migration.sql':''}`;
@@ -48,6 +52,13 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
   }
 }
 const metadata=JSON.parse(await readFile('cloudflare/runtime/model-metadata.json','utf8'));
+assert.equal(metadata.BranchPortfolioCase.relations.branch,'Branch');
+assert.equal(metadata.BranchPortfolioCase.relations.images,'BranchPortfolioCaseImage');
+assert.equal(metadata.StaffPortfolioCase.relations.branch,'Branch');
+assert.equal(metadata.StaffPortfolioCase.scalars.showInBranchPortfolio,'Boolean');
+assert.equal(metadata.BranchBusinessBreak.relations.businessHour,'BranchBusinessHour','Break parent relation missing from Worker metadata');
+assert.equal(metadata.BranchBusinessHour.relations.breaks,'BranchBusinessBreak','Break child relation missing from Worker metadata');
+assert.equal(metadata.BranchBusinessBreak.scalars.startTime,'String','Break time missing from Worker metadata');
 assert.equal(metadata.GroupPurchase.scalars.validDaysSnapshot,'Int','Snapshot field missing from Worker adapter metadata');
 const bundle = await readFile(config.main);
 assert.ok(!bundle.includes('__login-rate-test'),'Login test control leaked into production Worker');

@@ -128,6 +128,28 @@ const updateBranchStatusValidationSchema = z.object({
   }),
 });
 
+const businessBreakSchema = z
+  .object({
+    startTime: z
+      .string()
+      .regex(
+        /^([01]\d|2[0-3]):[0-5]\d$/,
+        "Break start time must be in HH:mm format",
+      ),
+
+    endTime: z
+      .string()
+      .regex(
+        /^([01]\d|2[0-3]):[0-5]\d$/,
+        "Break end time must be in HH:mm format",
+      ),
+  })
+  .strict()
+  .refine((data) => data.startTime < data.endTime, {
+    message: "Break end time must be later than start time",
+    path: ["endTime"],
+  });
+
 const businessHourSchema = z
   .object({
     day: z.enum([
@@ -153,10 +175,12 @@ const businessHourSchema = z
       .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Close time must be in HH:mm format")
       .nullable()
       .optional(),
+
+    breaks: z.array(businessBreakSchema).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.isClosed) {
-      if (data.openTime !== null && data.openTime !== undefined) {
+      if (data.openTime != null) {
         ctx.addIssue({
           code: "custom",
           path: ["openTime"],
@@ -164,11 +188,19 @@ const businessHourSchema = z
         });
       }
 
-      if (data.closeTime !== null && data.closeTime !== undefined) {
+      if (data.closeTime != null) {
         ctx.addIssue({
           code: "custom",
           path: ["closeTime"],
           message: "Close time must be null when branch is closed",
+        });
+      }
+
+      if (data.breaks && data.breaks.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["breaks"],
+          message: "Closed branch cannot have breaks",
         });
       }
 
@@ -191,15 +223,44 @@ const businessHourSchema = z
       });
     }
 
-    if (data.openTime && data.closeTime && data.openTime >= data.closeTime) {
+    if (!data.openTime || !data.closeTime) return;
+
+    if (data.openTime >= data.closeTime) {
       ctx.addIssue({
         code: "custom",
         path: ["closeTime"],
         message: "Close time must be later than open time",
       });
+      return;
+    }
+
+    const breaks = [...(data.breaks ?? [])].sort((a, b) =>
+      a.startTime.localeCompare(b.startTime),
+    );
+
+    for (let i = 0; i < breaks.length; i++) {
+      const current = breaks[i];
+
+      if (
+        current.startTime <= data.openTime ||
+        current.endTime >= data.closeTime
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["breaks"],
+          message: "Break must be strictly within branch opening hours",
+        });
+      }
+
+      if (i > 0 && breaks[i - 1].endTime > current.startTime) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["breaks"],
+          message: "Branch breaks cannot overlap",
+        });
+      }
     }
   });
-
 const updateBusinessHoursValidationSchema = z.object({
   body: z.object({
     hours: z

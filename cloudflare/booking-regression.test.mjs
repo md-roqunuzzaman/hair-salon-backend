@@ -51,7 +51,7 @@ function fixture(t) {
     } },
     service: { name: 'Haircut', translations: { en: { name: 'Haircut' } }, price: new Prisma.Decimal('125.55'), status: 'ACTIVE', durationMinutes: 60, branches: [{ branchId }] },
     package: { name: 'Package', translations: { en: { name: 'Package' } }, packagePrice: new Prisma.Decimal('200.50'), status: 'ACTIVE', durationMinutes: 90, branches: [{ branchId }] },
-    hours: { isClosed: false, openTime: '10:00', closeTime: '13:00' },
+    hours: { isClosed: false, openTime: '10:00', closeTime: '13:00', breaks: [] },
     capacity: { maxBookingsPerHour: 2 },
     staff: { id: staffId, status: 'ACTIVE', branches: [{ branchId }], services: [{ serviceId }], packages: [{ packageId: 'package' }] },
     eligible: [{ id: staffId }],
@@ -369,7 +369,7 @@ function autoStaffFixture(t, ids = ['alex','james','saikat']) {
     schedules: ids.map(staffId=>({staffId,startTime:'10:00',endTime:'13:00'})), leave: [], rows: [] };
   const queries=[];
   const tx={
-    branchBusinessHour:{findFirst:async()=>({isClosed:false,openTime:'10:00',closeTime:'13:00'})},
+    branchBusinessHour:{findFirst:async()=>({isClosed:false,openTime:'10:00',closeTime:'13:00',breaks:[]})},
     staff:{findMany:async({where})=>data.staff.filter(s=>s.status===where.status&&(!where.id||s.id===where.id)&&s.branches.includes(where.branches.some.branchId)&&(where.services?s.services.includes(where.services.some.serviceId):s.packages.includes(where.packages.some.packageId))).map(({id})=>({id}))},
     staffSchedule:{findMany:async()=>data.schedules},staffUnavailability:{findMany:async()=>data.leave},
     appointment:{findMany:async args=>{
@@ -555,4 +555,24 @@ test('reported slot retains exact 409 on exhausted serializable retries', async 
   assert.equal(response.status, 409);
   assert.equal((await response.json()).message, 'The selected time slot is no longer available');
   assert.equal(attempts.mock.calls.length, 3); assert.equal(create.mock.calls.length, 0);
+});
+
+test('branch breaks exclude full-duration overlap while allowing touching endpoints', async t => {
+  const { data } = fixture(t);
+  data.hours.breaks = [{ startTime: '11:00', endTime: '12:00' }];
+  const result = await AvailabilityService.getAvailableSlots(query);
+  assert.deepEqual(result.slots.map(slot => slot.startTime), ['10:00', '12:00']);
+});
+
+test('multiple branch breaks apply equally to manual and AUTO staff selection', async t => {
+  const { data } = fixture(t);
+  data.service.durationMinutes = 30;
+  data.hours.closeTime = '16:00';
+  data.schedules[0].endTime = '16:00';
+  data.hours.breaks = [{ startTime: '11:00', endTime: '12:00' }, { startTime: '14:00', endTime: '15:00' }];
+  const auto = await AvailabilityService.getAvailableSlots(query);
+  const manual = await AvailabilityService.getAvailableSlots({ ...query, staffId });
+  const starts = slots => slots.map(slot => slot.startTime);
+  assert.deepEqual(starts(auto.slots), ['10:00', '10:30', '12:00', '12:30', '13:00', '13:30', '15:00', '15:30']);
+  assert.deepEqual(starts(manual.slots), starts(auto.slots));
 });

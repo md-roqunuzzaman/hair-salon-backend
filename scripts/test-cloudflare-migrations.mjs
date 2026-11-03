@@ -7,5 +7,5 @@ try {
   const response = await mf.dispatchFetch('https://test/');
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { preserved: true, repeatable: true, foreignKey: true, checksumProtected: true });
-    console.log('Existing databases upgrade to v32: branch location/outbox lock indexes, exact columns, atomic failure rollback, all existing rows/history and repeat ledger checks pass; prior validity, allocation/ledger, policy minutes, registration, carousel, foreign-key and immutable-history checks pass.');
+    console.log('Existing databases upgrade to v33: branch break table/index/FK, atomic failure rollback, unchanged historical rows, empty initial breaks, cascade and repeated initialization pass; prior v32 indexes, validity, financial, policy, registration and immutable-history checks pass.');
 } finally { await mf.dispose(); }
