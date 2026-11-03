@@ -284,7 +284,7 @@ export class MigrationFixture {
     let snapshotRollback=false;
     try{applyMigrations(storage,[...migrations.slice(0,30),{...migrations[30],sql:migrations[30].sql+'; SELECT * FROM deliberately_missing_validity_table;'}]);}catch{snapshotRollback=true;}
     if(!snapshotRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==30||storage.sql.exec('PRAGMA table_info(GroupPurchase)').toArray().some(c=>c.name==='validDaysSnapshot')||JSON.stringify(storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray())!==JSON.stringify(purchasesBeforeSnapshot))throw new Error('Validity snapshot upgrade did not roll back atomically');
-    applyMigrations(storage,migrations);
+    applyMigrations(storage,migrations.slice(0,31));
     const purchasesAfterSnapshot=storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray();
     if(purchasesBeforeSnapshot.length!==purchasesAfterSnapshot.length)throw new Error('Validity upgrade changed purchase count');
     for(let i=0;i<purchasesBeforeSnapshot.length;i++){
@@ -295,8 +295,26 @@ export class MigrationFixture {
     if(validityColumn.type!=='INTEGER'||validityColumn.notnull!==0||validityColumn.dflt_value!==null)throw new Error('Validity column must be a nullable integer without a guessed default');
     storage.sql.exec("UPDATE GroupPurchase SET validDaysSnapshot=30 WHERE id='legacy-direct'");
     const snapshotState=JSON.stringify(storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray());
-    applyMigrations(storage,migrations);
+    applyMigrations(storage,migrations.slice(0,31));
     if(storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==31||JSON.stringify(storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray())!==snapshotState||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Validity repeated initialization or foreign keys failed');
+
+    const indexNames=['Branch_status_latitude_longitude_idx','EmailOutbox_status_lockedUntil_idx'];
+    const storedTables=storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name!='_Migrations' ORDER BY name").toArray().map(row=>row.name);
+    const storedRows=()=>JSON.stringify(storedTables.map(table=>storage.sql.exec(`SELECT * FROM "${table.replaceAll('"','""')}"`).toArray().map(row=>JSON.stringify(row)).sort()));
+    const beforeIndexes=storedRows();
+    const oldLedger=JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray());
+    let indexesRollback=false;
+    try{applyMigrations(storage,[...migrations.slice(0,31),{...migrations[31],sql:migrations[31].sql+'; SELECT * FROM deliberately_missing_index_table;'}]);}catch{indexesRollback=true;}
+    if(!indexesRollback||storedRows()!==beforeIndexes||JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray())!==oldLedger||indexNames.some(name=>storage.sql.exec("SELECT name FROM sqlite_master WHERE type='index' AND name=?",name).toArray().length))throw new Error('Lookup index upgrade did not roll back indexes, rows and ledger atomically');
+    applyMigrations(storage,migrations);
+    for(const [name,columns]of [[indexNames[0],['status','latitude','longitude']],[indexNames[1],['status','lockedUntil']]]){
+      const actual=storage.sql.exec(`PRAGMA index_info("${name}")`).toArray().map(row=>row.name);
+      if(JSON.stringify(actual)!==JSON.stringify(columns))throw new Error('Lookup index columns are incorrect');
+    }
+    if(storedRows()!==beforeIndexes||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==32)throw new Error('Lookup indexes changed existing rows or failed to record v32');
+    const indexLedger=JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray());
+    applyMigrations(storage,migrations);
+    if(storedRows()!==beforeIndexes||JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray())!==indexLedger||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Lookup index repeat initialization changed rows, ledger or foreign keys');
 
     if(storage.sql.exec("SELECT cancellationCutoffMinutes FROM BranchBookingPolicy WHERE id='policy'").one().cancellationCutoffMinutes!==300)throw new Error('Hour cutoff not converted to minutes');
     const convertedService=storage.sql.exec("SELECT minimumCancellationMinutes,refundTiers FROM BranchCancellationPolicy WHERE id='minute-service'").one();

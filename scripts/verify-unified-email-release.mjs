@@ -16,7 +16,9 @@ const config = JSON.parse(await readFile('wrangler.jsonc','utf8'));
 assert.equal(config.vars.EMAIL_OUTBOX_ENABLED,'false');
 assert.ok(['false','true'].includes(config.env.staging.vars.EMAIL_OUTBOX_ENABLED));
 assert.equal(config.main,'cloudflare/.build/worker.mjs');
-assert.equal(migrations.length,31);
+assert.equal(migrations.length,32);
+assert.match(migrations[31].sql, /CREATE INDEX "Branch_status_latitude_longitude_idx"/);
+assert.match(migrations[31].sql, /CREATE INDEX "EmailOutbox_status_lockedUntil_idx"/);
 // Prior versioned SQL may still be uncommitted locally. Protect the prior
 // release manifest's migration history as well as the committed HEAD.
 let previousRelease;
@@ -34,6 +36,9 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
     if (name.startsWith('0029_') || name === '20261030060000_policy_time_minutes') continue;
     if(name.startsWith('0030_')||name==='20261030100000_refund_allocations')continue;
     if(name==='0031_group_purchase_valid_days_snapshot.sql'||name==='20261030110000_group_purchase_valid_days_snapshot')continue;
+    if(name==='0032_branch_location_outbox_lock_indexes.sql')continue;
+    // Current PostgreSQL index candidates are retained verbatim; Workers use v32 SQLite.
+    if(directory==='prisma/migrations'&&['20261102082512_email_outbox_stale_lock_index','20261102083831_email_outbox_stale_lock_index'].includes(name))continue;
     const file = `${directory}/${name}${directory.startsWith('prisma')?'/migration.sql':''}`;
     if (!file.endsWith('.sql')) continue;
     const baseline = execFileSync('git',['show',`HEAD:${file}`],{encoding:'utf8',windowsHide:true});

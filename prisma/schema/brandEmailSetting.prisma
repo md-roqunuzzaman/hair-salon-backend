@@ -71,6 +71,7 @@ model EmailOutbox {
   updatedAt DateTime @updatedAt
 
   @@index([status, nextAttemptAt])
+  @@index([status, lockedUntil])
   @@index([brandId, createdAt])
   @@index([appointmentId])
 }

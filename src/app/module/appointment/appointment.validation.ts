@@ -125,7 +125,30 @@ const cancelAppointmentValidationSchema = z.object({
 
 const rescheduleAppointmentValidationSchema = z.object({
   body: z.object({
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")
+      .refine(
+        (value) => {
+          const [year, month, day] = value.split("-").map(Number);
+
+          // JavaScript Date UTC construction treats years 0–99
+          // specially, so use setUTCFullYear for exact validation.
+          const parsedDate = new Date(0);
+
+          parsedDate.setUTCHours(0, 0, 0, 0);
+          parsedDate.setUTCFullYear(year, month - 1, day);
+
+          return (
+            parsedDate.getUTCFullYear() === year &&
+            parsedDate.getUTCMonth() === month - 1 &&
+            parsedDate.getUTCDate() === day
+          );
+        },
+        {
+          message: "Invalid calendar date",
+        },
+      ),
 
     startTime: z
       .string()

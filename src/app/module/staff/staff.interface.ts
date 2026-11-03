@@ -66,12 +66,19 @@ export interface IUpdateStaffSchedulePayload {
 
 export interface ICreateStaffUnavailabilityPayload {
   type: StaffUnavailabilityType;
-  date: string;
-  startTime: string;
-  endTime: string;
+
+  // Existing single-day support
+  date?: string;
+  startTime?: string;
+  endTime?: string;
+
+  // New multiple-day support
+  startDate?: string;
+  endDate?: string;
+  fullDay?: boolean;
+
   reason?: string;
 }
-
 export interface IUpdateStaffUnavailabilityPayload {
   type?: StaffUnavailabilityType;
   date?: string;
@@ -82,6 +89,7 @@ export interface IUpdateStaffUnavailabilityPayload {
 
 export interface IMyStaffAppointmentsQuery {
   date?: string;
+
   status?:
     | "PENDING_PAYMENT"
     | "RESERVED"
@@ -90,6 +98,9 @@ export interface IMyStaffAppointmentsQuery {
     | "CANCELLED"
     | "NO_SHOW"
     | "EXPIRED";
+
+  // H01: Backend Upcoming / History filtering
+  type?: "UPCOMING" | "HISTORY";
 
   page?: string;
   limit?: string;

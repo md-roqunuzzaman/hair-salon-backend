@@ -52,6 +52,7 @@ try {
   await apply(actual, await readFile('cloudflare/migrations/0029_policy_time_minutes.sql', 'utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0030_refund_allocations.sql','utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0031_group_purchase_valid_days_snapshot.sql','utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0032_branch_location_outbox_lock_indexes.sql','utf8'));
   // v16 enforces this required field with triggers to retain the referenced table.
   // Verify both exact definitions before treating their enforcement as NOT NULL.
   for (const trigger of requiredTriggers) {

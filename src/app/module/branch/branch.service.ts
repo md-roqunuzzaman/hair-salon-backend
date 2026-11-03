@@ -377,6 +377,8 @@ const getNearbyBranches = async (
   const latitude = Number(query.latitude);
   const longitude = Number(query.longitude);
 
+  // Default nearby search radius: 10 km
+  // No maximum radius restriction
   const radiusKm = query.radiusKm === undefined ? 10 : Number(query.radiusKm);
 
   const page = query.page === undefined ? 1 : Number(query.page);
@@ -391,8 +393,8 @@ const getNearbyBranches = async (
     throw new AppError("Invalid longitude", 400);
   }
 
-  if (!Number.isFinite(radiusKm) || radiusKm <= 0 || radiusKm > 100) {
-    throw new AppError("radiusKm must be between 0 and 100", 400);
+  if (!Number.isFinite(radiusKm) || radiusKm <= 0) {
+    throw new AppError("radiusKm must be greater than 0", 400);
   }
 
   if (
@@ -406,14 +408,127 @@ const getNearbyBranches = async (
   }
 
   // =====================================================
-  // 2. FETCH ACTIVE BRANCHES WITH COORDINATES
+  // 2. CALCULATE DATABASE BOUNDING BOX
+  // =====================================================
+
+  const earthRadiusKm = 6371.0088;
+
+  const toRadians = (degrees: number): number => (degrees * Math.PI) / 180;
+
+  const toDegrees = (radians: number): number => (radians * 180) / Math.PI;
+
+  const angularDistance = radiusKm / earthRadiusKm;
+
+  const latitudeRadians = toRadians(latitude);
+  const longitudeRadians = toRadians(longitude);
+
+  const minLatitude = Math.max(
+    -90,
+    toDegrees(latitudeRadians - angularDistance),
+  );
+
+  const maxLatitude = Math.min(
+    90,
+    toDegrees(latitudeRadians + angularDistance),
+  );
+
+  // =====================================================
+  // 3. HANDLE LONGITUDE BOUNDARIES
+  // =====================================================
+
+  let longitudeFilter:
+    | {
+        gte: number;
+        lte: number;
+      }
+    | undefined;
+
+  let longitudeOrFilter:
+    | Array<{
+        longitude: {
+          gte?: number;
+          lte?: number;
+        };
+      }>
+    | undefined;
+
+  const reachesPole =
+    angularDistance >= Math.PI || minLatitude <= -90 || maxLatitude >= 90;
+
+  if (!reachesPole) {
+    const longitudeDelta = Math.asin(
+      Math.min(
+        1,
+        Math.max(-1, Math.sin(angularDistance) / Math.cos(latitudeRadians)),
+      ),
+    );
+
+    const minLongitudeRaw = toDegrees(longitudeRadians - longitudeDelta);
+
+    const maxLongitudeRaw = toDegrees(longitudeRadians + longitudeDelta);
+
+    if (minLongitudeRaw < -180) {
+      longitudeOrFilter = [
+        {
+          longitude: {
+            gte: minLongitudeRaw + 360,
+          },
+        },
+        {
+          longitude: {
+            lte: maxLongitudeRaw,
+          },
+        },
+      ];
+    } else if (maxLongitudeRaw > 180) {
+      longitudeOrFilter = [
+        {
+          longitude: {
+            gte: minLongitudeRaw,
+          },
+        },
+        {
+          longitude: {
+            lte: maxLongitudeRaw - 360,
+          },
+        },
+      ];
+    } else {
+      longitudeFilter = {
+        gte: minLongitudeRaw,
+        lte: maxLongitudeRaw,
+      };
+    }
+  }
+
+  // =====================================================
+  // 4. FETCH BOUNDING-BOX BRANCHES FROM DATABASE
   // =====================================================
 
   const branches = await prisma.branch.findMany({
     where: {
       status: BranchStatus.ACTIVE,
-      latitude: { not: null },
-      longitude: { not: null },
+
+      latitude: {
+        not: null,
+        gte: minLatitude,
+        lte: maxLatitude,
+      },
+
+      longitude: longitudeFilter
+        ? {
+            not: null,
+            ...longitudeFilter,
+          }
+        : {
+            not: null,
+          },
+
+      ...(longitudeOrFilter
+        ? {
+            OR: longitudeOrFilter,
+          }
+        : {}),
     },
 
     select: {
@@ -433,10 +548,8 @@ const getNearbyBranches = async (
   });
 
   // =====================================================
-  // 3. HAVERSINE DISTANCE CALCULATION
+  // 5. HAVERSINE DISTANCE CALCULATION
   // =====================================================
-
-  const toRadians = (degrees: number): number => (degrees * Math.PI) / 180;
 
   const calculateDistanceKm = (
     lat1: number,
@@ -444,8 +557,6 @@ const getNearbyBranches = async (
     lat2: number,
     lon2: number,
   ): number => {
-    const earthRadiusKm = 6371.0088;
-
     const deltaLat = toRadians(lat2 - lat1);
     const deltaLon = toRadians(lon2 - lon1);
 
@@ -455,18 +566,15 @@ const getNearbyBranches = async (
         Math.cos(toRadians(lat2)) *
         Math.sin(deltaLon / 2) ** 2;
 
-    const centralAngle =
-      2 *
-      Math.atan2(
-        Math.sqrt(Math.min(1, Math.max(0, a))),
-        Math.sqrt(1 - Math.min(1, Math.max(0, a))),
-      );
+    const safeA = Math.min(1, Math.max(0, a));
+
+    const centralAngle = 2 * Math.atan2(Math.sqrt(safeA), Math.sqrt(1 - safeA));
 
     return earthRadiusKm * centralAngle;
   };
 
   // =====================================================
-  // 4. CALCULATE DISTANCES AND FILTER BY RADIUS
+  // 6. CALCULATE EXACT DISTANCE AND FILTER
   // =====================================================
 
   const nearbyBranches = branches
@@ -488,6 +596,7 @@ const getNearbyBranches = async (
     )
     .map((branch) => ({
       ...branch,
+
       distanceKm: calculateDistanceKm(
         latitude,
         longitude,
@@ -498,7 +607,7 @@ const getNearbyBranches = async (
     .filter((branch) => branch.distanceKm <= radiusKm);
 
   // =====================================================
-  // 5. SORT NEAREST FIRST
+  // 7. SORT NEAREST FIRST
   // =====================================================
 
   nearbyBranches.sort(
@@ -506,17 +615,19 @@ const getNearbyBranches = async (
   );
 
   // =====================================================
-  // 6. PAGINATION
+  // 8. PAGINATION
   // =====================================================
 
   const total = nearbyBranches.length;
+
   const totalPages = Math.ceil(total / limit);
+
   const skip = (page - 1) * limit;
 
   const paginatedBranches = nearbyBranches.slice(skip, skip + limit);
 
   // =====================================================
-  // 7. LOCALIZATION AND SIGNED IMAGE URLS
+  // 9. LOCALIZATION AND SIGNED IMAGE URLS
   // =====================================================
 
   const items = await Promise.all(
@@ -549,7 +660,7 @@ const getNearbyBranches = async (
   );
 
   // =====================================================
-  // 8. RESPONSE
+  // 10. RESPONSE
   // =====================================================
 
   return {
@@ -1139,16 +1250,62 @@ const getBusinessHours = async (branchId: string) => {
 const updateBusinessHours = async (
   branchId: string,
   payload: IUpdateBusinessHoursPayload,
+  userId: string,
+  role: Role,
 ) => {
+  // =====================================================
+  // 1. ROLE VALIDATION
+  // =====================================================
+
+  if (role !== Role.BRAND_OWNER && role !== Role.BRANCH_MANAGER) {
+    throw new AppError(
+      "You are not allowed to manage branch business hours",
+      403,
+    );
+  }
+
+  // =====================================================
+  // 2. CHECK BRANCH
+  // =====================================================
+
   const branch = await prisma.branch.findUnique({
     where: {
       id: branchId,
+    },
+    select: {
+      id: true,
     },
   });
 
   if (!branch) {
     throw new AppError("Branch not found", 404);
   }
+
+  // =====================================================
+  // 3. BRANCH MANAGER SCOPE VALIDATION
+  // =====================================================
+
+  if (role === Role.BRANCH_MANAGER) {
+    const managerBranch = await prisma.branchManagerBranch.findUnique({
+      where: {
+        userId_branchId: {
+          userId,
+          branchId,
+        },
+      },
+      select: {
+        userId: true,
+      },
+    });
+
+    if (!managerBranch) {
+      throw new AppError("FORBIDDEN_BRANCH_SCOPE", 403);
+    }
+  }
+
+  // =====================================================
+  // 4. VALIDATE DUPLICATE DAYS
+  // =====================================================
 
   const days = payload.hours.map((hour) => hour.day);
 
@@ -1158,63 +1315,62 @@ const updateBusinessHours = async (
     throw new AppError("Duplicate business hour day is not allowed", 400);
   }
 
+  // =====================================================
+  // 5. UPDATE BUSINESS HOURS
+  // =====================================================
+
   await prisma.$transaction(
     payload.hours.map((hour) =>
       prisma.branchBusinessHour.upsert({
         where: {
           branchId_day: {
             branchId,
-
             day: hour.day,
           },
         },
 
         update: {
           isClosed: hour.isClosed,
-
           openTime: hour.isClosed ? null : hour.openTime,
-
           closeTime: hour.isClosed ? null : hour.closeTime,
         },
 
         create: {
           branchId,
-
           day: hour.day,
-
           isClosed: hour.isClosed,
-
           openTime: hour.isClosed ? null : hour.openTime,
-
           closeTime: hour.isClosed ? null : hour.closeTime,
         },
       }),
     ),
   );
 
+  // =====================================================
+  // 6. FETCH UPDATED BUSINESS HOURS
+  // =====================================================
+
   const businessHours = await prisma.branchBusinessHour.findMany({
     where: {
       branchId,
     },
-
     select: {
       day: true,
-
       isClosed: true,
-
       openTime: true,
-
       closeTime: true,
     },
   });
 
+  // =====================================================
+  // 7. RETURN EXISTING RESPONSE CONTRACT
+  // =====================================================
+
   return {
     branchId,
-
     hours: businessHours,
   };
 };
-
 // =====================================================
 // GET BOOKING POLICY
 // =====================================================
@@ -1453,7 +1609,7 @@ const updateCancellationPolicy = async (
     });
 
     const policyData = {
-      policyFormat: 'REFUND_TIERS_V1',
+      policyFormat: "REFUND_TIERS_V1",
       isEnabled: payload.isEnabled,
       cancellationAllowed: payload.cancellationAllowed,
       minimumCancellationMinutes: payload.minimumCancellationMinutes,
@@ -1693,7 +1849,8 @@ const updateBookingPolicy = async (
                 maximumAdvanceBookingDays:
                   existingPolicy.maximumAdvanceBookingDays,
 
-                cancellationCutoffMinutes: existingPolicy.cancellationCutoffMinutes,
+                cancellationCutoffMinutes:
+                  existingPolicy.cancellationCutoffMinutes,
 
                 rescheduleCutoffMinutes: existingPolicy.rescheduleCutoffMinutes,
 

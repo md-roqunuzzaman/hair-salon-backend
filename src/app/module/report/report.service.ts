@@ -37,6 +37,7 @@ const getBranchReport = async (
 ) => {
   // =====================================================
   // 1. DATE FILTER
+  // Preserve existing date filtering behavior.
   // =====================================================
 
   const appointmentDateFilter =
@@ -64,10 +65,7 @@ const getBranchReport = async (
     select: {
       id: true,
       name: true,
-
-      // NEW: Multilingual translations
       translations: true,
-
       status: true,
 
       staff: {
@@ -79,188 +77,288 @@ const getBranchReport = async (
   });
 
   // =====================================================
-  // 3. BUILD BRANCH REPORT
+  // 3. HANDLE EMPTY BRANCH LIST
   // =====================================================
 
-  const items = await Promise.all(
-    branches.map(async (branch) => {
-      // NEW: Localize branch name
-      // Fallback: requested language -> English -> original name
-      const localizedBranch = getLocalizedContent(
-        branch.translations,
-        language,
-        {
-          name: branch.name,
-        },
+  if (branches.length === 0) {
+    return {
+      period: {
+        from: query.from ?? null,
+        to: query.to ?? null,
+      },
+      items: [],
+    };
+  }
+
+  const branchIds = branches.map((branch) => branch.id);
+
+  // =====================================================
+  // 4. BATCH AGGREGATE ALL APPOINTMENTS
+  //
+  // One groupBy query replaces 10 queries per branch.
+  //
+  // Group by:
+  // - branchId
+  // - bookingMethod
+  // - appointmentStatus
+  //
+  // Collect:
+  // - appointment count
+  // - total appointment price
+  // =====================================================
+
+  const appointmentGroups = await prisma.appointment.groupBy({
+    by: ["branchId", "bookingMethod", "appointmentStatus"],
+
+    where: {
+      branchId: {
+        in: branchIds,
+      },
+
+      ...(appointmentDateFilter && {
+        date: appointmentDateFilter,
+      }),
+    },
+
+    _count: {
+      _all: true,
+    },
+
+    _sum: {
+      price: true,
+    },
+  });
+
+  // =====================================================
+  // 5. METRICS TYPE
+  // =====================================================
+
+  type BranchMetrics = {
+    totalAppointments: number;
+
+    payNow: number;
+    reserveNow: number;
+
+    confirmed: number;
+    completed: number;
+    cancelled: number;
+    noShow: number;
+
+    reserveCompleted: number;
+    reserveNoShow: number;
+
+    completedServiceValue: Prisma.Decimal;
+  };
+
+  // =====================================================
+  // 6. INITIALIZE BRANCH METRICS
+  // =====================================================
+
+  const metricsMap = new Map<string, BranchMetrics>();
+
+  for (const branch of branches) {
+    metricsMap.set(branch.id, {
+      totalAppointments: 0,
+
+      payNow: 0,
+      reserveNow: 0,
+
+      confirmed: 0,
+      completed: 0,
+      cancelled: 0,
+      noShow: 0,
+
+      reserveCompleted: 0,
+      reserveNoShow: 0,
+
+      completedServiceValue: new Prisma.Decimal(0),
+    });
+  }
+
+  // =====================================================
+  // 7. PROCESS GROUPED APPOINTMENT RESULTS
+  // No additional database queries.
+  // =====================================================
+
+  for (const group of appointmentGroups) {
+    const metrics = metricsMap.get(group.branchId);
+
+    if (!metrics) {
+      continue;
+    }
+
+    const count = group._count._all;
+
+    const bookingMethod = group.bookingMethod;
+
+    const appointmentStatus = group.appointmentStatus;
+
+    // -----------------------------------------------------
+    // 7.1 TOTAL APPOINTMENTS
+    // -----------------------------------------------------
+
+    metrics.totalAppointments += count;
+
+    // -----------------------------------------------------
+    // 7.2 BOOKING METHOD COUNTS
+    // -----------------------------------------------------
+
+    if (bookingMethod === BookingMethod.PAY_NOW) {
+      metrics.payNow += count;
+    }
+
+    if (bookingMethod === BookingMethod.RESERVE_NOW) {
+      metrics.reserveNow += count;
+    }
+
+    // -----------------------------------------------------
+    // 7.3 APPOINTMENT STATUS COUNTS
+    // -----------------------------------------------------
+
+    if (appointmentStatus === AppointmentStatus.CONFIRMED) {
+      metrics.confirmed += count;
+    }
+
+    if (appointmentStatus === AppointmentStatus.COMPLETED) {
+      metrics.completed += count;
+
+      // Completed service value is based on appointment
+      // price, not collected payment or net revenue.
+      // Preserve Decimal precision until final response.
+
+      metrics.completedServiceValue = metrics.completedServiceValue.plus(
+        group._sum.price ?? 0,
       );
+    }
 
-      const baseWhere = {
-        branchId: branch.id,
+    if (appointmentStatus === AppointmentStatus.CANCELLED) {
+      metrics.cancelled += count;
+    }
 
-        ...(appointmentDateFilter && {
-          date: appointmentDateFilter,
-        }),
-      };
+    if (appointmentStatus === AppointmentStatus.NO_SHOW) {
+      metrics.noShow += count;
+    }
 
-      const [
-        totalAppointments,
-        payNow,
-        reserveNow,
-        confirmed,
-        completed,
-        cancelled,
-        noShow,
-        reserveCompleted,
-        reserveNoShow,
-        completedValue,
-      ] = await Promise.all([
-        prisma.appointment.count({
-          where: baseWhere,
-        }),
+    // -----------------------------------------------------
+    // 7.4 RESERVE NOW CONVERSION COUNTS
+    // -----------------------------------------------------
 
-        prisma.appointment.count({
-          where: {
-            ...baseWhere,
-            bookingMethod: BookingMethod.PAY_NOW,
-          },
-        }),
+    if (bookingMethod === BookingMethod.RESERVE_NOW) {
+      if (appointmentStatus === AppointmentStatus.COMPLETED) {
+        metrics.reserveCompleted += count;
+      }
 
-        prisma.appointment.count({
-          where: {
-            ...baseWhere,
-            bookingMethod: BookingMethod.RESERVE_NOW,
-          },
-        }),
-
-        prisma.appointment.count({
-          where: {
-            ...baseWhere,
-            appointmentStatus: AppointmentStatus.CONFIRMED,
-          },
-        }),
-
-        prisma.appointment.count({
-          where: {
-            ...baseWhere,
-            appointmentStatus: AppointmentStatus.COMPLETED,
-          },
-        }),
-
-        prisma.appointment.count({
-          where: {
-            ...baseWhere,
-            appointmentStatus: AppointmentStatus.CANCELLED,
-          },
-        }),
-
-        prisma.appointment.count({
-          where: {
-            ...baseWhere,
-            appointmentStatus: AppointmentStatus.NO_SHOW,
-          },
-        }),
-
-        prisma.appointment.count({
-          where: {
-            ...baseWhere,
-            bookingMethod: BookingMethod.RESERVE_NOW,
-            appointmentStatus: AppointmentStatus.COMPLETED,
-          },
-        }),
-
-        prisma.appointment.count({
-          where: {
-            ...baseWhere,
-            bookingMethod: BookingMethod.RESERVE_NOW,
-            appointmentStatus: AppointmentStatus.NO_SHOW,
-          },
-        }),
-
-        prisma.appointment.aggregate({
-          where: {
-            ...baseWhere,
-            appointmentStatus: AppointmentStatus.COMPLETED,
-          },
-
-          _sum: {
-            price: true,
-          },
-        }),
-      ]);
-
-      // =====================================================
-      // 4. CALCULATE REPORT RATES
-      // =====================================================
-
-      const completionRate =
-        totalAppointments === 0
-          ? 0
-          : roundPercentage((completed / totalAppointments) * 100);
-
-      const cancellationRate =
-        totalAppointments === 0
-          ? 0
-          : roundPercentage((cancelled / totalAppointments) * 100);
-
-      const noShowRate =
-        totalAppointments === 0
-          ? 0
-          : roundPercentage((noShow / totalAppointments) * 100);
-
-      const reserveConversionRate =
-        reserveNow === 0
-          ? 0
-          : roundPercentage((reserveCompleted / reserveNow) * 100);
-
-      const reserveNoShowRate =
-        reserveNow === 0
-          ? 0
-          : roundPercentage((reserveNoShow / reserveNow) * 100);
-
-      // =====================================================
-      // 5. RESPONSE
-      // =====================================================
-
-      return {
-        branchId: branch.id,
-
-        // NEW: Localized branch name
-        branchName: localizedBranch.name,
-
-        branchStatus: branch.status,
-
-        staffCount: branch.staff.length,
-
-        totalAppointments,
-
-        payNow,
-        reserveNow,
-
-        confirmed,
-        completed,
-        cancelled,
-        noShow,
-
-        reserveCompleted,
-        reserveNoShow,
-
-        rates: {
-          completionRate,
-          cancellationRate,
-          noShowRate,
-          reserveConversionRate,
-          reserveNoShowRate,
-        },
-
-        completedServiceValue: Number(completedValue._sum.price ?? 0),
-
-        currency: "HKD",
-      };
-    }),
-  );
+      if (appointmentStatus === AppointmentStatus.NO_SHOW) {
+        metrics.reserveNoShow += count;
+      }
+    }
+  }
 
   // =====================================================
-  // 6. FINAL RESPONSE
+  // 8. BUILD BRANCH REPORT
+  // Preserve original branch ordering and response fields.
+  // =====================================================
+
+  const items = branches.map((branch) => {
+    // -----------------------------------------------------
+    // 8.1 LOCALIZE BRANCH NAME
+    // -----------------------------------------------------
+
+    const localizedBranch = getLocalizedContent(branch.translations, language, {
+      name: branch.name,
+    });
+
+    // -----------------------------------------------------
+    // 8.2 GET AGGREGATED METRICS
+    // -----------------------------------------------------
+
+    const metrics = metricsMap.get(branch.id)!;
+
+    const {
+      totalAppointments,
+      payNow,
+      reserveNow,
+      confirmed,
+      completed,
+      cancelled,
+      noShow,
+      reserveCompleted,
+      reserveNoShow,
+      completedServiceValue,
+    } = metrics;
+
+    // -----------------------------------------------------
+    // 8.3 CALCULATE REPORT RATES
+    // Preserve existing denominators and rounding.
+    // -----------------------------------------------------
+
+    const completionRate =
+      totalAppointments === 0
+        ? 0
+        : roundPercentage((completed / totalAppointments) * 100);
+
+    const cancellationRate =
+      totalAppointments === 0
+        ? 0
+        : roundPercentage((cancelled / totalAppointments) * 100);
+
+    const noShowRate =
+      totalAppointments === 0
+        ? 0
+        : roundPercentage((noShow / totalAppointments) * 100);
+
+    const reserveConversionRate =
+      reserveNow === 0
+        ? 0
+        : roundPercentage((reserveCompleted / reserveNow) * 100);
+
+    const reserveNoShowRate =
+      reserveNow === 0
+        ? 0
+        : roundPercentage((reserveNoShow / reserveNow) * 100);
+
+    // =====================================================
+    // 9. RETURN BRANCH REPORT ITEM
+    // =====================================================
+
+    return {
+      branchId: branch.id,
+
+      branchName: localizedBranch.name,
+
+      branchStatus: branch.status,
+
+      staffCount: branch.staff.length,
+
+      totalAppointments,
+
+      payNow,
+      reserveNow,
+
+      confirmed,
+      completed,
+      cancelled,
+      noShow,
+
+      reserveCompleted,
+      reserveNoShow,
+
+      rates: {
+        completionRate,
+        cancellationRate,
+        noShowRate,
+        reserveConversionRate,
+        reserveNoShowRate,
+      },
+
+      completedServiceValue: Number(completedServiceValue),
+
+      currency: "HKD",
+    };
+  });
+
+  // =====================================================
+  // 10. FINAL RESPONSE
   // =====================================================
 
   return {
@@ -272,6 +370,7 @@ const getBranchReport = async (
     items,
   };
 };
+
 const getBookingConversionReport = async (
   query: IBookingConversionReportQuery,
   userId: string,

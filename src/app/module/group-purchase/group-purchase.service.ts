@@ -827,57 +827,192 @@ const getMyGroupPurchases = async (
 
   const status = query.status as string | undefined;
 
-  if (status !== undefined && status !== "ACTIVE" && status !== "EXPIRED") {
-    throw new AppError("status must be ACTIVE or EXPIRED", 400);
+  if (
+    status !== undefined &&
+    status !== "ACTIVE" &&
+    status !== "HISTORY" &&
+    status !== "EXPIRED"
+  ) {
+    throw new AppError("status must be ACTIVE, HISTORY or EXPIRED", 400);
   }
 
   const now = new Date();
 
   // =====================================================
-  // 3. DEFINE EXPIRED PAYMENT CONDITION
+  // 3. EXPIRY HELPERS
   // =====================================================
 
-  // Preserve existing payment reservation expiry logic.
-  //
-  // PENDING + reservation deadline passed -> expired
-  // FAILED                                -> expired
-  // PAID                                  -> not payment-expired
-  //
-  // Voucher validity expiry is calculated separately below.
+  const isPaymentExpired = (purchase: {
+    paymentStatus: PaymentStatus;
+    reservationExpiresAt: Date | null;
+  }): boolean => {
+    return (
+      purchase.paymentStatus === PaymentStatus.FAILED ||
+      (purchase.paymentStatus === PaymentStatus.PENDING &&
+        purchase.reservationExpiresAt !== null &&
+        purchase.reservationExpiresAt <= now)
+    );
+  };
 
-  const expiredCondition: Prisma.GroupPurchaseWhereInput = {
-    OR: [
-      {
-        paymentStatus: PaymentStatus.FAILED,
-      },
-      {
-        paymentStatus: PaymentStatus.PENDING,
-        reservationExpiresAt: {
-          lte: now,
-        },
-      },
-    ],
+  const getVoucherValidUntil = (purchase: {
+    purchasedAt: Date | null;
+    validDaysSnapshot: number | null;
+  }): Date | null => {
+    if (purchase.purchasedAt === null || purchase.validDaysSnapshot === null) {
+      return null;
+    }
+
+    return new Date(
+      purchase.purchasedAt.getTime() +
+        purchase.validDaysSnapshot * 24 * 60 * 60 * 1000,
+    );
+  };
+
+  const isVoucherExpired = (purchase: {
+    purchasedAt: Date | null;
+    validDaysSnapshot: number | null;
+  }): boolean => {
+    const validUntil = getVoucherValidUntil(purchase);
+
+    return validUntil !== null && now >= validUntil;
   };
 
   // =====================================================
   // 4. BUILD CUSTOMER FILTER
   // =====================================================
 
-  const where: Prisma.GroupPurchaseWhereInput = {
+  const baseWhere: Prisma.GroupPurchaseWhereInput = {
     customerId,
-
-    ...(status === "ACTIVE"
-      ? {
-          NOT: expiredCondition,
-        }
-      : {}),
-
-    ...(status === "EXPIRED"
-      ? {
-          AND: [expiredCondition],
-        }
-      : {}),
   };
+
+  let filteredPurchaseIds: string[] | null = null;
+
+  if (status !== undefined) {
+    // Fetch lightweight records to calculate the exact status
+    // before pagination. This keeps pagination totals correct.
+
+    const candidates = await prisma.groupPurchase.findMany({
+      where: baseWhere,
+
+      select: {
+        id: true,
+        purchaseFlow: true,
+        bookingMethod: true,
+        paymentStatus: true,
+        reservationExpiresAt: true,
+        purchasedAt: true,
+        validDaysSnapshot: true,
+        quantity: true,
+        forfeitedQuantity: true,
+        refundedQuantity: true,
+
+        appointments: {
+          select: {
+            id: true,
+            appointmentStatus: true,
+          },
+        },
+      },
+    });
+
+    filteredPurchaseIds = candidates
+      .filter((purchase) => {
+        const paymentExpired = isPaymentExpired(purchase);
+        const voucherExpired = isVoucherExpired(purchase);
+
+        const redeemedQuantity = purchase.appointments.filter(
+          (appointment) =>
+            appointment.appointmentStatus !== AppointmentStatus.CANCELLED,
+        ).length;
+
+        const remainingQuantity = Math.max(
+          0,
+          purchase.quantity -
+            redeemedQuantity -
+            purchase.forfeitedQuantity -
+            purchase.refundedQuantity,
+        );
+
+        const fullyRedeemed = remainingQuantity === 0;
+
+        const refunded = purchase.paymentStatus === PaymentStatus.REFUNDED;
+
+        const explicitlyFailed =
+          purchase.paymentStatus === PaymentStatus.FAILED;
+
+        const isDirectBook = purchase.purchaseFlow === "DIRECT_BOOK";
+
+        // -----------------------------------------------
+        // DIRECT BOOKING
+        // -----------------------------------------------
+
+        // A direct booking is active while at least one
+        // appointment is still RESERVED or CONFIRMED.
+        //
+        // This includes valid RESERVE_NOW and DEPOSIT flows
+        // without requiring paymentStatus === PAID.
+
+        const hasActiveDirectAppointment =
+          isDirectBook &&
+          purchase.appointments.some(
+            (appointment) =>
+              appointment.appointmentStatus === AppointmentStatus.RESERVED ||
+              appointment.appointmentStatus === AppointmentStatus.CONFIRMED,
+          );
+
+        // -----------------------------------------------
+        // BUY NOW BOOK LATER
+        // -----------------------------------------------
+
+        // A voucher is usable only when paid,
+        // not expired and at least one redemption remains.
+
+        const usableVoucher =
+          !isDirectBook &&
+          purchase.paymentStatus === PaymentStatus.PAID &&
+          !paymentExpired &&
+          !voucherExpired &&
+          !fullyRedeemed;
+
+        const active =
+          !refunded &&
+          !explicitlyFailed &&
+          !paymentExpired &&
+          !voucherExpired &&
+          (hasActiveDirectAppointment || usableVoucher);
+
+        // -----------------------------------------------
+        // STATUS FILTER
+        // -----------------------------------------------
+
+        if (status === "ACTIVE") {
+          return active;
+        }
+
+        if (status === "HISTORY") {
+          return !active;
+        }
+
+        // EXPIRED keeps its original semantic meaning:
+        // actual payment expiry or voucher validity expiry.
+        if (status === "EXPIRED") {
+          return paymentExpired || voucherExpired;
+        }
+
+        return true;
+      })
+      .map((purchase) => purchase.id);
+  }
+
+  const where: Prisma.GroupPurchaseWhereInput =
+    filteredPurchaseIds !== null
+      ? {
+          customerId,
+          id: {
+            in: filteredPurchaseIds,
+          },
+        }
+      : baseWhere;
 
   // =====================================================
   // 5. FETCH CUSTOMER GROUP PURCHASES + COUNT
@@ -905,8 +1040,6 @@ const getMyGroupPurchases = async (
             name: true,
             translations: true,
             type: true,
-
-            // NEW: Package's currently configured validity.
             validDays: true,
 
             images: {
@@ -957,8 +1090,6 @@ const getMyGroupPurchases = async (
         })
       : [];
 
-  // Avoid separate count queries for every purchase.
-
   const redemptionCountMap = new Map(
     redemptionCounts.map((item) => [item.groupPurchaseId, item._count._all]),
   );
@@ -966,9 +1097,6 @@ const getMyGroupPurchases = async (
   // =====================================================
   // 7. GENERATE SIGNED PRIMARY IMAGE URLS
   // =====================================================
-
-  // Same package can appear in multiple purchases.
-  // Generate a signed URL once per unique object key.
 
   const imageKeys = [
     ...new Set(
@@ -993,9 +1121,9 @@ const getMyGroupPurchases = async (
   // =====================================================
 
   const items = purchases.map((purchase) => {
-    // ===================================================
+    // ---------------------------------------------------
     // 8.1 LOCALIZED PACKAGE NAME
-    // ===================================================
+    // ---------------------------------------------------
 
     const localizedPackage = getLocalizedContent(
       purchase.package.translations,
@@ -1005,9 +1133,9 @@ const getMyGroupPurchases = async (
       },
     );
 
-    // ===================================================
+    // ---------------------------------------------------
     // 8.2 PAYMENT EXPIRY
-    // ===================================================
+    // ---------------------------------------------------
 
     const deadlinePassed =
       purchase.reservationExpiresAt !== null &&
@@ -1017,18 +1145,14 @@ const getMyGroupPurchases = async (
       purchase.paymentStatus === PaymentStatus.FAILED ||
       (purchase.paymentStatus === PaymentStatus.PENDING && deadlinePassed);
 
-    // Keep actual database payment status unchanged.
-    // The scheduled expiry job persists FAILED and
-    // releases reserved inventory.
-
     const effectivePaymentStatus =
       paymentExpired && purchase.paymentStatus === PaymentStatus.PENDING
         ? PaymentStatus.FAILED
         : purchase.paymentStatus;
 
-    // ===================================================
+    // ---------------------------------------------------
     // 8.3 PAYMENT DISPLAY STATUS
-    // ===================================================
+    // ---------------------------------------------------
 
     const displayBookingMethod =
       purchase.bookingMethod ?? BookingMethod.GROUP_PURCHASE;
@@ -1043,36 +1167,18 @@ const getMyGroupPurchases = async (
       depositPaid,
     );
 
-    // ===================================================
-    // 8.4 PURCHASE VOUCHER VALIDITY
-    // ===================================================
+    // ---------------------------------------------------
+    // 8.4 VOUCHER VALIDITY
+    // ---------------------------------------------------
 
-    // The validity period is captured when the customer
-    // creates the purchase.
-    //
-    // Expiry countdown begins at purchasedAt, which must
-    // be populated when the purchase becomes paid.
-    //
-    // null validDaysSnapshot means no configured expiry.
-    // null purchasedAt means the countdown has not started.
-
-    const validUntil =
-      purchase.purchasedAt !== null && purchase.validDaysSnapshot !== null
-        ? new Date(
-            purchase.purchasedAt.getTime() +
-              purchase.validDaysSnapshot * 24 * 60 * 60 * 1000,
-          )
-        : null;
-
-    // Expiration boundary is inclusive:
-    // now >= validUntil means the voucher is expired.
+    const validUntil = getVoucherValidUntil(purchase);
 
     const voucherExpired =
       validUntil !== null && now.getTime() >= validUntil.getTime();
 
-    // ===================================================
+    // ---------------------------------------------------
     // 8.5 REDEMPTION SUMMARY
-    // ===================================================
+    // ---------------------------------------------------
 
     const purchasedQuantity = purchase.quantity;
 
@@ -1086,14 +1192,15 @@ const getMyGroupPurchases = async (
         purchase.refundedQuantity,
     );
 
+    // Preserve the existing voucher booking rule.
     const canBookAppointment =
       purchase.paymentStatus === PaymentStatus.PAID &&
       remainingQuantity > 0 &&
       !voucherExpired;
 
-    // ===================================================
+    // ---------------------------------------------------
     // 8.6 PRIMARY IMAGE
-    // ===================================================
+    // ---------------------------------------------------
 
     const primaryImageObjectKey = purchase.package.images[0]?.objectKey ?? null;
 
@@ -1101,9 +1208,9 @@ const getMyGroupPurchases = async (
       ? (signedImageMap.get(primaryImageObjectKey) ?? null)
       : null;
 
-    // ===================================================
-    // 8.7 FINAL PURCHASE RESPONSE
-    // ===================================================
+    // ---------------------------------------------------
+    // 8.7 FINAL RESPONSE
+    // ---------------------------------------------------
 
     return {
       ...presentGroupPurchase(
@@ -1124,16 +1231,10 @@ const getMyGroupPurchases = async (
 
       package: {
         id: purchase.package.id,
-
         name: localizedPackage.name,
-
         type: purchase.package.type,
-
-        // NEW: Current package configuration.
         validDays: purchase.package.validDays,
-
         primaryImageObjectKey,
-
         primaryImageUrl,
       },
 
@@ -1143,34 +1244,26 @@ const getMyGroupPurchases = async (
 
       amount: Number(purchase.amount),
 
-      // Actual persisted database status.
       paymentStatus: purchase.paymentStatus,
 
-      // Frontend-friendly calculated status.
       effectivePaymentStatus,
 
-      // Shared payment display status.
       paymentDisplayStatus,
 
-      // Payment reservation expiry indicator.
       paymentExpired,
 
       reservationExpiresAt: purchase.reservationExpiresAt,
 
       purchasedAt: purchase.purchasedAt,
 
-      // NEW: Purchase-specific voucher expiration date.
       validUntil,
 
       createdAt: purchase.createdAt,
 
       redemption: {
         purchasedQuantity,
-
         redeemedQuantity,
-
         remainingQuantity,
-
         canBookAppointment,
       },
     };
@@ -1188,18 +1281,13 @@ const getMyGroupPurchases = async (
     pagination: {
       page,
       limit,
-
       total: totalPurchaseCount,
-
       totalPages,
-
       hasNextPage: page < totalPages,
-
       hasPreviousPage: page > 1,
     },
   };
 };
-
 const getGroupPurchaseById = async (
   purchaseId: string,
   userId: string,

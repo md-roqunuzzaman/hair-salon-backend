@@ -1,5 +1,5 @@
-import { branchGroupPurchasePolicyController } from './branch-group-purchase-policy.controller.js';
-import { branchGroupPurchasePolicyValidation } from './branch-group-purchase-policy.validation.js';
+import { branchGroupPurchasePolicyController } from "./branch-group-purchase-policy.controller.js";
+import { branchGroupPurchasePolicyValidation } from "./branch-group-purchase-policy.validation.js";
 import { NextFunction, Request, Response, Router } from "express";
 
 import { Role } from "../../../../generated/prisma/client.js";
@@ -73,7 +73,7 @@ router.get("/:branchId/booking-policy", branchController.getBookingPolicy);
 
 router.put(
   "/:branchId/booking-policy",
-  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  auth(Role.BRAND_OWNER),
   validateRequest(branchValidation.updateBookingPolicyValidationSchema),
   branchController.updateBookingPolicy,
 );
@@ -235,8 +235,30 @@ router.get(
 
   branchController.getBranchStaffOutput,
 );
-router.get('/:branchId/group-purchase-refund-policy', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), branchGroupPurchasePolicyController.getGroupPurchaseRefundPolicy);
-router.put('/:branchId/group-purchase-refund-policy', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), validateRequest(branchGroupPurchasePolicyValidation.updateGroupPurchaseRefundPolicyValidationSchema), branchGroupPurchasePolicyController.updateGroupPurchaseRefundPolicy);
-router.get('/:branchId/group-purchase-cancellation-policy', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), branchGroupPurchasePolicyController.getGroupPurchaseCancellationPolicy);
-router.put('/:branchId/group-purchase-cancellation-policy', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), validateRequest(branchGroupPurchasePolicyValidation.updateGroupPurchaseCancellationPolicyValidationSchema), branchGroupPurchasePolicyController.updateGroupPurchaseCancellationPolicy);
+router.get(
+  "/:branchId/group-purchase-refund-policy",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  branchGroupPurchasePolicyController.getGroupPurchaseRefundPolicy,
+);
+router.put(
+  "/:branchId/group-purchase-refund-policy",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  validateRequest(
+    branchGroupPurchasePolicyValidation.updateGroupPurchaseRefundPolicyValidationSchema,
+  ),
+  branchGroupPurchasePolicyController.updateGroupPurchaseRefundPolicy,
+);
+router.get(
+  "/:branchId/group-purchase-cancellation-policy",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  branchGroupPurchasePolicyController.getGroupPurchaseCancellationPolicy,
+);
+router.put(
+  "/:branchId/group-purchase-cancellation-policy",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  validateRequest(
+    branchGroupPurchasePolicyValidation.updateGroupPurchaseCancellationPolicyValidationSchema,
+  ),
+  branchGroupPurchasePolicyController.updateGroupPurchaseCancellationPolicy,
+);
 export const BranchRoutes = router;

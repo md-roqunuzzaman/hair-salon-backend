@@ -14,6 +14,7 @@ import {
   Role,
   ServiceStatus,
   StaffStatus,
+  StaffUnavailabilityType,
 } from "../../../../generated/prisma/client.js";
 
 import { prisma } from "../../lib/prisma.js";
@@ -545,7 +546,9 @@ const createStaff = async (
     // Notification failure must not undo successful
     // staff account creation.
 
-    logUnexpectedError(error, { source: "src/app/module/staff/staff.service.ts:547" });
+    logUnexpectedError(error, {
+      source: "src/app/module/staff/staff.service.ts:547",
+    });
   }
 
   // =====================================================
@@ -1715,7 +1718,9 @@ const updateStaffStatus = async (
       // Notification failure must not undo
       // a successful staff status update.
 
-      logUnexpectedError(error, { source: "src/app/module/staff/staff.service.ts:1717" });
+      logUnexpectedError(error, {
+        source: "src/app/module/staff/staff.service.ts:1717",
+      });
     }
   }
 
@@ -2008,7 +2013,9 @@ const assignStaffBranches = async (
         translations,
       });
     } catch (error) {
-      logUnexpectedError(error, { source: "src/app/module/staff/staff.service.ts:2010" });
+      logUnexpectedError(error, {
+        source: "src/app/module/staff/staff.service.ts:2010",
+      });
     }
   }
 
@@ -3268,7 +3275,9 @@ const updateStaffSchedule = async (
       // Notification failure must not undo
       // successful schedule update.
 
-      logUnexpectedError(error, { source: "src/app/module/staff/staff.service.ts:3273" });
+      logUnexpectedError(error, {
+        source: "src/app/module/staff/staff.service.ts:3273",
+      });
     }
   }
 
@@ -3444,10 +3453,12 @@ const createStaffUnavailability = async (
     role: Role;
   },
 ) => {
+  // =====================================================
+  // 1. FIND STAFF
+  // =====================================================
+
   const staff = await prisma.staff.findUnique({
-    where: {
-      id: staffId,
-    },
+    where: { id: staffId },
     include: {
       branches: {
         select: {
@@ -3461,7 +3472,10 @@ const createStaffUnavailability = async (
     throw new AppError("Staff not found", 404);
   }
 
-  // Branch Manager scope check
+  // =====================================================
+  // 2. BRANCH MANAGER SCOPE
+  // =====================================================
+
   if (requester.role === Role.BRANCH_MANAGER) {
     const managerBranches = await prisma.branchManagerBranch.findMany({
       where: {
@@ -3488,94 +3502,337 @@ const createStaffUnavailability = async (
     }
   }
 
-  const startMinutes = timeToMinutes(payload.startTime);
-  const endMinutes = timeToMinutes(payload.endTime);
+  // =====================================================
+  // 3. VALIDATE DATE RANGE
+  // =====================================================
 
-  if (startMinutes >= endMinutes) {
+  const isFullDay = payload.fullDay === true;
+
+  const startDateString = payload.startDate ?? payload.date;
+  const endDateString = payload.endDate ?? startDateString;
+
+  if (!startDateString || !endDateString) {
+    throw new AppError("Date is required", 400);
+  }
+
+  const parseDate = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new AppError("Invalid date format", 400);
+    }
+
+    const date = new Date(`${value}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(date.getTime()) ||
+      date.toISOString().slice(0, 10) !== value
+    ) {
+      throw new AppError("Invalid date", 400);
+    }
+
+    return date;
+  };
+
+  const startDate = parseDate(startDateString);
+  const endDate = parseDate(endDateString);
+
+  if (startDate > endDate) {
+    throw new AppError("startDate must not be after endDate", 400);
+  }
+
+  const totalDays =
+    Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
+
+  if (totalDays > 31) {
+    throw new AppError("Leave duration cannot exceed 31 days", 400);
+  }
+
+  if (totalDays > 1 && !["LEAVE", "TIME_OFF"].includes(payload.type)) {
+    throw new AppError(
+      "Multiple-day unavailability is only supported for LEAVE and TIME_OFF",
+      400,
+    );
+  }
+
+  // =====================================================
+  // 4. VALIDATE TIME
+  // =====================================================
+
+  if (!isFullDay && (!payload.startTime || !payload.endTime)) {
+    throw new AppError("startTime and endTime are required", 400);
+  }
+
+  if (isFullDay && !["LEAVE", "TIME_OFF"].includes(payload.type)) {
+    throw new AppError(
+      "Full-day unavailability is only supported for LEAVE and TIME_OFF",
+      400,
+    );
+  }
+
+  const requestedStartMinutes = isFullDay
+    ? 0
+    : timeToMinutes(payload.startTime!);
+
+  const requestedEndMinutes = isFullDay
+    ? 1439
+    : timeToMinutes(payload.endTime!);
+
+  if (requestedStartMinutes >= requestedEndMinutes) {
     throw new AppError("startTime must be earlier than endTime", 400);
   }
 
-  const day = getDayOfWeekFromDate(payload.date);
+  // =====================================================
+  // 5. BUILD DATES
+  // =====================================================
 
-  // Find staff working schedule for that weekday
+  const dates: Date[] = [];
+
+  for (let i = 0; i < totalDays; i++) {
+    const date = new Date(startDate.getTime() + i * 86400000);
+
+    dates.push(date);
+  }
+
+  // =====================================================
+  // 6. LOAD STAFF SCHEDULES
+  // =====================================================
+
   const schedules = await prisma.staffSchedule.findMany({
     where: {
       staffId,
-      day,
     },
     select: {
+      day: true,
       branchId: true,
       startTime: true,
       endTime: true,
     },
   });
 
-  if (schedules.length === 0) {
-    throw new AppError("Staff is not scheduled to work on this date", 400);
+  // =====================================================
+  // 7. PREPARE DAILY RECORDS
+  // =====================================================
+
+  const records: {
+    staffId: string;
+    type: StaffUnavailabilityType;
+    date: Date;
+    startTime: string;
+    endTime: string;
+    reason: string | null;
+  }[] = [];
+
+  for (const date of dates) {
+    const dateString = date.toISOString().slice(0, 10);
+    const day = getDayOfWeekFromDate(dateString);
+
+    const dailySchedules = schedules.filter((schedule) => schedule.day === day);
+
+    // Full-day leave on non-working days does not need a record.
+    if (dailySchedules.length === 0 && isFullDay) {
+      continue;
+    }
+
+    if (dailySchedules.length === 0) {
+      throw new AppError(
+        `Staff is not scheduled to work on ${dateString}`,
+        400,
+      );
+    }
+
+    let startTime: string;
+    let endTime: string;
+
+    if (isFullDay) {
+      const starts = dailySchedules.map((schedule) =>
+        timeToMinutes(schedule.startTime),
+      );
+
+      const ends = dailySchedules.map((schedule) =>
+        timeToMinutes(schedule.endTime),
+      );
+
+      const earliestStart = Math.min(...starts);
+      const latestEnd = Math.max(...ends);
+
+      const toTime = (minutes: number) => {
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+
+        return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+      };
+
+      startTime = toTime(earliestStart);
+      endTime = toTime(latestEnd);
+    } else {
+      const fitsWorkingSchedule = dailySchedules.some((schedule) => {
+        const workStart = timeToMinutes(schedule.startTime);
+
+        const workEnd = timeToMinutes(schedule.endTime);
+
+        return (
+          requestedStartMinutes >= workStart && requestedEndMinutes <= workEnd
+        );
+      });
+
+      if (!fitsWorkingSchedule) {
+        throw new AppError(
+          `Unavailability must be within staff working hours on ${dateString}`,
+          400,
+        );
+      }
+
+      startTime = payload.startTime!;
+      endTime = payload.endTime!;
+    }
+
+    records.push({
+      staffId,
+      type: payload.type,
+      date,
+      startTime,
+      endTime,
+      reason: payload.reason?.trim() || null,
+    });
   }
 
-  // Unavailability must fit inside at least one working period
-  const fitsWorkingSchedule = schedules.some((schedule) => {
-    const workStart = timeToMinutes(schedule.startTime);
-    const workEnd = timeToMinutes(schedule.endTime);
-
-    return startMinutes >= workStart && endMinutes <= workEnd;
-  });
-
-  if (!fitsWorkingSchedule) {
+  if (records.length === 0) {
     throw new AppError(
-      "Unavailability must be within staff working hours",
+      "No scheduled working days found in the selected date range",
       400,
     );
   }
 
-  const date = new Date(`${payload.date}T00:00:00.000Z`);
+  // =====================================================
+  // 8. CHECK EXISTING UNAVAILABILITY
+  // =====================================================
 
-  // Overlap check
   const existing = await prisma.staffUnavailability.findMany({
     where: {
       staffId,
-      date,
+      date: {
+        in: records.map((record) => record.date),
+      },
     },
     select: {
-      id: true,
+      date: true,
       startTime: true,
       endTime: true,
     },
   });
 
-  const hasOverlap = existing.some((item) => {
-    const existingStart = timeToMinutes(item.startTime);
-    const existingEnd = timeToMinutes(item.endTime);
+  for (const record of records) {
+    const recordStart = timeToMinutes(record.startTime);
+    const recordEnd = timeToMinutes(record.endTime);
 
-    return startMinutes < existingEnd && endMinutes > existingStart;
-  });
+    const hasOverlap = existing.some((item) => {
+      if (item.date.getTime() !== record.date.getTime()) {
+        return false;
+      }
 
-  if (hasOverlap) {
-    throw new AppError(
-      "Unavailability conflicts with an existing blocked period",
-      409,
-    );
+      return (
+        recordStart < timeToMinutes(item.endTime) &&
+        recordEnd > timeToMinutes(item.startTime)
+      );
+    });
+
+    if (hasOverlap) {
+      throw new AppError(
+        `Unavailability conflicts with an existing blocked period on ${record.date.toISOString().slice(0, 10)}`,
+        409,
+      );
+    }
   }
 
-  const result = await prisma.staffUnavailability.create({
-    data: {
+  // =====================================================
+  // 9. CHECK EXISTING APPOINTMENT CONFLICTS
+  // =====================================================
+
+  // =====================================================
+  // 9. CHECK EXISTING APPOINTMENT CONFLICTS
+  // =====================================================
+
+  const now = new Date();
+
+  const appointments = await prisma.appointment.findMany({
+    where: {
       staffId,
-      type: payload.type,
-      date,
-      startTime: payload.startTime,
-      endTime: payload.endTime,
-      reason: payload.reason?.trim() || null,
+      date: {
+        in: records.map((record) => record.date),
+      },
+      OR: [
+        {
+          appointmentStatus: {
+            in: ["RESERVED", "CONFIRMED"],
+          },
+        },
+        {
+          appointmentStatus: "PENDING_PAYMENT",
+          OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
+        },
+      ],
+    },
+    select: {
+      id: true,
+      date: true,
+      startTime: true,
+      endTime: true,
+      appointmentStatus: true,
     },
   });
 
+  for (const record of records) {
+    const recordDate = record.date.toISOString().slice(0, 10);
+
+    const recordStart = timeToMinutes(record.startTime);
+    const recordEnd = timeToMinutes(record.endTime);
+
+    const conflictingAppointment = appointments.find((appointment) => {
+      const appointmentDate = appointment.date.toISOString().slice(0, 10);
+
+      if (appointmentDate !== recordDate) {
+        return false;
+      }
+
+      const appointmentStart = timeToMinutes(appointment.startTime);
+
+      const appointmentEnd = timeToMinutes(appointment.endTime);
+
+      return recordStart < appointmentEnd && recordEnd > appointmentStart;
+    });
+
+    if (conflictingAppointment) {
+      throw new AppError(
+        `Staff has an existing ${conflictingAppointment.appointmentStatus} appointment on ${recordDate}`,
+        409,
+      );
+    }
+  }
+  // =====================================================
+  // 10. CREATE RECORDS
+  // =====================================================
+
+  const results = await prisma.$transaction(
+    records.map((record) =>
+      prisma.staffUnavailability.create({
+        data: record,
+      }),
+    ),
+  );
+
+  // =====================================================
+  // 11. RESPONSE
+  // =====================================================
+
   return {
-    id: result.id,
-    type: result.type,
-    date: payload.date,
-    startTime: result.startTime,
-    endTime: result.endTime,
-    reason: result.reason,
+    totalDays: results.length,
+    items: results.map((result) => ({
+      id: result.id,
+      type: result.type,
+      date: result.date.toISOString().slice(0, 10),
+      startTime: result.startTime,
+      endTime: result.endTime,
+      reason: result.reason,
+    })),
   };
 };
 
@@ -3716,11 +3973,12 @@ const updateStaffUnavailability = async (
     role: Role;
   },
 ) => {
-  const staff = await prisma.staff.findUnique({
-    where: {
-      id: staffId,
-    },
+  // =====================================================
+  // 1. FIND STAFF
+  // =====================================================
 
+  const staff = await prisma.staff.findUnique({
+    where: { id: staffId },
     include: {
       branches: {
         select: {
@@ -3734,13 +3992,15 @@ const updateStaffUnavailability = async (
     throw new AppError("Staff not found", 404);
   }
 
-  // Branch Manager scope check
+  // =====================================================
+  // 2. BRANCH MANAGER AUTHORIZATION
+  // =====================================================
+
   if (requester.role === Role.BRANCH_MANAGER) {
     const managerBranches = await prisma.branchManagerBranch.findMany({
       where: {
         userId: requester.userId,
       },
-
       select: {
         branchId: true,
       },
@@ -3750,17 +4010,23 @@ const updateStaffUnavailability = async (
       managerBranches.map((item) => item.branchId),
     );
 
-    const hasAccess = staff.branches.some((item) =>
-      allowedBranchIds.has(item.branchId),
-    );
+    // Staff-wide unavailability affects every assigned branch.
+    // Require access to all staff branches.
+    const hasAccess =
+      staff.branches.length > 0 &&
+      staff.branches.every((item) => allowedBranchIds.has(item.branchId));
 
     if (!hasAccess) {
       throw new AppError(
-        "You are not allowed to manage this staff member",
+        "You are not allowed to manage staff-wide unavailability",
         403,
       );
     }
   }
+
+  // =====================================================
+  // 3. FIND EXISTING UNAVAILABILITY
+  // =====================================================
 
   const existingUnavailability = await prisma.staffUnavailability.findFirst({
     where: {
@@ -3772,6 +4038,10 @@ const updateStaffUnavailability = async (
   if (!existingUnavailability) {
     throw new AppError("Staff unavailability not found", 404);
   }
+
+  // =====================================================
+  // 4. RESOLVE FINAL VALUES
+  // =====================================================
 
   const finalType = payload.type ?? existingUnavailability.type;
 
@@ -3787,13 +4057,39 @@ const updateStaffUnavailability = async (
       ? payload.reason.trim() || null
       : existingUnavailability.reason;
 
-  const startMinutes = timeToMinutes(finalStartTime);
+  // =====================================================
+  // 5. VALIDATE DATE AND TIME
+  // =====================================================
 
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(finalDateString)) {
+    throw new AppError("date must be in YYYY-MM-DD format", 400);
+  }
+
+  const finalDate = new Date(`${finalDateString}T00:00:00.000Z`);
+
+  if (
+    Number.isNaN(finalDate.getTime()) ||
+    finalDate.toISOString().slice(0, 10) !== finalDateString
+  ) {
+    throw new AppError("Invalid date", 400);
+  }
+
+  const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+  if (!timeRegex.test(finalStartTime) || !timeRegex.test(finalEndTime)) {
+    throw new AppError("Time must be in HH:mm format", 400);
+  }
+
+  const startMinutes = timeToMinutes(finalStartTime);
   const endMinutes = timeToMinutes(finalEndTime);
 
   if (startMinutes >= endMinutes) {
     throw new AppError("startTime must be earlier than endTime", 400);
   }
+
+  // =====================================================
+  // 6. VALIDATE STAFF WORKING SCHEDULE
+  // =====================================================
 
   const day = getDayOfWeekFromDate(finalDateString);
 
@@ -3802,7 +4098,6 @@ const updateStaffUnavailability = async (
       staffId,
       day,
     },
-
     select: {
       branchId: true,
       startTime: true,
@@ -3822,28 +4117,39 @@ const updateStaffUnavailability = async (
     return startMinutes >= workStart && endMinutes <= workEnd;
   });
 
-  if (!fitsWorkingSchedule) {
+  // Full-day LEAVE/TIME_OFF may span multiple working periods.
+  const isLeaveType = finalType === "LEAVE" || finalType === "TIME_OFF";
+
+  const coversAllSchedules =
+    isLeaveType &&
+    schedules.every((schedule) => {
+      const workStart = timeToMinutes(schedule.startTime);
+
+      const workEnd = timeToMinutes(schedule.endTime);
+
+      return startMinutes <= workStart && endMinutes >= workEnd;
+    });
+
+  if (!fitsWorkingSchedule && !coversAllSchedules) {
     throw new AppError(
-      "Unavailability must be within staff working hours",
+      "Unavailability must fit within a working period or cover all working periods for full-day leave",
       400,
     );
   }
 
-  const finalDate = new Date(`${finalDateString}T00:00:00.000Z`);
+  // =====================================================
+  // 7. CHECK OTHER UNAVAILABILITY RECORDS
+  // =====================================================
 
-  // Check overlap against OTHER records
   const otherUnavailability = await prisma.staffUnavailability.findMany({
     where: {
       staffId,
       date: finalDate,
-
       id: {
         not: unavailabilityId,
       },
     },
-
     select: {
-      id: true,
       startTime: true,
       endTime: true,
     },
@@ -3864,11 +4170,59 @@ const updateStaffUnavailability = async (
     );
   }
 
+  // =====================================================
+  // 8. CHECK EXISTING APPOINTMENT CONFLICTS
+  // =====================================================
+
+  const now = new Date();
+
+  const appointments = await prisma.appointment.findMany({
+    where: {
+      staffId,
+      date: finalDate,
+      OR: [
+        {
+          appointmentStatus: {
+            in: ["RESERVED", "CONFIRMED"],
+          },
+        },
+        {
+          appointmentStatus: "PENDING_PAYMENT",
+          OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
+        },
+      ],
+    },
+    select: {
+      id: true,
+      startTime: true,
+      endTime: true,
+      appointmentStatus: true,
+    },
+  });
+
+  const conflictingAppointment = appointments.find((appointment) => {
+    const appointmentStart = timeToMinutes(appointment.startTime);
+
+    const appointmentEnd = timeToMinutes(appointment.endTime);
+
+    return startMinutes < appointmentEnd && endMinutes > appointmentStart;
+  });
+
+  if (conflictingAppointment) {
+    throw new AppError(
+      `Staff has an existing ${conflictingAppointment.appointmentStatus} appointment on ${finalDateString}`,
+      409,
+    );
+  }
+
+  // =====================================================
+  // 9. UPDATE RECORD
+  // =====================================================
+
   const updated = await prisma.staffUnavailability.update({
     where: {
       id: unavailabilityId,
     },
-
     data: {
       type: finalType,
       date: finalDate,
@@ -3877,6 +4231,10 @@ const updateStaffUnavailability = async (
       reason: finalReason,
     },
   });
+
+  // =====================================================
+  // 10. RESPONSE — PRESERVE EXISTING FORMAT
+  // =====================================================
 
   return {
     id: updated.id,
@@ -4010,7 +4368,6 @@ const getMyAppointments = async (
     where: {
       userId,
     },
-
     select: {
       id: true,
       status: true,
@@ -4032,51 +4389,201 @@ const getMyAppointments = async (
   const page = Number(query.page ?? 1);
   const limit = Number(query.limit ?? 20);
 
-  if (page < 1) {
-    throw new AppError("page must be at least 1", 400);
+  if (!Number.isInteger(page) || page < 1) {
+    throw new AppError("page must be a positive integer", 400);
   }
 
-  if (limit < 1 || limit > 100) {
-    throw new AppError("limit must be between 1 and 100", 400);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new AppError("limit must be an integer between 1 and 100", 400);
   }
 
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 3. FILTERS
+  // 3. VALIDATE APPOINTMENT TYPE
   // =====================================================
+
+  const appointmentType = query.type;
+
+  if (
+    appointmentType !== undefined &&
+    appointmentType !== "UPCOMING" &&
+    appointmentType !== "HISTORY"
+  ) {
+    throw new AppError("type must be UPCOMING or HISTORY", 400);
+  }
+
+  // =====================================================
+  // 4. HONG KONG CURRENT DATE AND TIME — H01 FIX
+  // =====================================================
+
+  const now = new Date();
+
+  const hkParts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+
+  const getPart = (type: string): string =>
+    hkParts.find((part) => part.type === type)?.value ?? "";
+
+  const hkToday = [getPart("year"), getPart("month"), getPart("day")].join("-");
+
+  const hkTime = `${getPart("hour")}:${getPart("minute")}`;
+
+  // Appointment.date is assumed to be stored as
+  // a calendar date normalized to UTC midnight.
+  const todayDate = new Date(`${hkToday}T00:00:00.000Z`);
+
+  // =====================================================
+  // 5. APPOINTMENT STATUS GROUPS
+  // =====================================================
+
+  const activeStatuses: AppointmentStatus[] = [
+    AppointmentStatus.PENDING_PAYMENT,
+    AppointmentStatus.RESERVED,
+    AppointmentStatus.CONFIRMED,
+  ];
+
+  const historyStatuses: AppointmentStatus[] = [
+    AppointmentStatus.COMPLETED,
+    AppointmentStatus.CANCELLED,
+    AppointmentStatus.NO_SHOW,
+    AppointmentStatus.EXPIRED,
+  ];
+
+  // =====================================================
+  // 6. BUILD FILTERS
+  // =====================================================
+
+  const filters: Prisma.AppointmentWhereInput[] = [
+    {
+      staffId: staff.id,
+    },
+  ];
+
+  // Preserve existing date filter.
+  if (query.date) {
+    const date = new Date(`${query.date}T00:00:00.000Z`);
+
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(query.date) ||
+      Number.isNaN(date.getTime()) ||
+      date.toISOString().slice(0, 10) !== query.date
+    ) {
+      throw new AppError("date must be a valid YYYY-MM-DD date", 400);
+    }
+
+    filters.push({
+      date,
+    });
+  }
+
+  // Preserve existing appointment status filter.
+  if (query.status) {
+    if (
+      !Object.values(AppointmentStatus).includes(
+        query.status as AppointmentStatus,
+      )
+    ) {
+      throw new AppError("Invalid appointment status", 400);
+    }
+
+    filters.push({
+      appointmentStatus: query.status as AppointmentStatus,
+    });
+  }
+
+  // =====================================================
+  // 7. UPCOMING / HISTORY FILTER — H01 FIX
+  // =====================================================
+
+  if (appointmentType === "UPCOMING") {
+    filters.push({
+      AND: [
+        {
+          appointmentStatus: {
+            in: activeStatuses,
+          },
+        },
+        {
+          OR: [
+            {
+              date: {
+                gt: todayDate,
+              },
+            },
+            {
+              date: todayDate,
+              endTime: {
+                gt: hkTime,
+              },
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  if (appointmentType === "HISTORY") {
+    filters.push({
+      OR: [
+        {
+          appointmentStatus: {
+            in: historyStatuses,
+          },
+        },
+        {
+          AND: [
+            {
+              appointmentStatus: {
+                in: activeStatuses,
+              },
+            },
+            {
+              OR: [
+                {
+                  date: {
+                    lt: todayDate,
+                  },
+                },
+                {
+                  date: todayDate,
+                  endTime: {
+                    lte: hkTime,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  }
 
   const where: Prisma.AppointmentWhereInput = {
-    staffId: staff.id,
+    AND: filters,
   };
 
-  if (query.date) {
-    where.date = new Date(`${query.date}T00:00:00.000Z`);
-  }
-
-  if (query.status) {
-    where.appointmentStatus = query.status as AppointmentStatus;
-  }
-
   // =====================================================
-  // 4. FETCH APPOINTMENTS
+  // 8. FETCH APPOINTMENTS
   // =====================================================
 
   const [appointments, total] = await prisma.$transaction([
     prisma.appointment.findMany({
       where,
-
       skip,
       take: limit,
 
-      orderBy: [
-        {
-          date: "asc",
-        },
-        {
-          startTime: "asc",
-        },
-      ],
+      orderBy:
+        appointmentType === "HISTORY"
+          ? [{ date: "desc" }, { startTime: "desc" }]
+          : [{ date: "asc" }, { startTime: "asc" }],
 
       select: {
         id: true,
@@ -4119,7 +4626,7 @@ const getMyAppointments = async (
   ]);
 
   // =====================================================
-  // 5. FETCH RELATED SERVICE/PACKAGE TRANSLATIONS
+  // 9. FETCH RELATED SERVICE/PACKAGE TRANSLATIONS
   // =====================================================
 
   const serviceIds = [
@@ -4171,7 +4678,7 @@ const getMyAppointments = async (
   ]);
 
   // =====================================================
-  // 6. BUILD LOCALIZED NAME MAPS
+  // 10. BUILD LOCALIZED NAME MAPS
   // =====================================================
 
   const serviceNameMap = new Map<string, string>();
@@ -4203,7 +4710,7 @@ const getMyAppointments = async (
   }
 
   // =====================================================
-  // 7. BUILD LOCALIZED RESPONSE
+  // 11. BUILD LOCALIZED RESPONSE
   // =====================================================
 
   const items = appointments.map((appointment) => {
@@ -4268,13 +4775,13 @@ const getMyAppointments = async (
   });
 
   // =====================================================
-  // 8. PAGINATION
+  // 12. PAGINATION
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   // =====================================================
-  // 9. FINAL RESPONSE
+  // 13. FINAL RESPONSE
   // =====================================================
 
   return {

@@ -127,9 +127,18 @@ const getBusinessHours = catchAsync(async (req: Request, res: Response) => {
 });
 
 const updateBusinessHours = catchAsync(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AppError("Unauthorized", 401);
+  }
+
   const branchId = req.params.branchId as string;
 
-  const result = await branchService.updateBusinessHours(branchId, req.body);
+  const result = await branchService.updateBusinessHours(
+    branchId,
+    req.body,
+    req.user.userId,
+    req.user.role,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

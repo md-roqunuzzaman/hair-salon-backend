@@ -1,5 +1,19 @@
 # Cloudflare deployment
 
+## Schema lookup indexes — v32, local preparation 2026-11-02
+
+SQLite `0032_branch_location_outbox_lock_indexes.sql` mirrors the owner's new Prisma indexes: `Branch(status, latitude, longitude)` and `EmailOutbox(status, lockedUntil)`. It creates two non-unique indexes only; no rows, credentials, delivery history, financial values or constraints are rewritten. v1-v31 remain immutable. Build registration, generated Worker schema, schema parity and the release verifier include v32.
+
+Disposable migration tests verify exact index columns, an injected failure after index creation rolling back both indexes and the migration ledger, preservation of every existing application-table row, successful recovery, stable repeated initialization and foreign keys. Existing historical migration checks remain in place. Preparation passed TypeScript, client generation, fresh SQLite schema parity, v32 populated upgrade/recovery and production fixture isolation.
+
+The two existing PostgreSQL candidate folders are retained verbatim: `20261102082512_email_outbox_stale_lock_index` is empty and `20261102083831_email_outbox_stale_lock_index` creates the outbox index. Their names alone do not mean the index is created twice. No PostgreSQL history was edited or applied. The new Branch index has no accompanying PostgreSQL migration in the current workspace; prepare that separately before a Node/PostgreSQL rollout. Workers use only the SQLite v32 migration.
+
+**Scope is schema readiness only.** The owner confirmed application edits are still ongoing and requested a separate schema report. The full regression started during preparation was interrupted after that scope clarification and is not a passing combined-release result. The independently run 52 Node security tests passed their checked snapshot; they do not certify subsequent application edits. Preserve all shared changes, finish them and rerun full regression/security/preparation on a stable snapshot before approving deployment. The generated artifact/manifest is packaging evidence, not full production approval.
+
+Use `npm run cloudflare:prepare:staging` and `npm run cloudflare:check:staging` for local checks. These do not deploy. A separately approved rollout must preserve the existing namespace/singleton, verify a fresh usable backup and live ledger, then let Worker initialization apply only pending SQLite versions. After v32, retain a v32-compatible recovery artifact; an older migration checker rejects the newer ledger. Index creation can add startup work proportional to live table size, which disposable tests do not measure.
+
+No live database, deployment, secret or delivery-setting change is included. The existing staging delivery flag remains true and production false. Evidence is ignored under `node_modules/.cloudflare-test/schema-index-release/`.
+
 ## S8 outer Worker error headers — locally verified, 2026-11-02
 
 The outer-error release blocker is fixed in `runtime/errors.mjs`. `failureResponse()` adds the same five headers as Express Helmet: `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: no-referrer`, `Strict-Transport-Security: max-age=31536000; includeSubDomains`, and `Cross-Origin-Opener-Policy: same-origin`. Error normalization, redacted JSON bodies, status codes and content type are unchanged. No CORS, cookie, CSP or CORP policy is added to outer responses. Express middleware and Stripe handling are unchanged.

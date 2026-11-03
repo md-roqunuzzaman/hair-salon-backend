@@ -1,6 +1,6 @@
 import { reconcileUnappliedCapture } from "./unapplied-capture.js";
 import { reconcileApprovedStripeRefund } from "../refund-request/refund-request.processing.js";
-import { reconcileRefundAllocation } from '../refund-request/refund-allocation.processing.js';
+import { reconcileRefundAllocation } from "../refund-request/refund-allocation.processing.js";
 import {
   getOrCreateLateGroupPurchaseRefund,
   ensureLateGroupPurchaseRefund,
@@ -43,7 +43,10 @@ import {
 } from "./payment.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
-import { getPaymentRefundEligibility } from "../cancellation-refund/cancellation-refund.service.js";
+import {
+  getPaymentRefundEligibility,
+  getPaymentsRefundEligibilityBatch,
+} from "../cancellation-refund/cancellation-refund.service.js";
 
 const createStripeIntent = async (
   customerId: string,
@@ -394,17 +397,40 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
     ["refund.created", "refund.updated", "refund.failed"].includes(event.type)
   ) {
     const providerRefund = event.data.object as Stripe.Refund;
-    const processed=await prisma.stripeWebhookEvent.findUnique({where:{id:event.id}});
-    if(processed)return {received:true};
-    const allocation=await prisma.refundAllocation.findFirst({where:{OR:[{refund:{providerRefundId:providerRefund.id}},...(providerRefund.metadata?.refundId?[{refundId:providerRefund.metadata.refundId}]:[]),...(providerRefund.metadata?.refundAllocationId?[{id:providerRefund.metadata.refundAllocationId}]:[])]}});
-    if(allocation){
+    const processed = await prisma.stripeWebhookEvent.findUnique({
+      where: { id: event.id },
+    });
+    if (processed) return { received: true };
+    const allocation = await prisma.refundAllocation.findFirst({
+      where: {
+        OR: [
+          { refund: { providerRefundId: providerRefund.id } },
+          ...(providerRefund.metadata?.refundId
+            ? [{ refundId: providerRefund.metadata.refundId }]
+            : []),
+          ...(providerRefund.metadata?.refundAllocationId
+            ? [{ id: providerRefund.metadata.refundAllocationId }]
+            : []),
+        ],
+      },
+    });
+    if (allocation) {
       await reconcileRefundAllocation(allocation.id);
-      await prisma.stripeWebhookEvent.upsert({where:{id:event.id},create:{id:event.id,type:event.type},update:{}});
-      return {received:true};
+      await prisma.stripeWebhookEvent.upsert({
+        where: { id: event.id },
+        create: { id: event.id, type: event.type },
+        update: {},
+      });
+      return { received: true };
     }
     const local = await prisma.refund.findFirst({
       where: {
-        reason: {in:["LATE_GROUP_PURCHASE_PAYMENT","LATE_PAYMENT_AFTER_APPOINTMENT_EXPIRY"]},
+        reason: {
+          in: [
+            "LATE_GROUP_PURCHASE_PAYMENT",
+            "LATE_PAYMENT_AFTER_APPOINTMENT_EXPIRY",
+          ],
+        },
         OR: [
           { providerRefundId: providerRefund.id },
           ...(providerRefund.metadata?.refundId
@@ -418,7 +444,11 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       const intent = await stripe.paymentIntents.retrieve(
         local.payment.providerPaymentId,
       );
-      if(local.payment.appointmentId||intent.metadata?.paymentStage==='REMAINING')return reconcileUnappliedCapture(local.paymentId,event);
+      if (
+        local.payment.appointmentId ||
+        intent.metadata?.paymentStage === "REMAINING"
+      )
+        return reconcileUnappliedCapture(local.paymentId, event);
       return handleGroupPurchaseStripeEvent(event, intent);
     }
     const approved = await prisma.refund.findFirst({
@@ -530,7 +560,8 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
     // ===================================================
 
     const transactionResult = await prisma.$transaction(async (tx) => {
-      if(payment.appointmentId)await tx.$queryRaw`SELECT "id" FROM "Appointment" WHERE "id"=${payment.appointmentId} FOR UPDATE`;
+      if (payment.appointmentId)
+        await tx.$queryRaw`SELECT "id" FROM "Appointment" WHERE "id"=${payment.appointmentId} FOR UPDATE`;
       const existingEvent = await tx.stripeWebhookEvent.findUnique({
         where: {
           id: event.id,
@@ -575,23 +606,65 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       }
 
       let lateAppointmentPayment: LateAppointmentPayment | null = null;
-      const rejectAppointmentCapture=async()=>{
-        await getOrCreateLateGroupPurchaseRefund(currentPayment.id,currentPayment.amount,tx);
-        return {alreadyProcessed:false,lateAppointmentPayment:{paymentId:currentPayment.id,appointmentId:currentPayment.appointmentId!,customerId:currentPayment.customerId,amount:Number(currentPayment.amount),currency:currentPayment.currency,providerPaymentId:paymentIntent.id}};
+      const rejectAppointmentCapture = async () => {
+        await getOrCreateLateGroupPurchaseRefund(
+          currentPayment.id,
+          currentPayment.amount,
+          tx,
+        );
+        return {
+          alreadyProcessed: false,
+          lateAppointmentPayment: {
+            paymentId: currentPayment.id,
+            appointmentId: currentPayment.appointmentId!,
+            customerId: currentPayment.customerId,
+            amount: Number(currentPayment.amount),
+            currency: currentPayment.currency,
+            providerPaymentId: paymentIntent.id,
+          },
+        };
       };
-      if(currentPayment.appointmentId){
-        if(paymentIntent.metadata?.paymentId!==currentPayment.id||paymentIntent.metadata?.appointmentId!==currentPayment.appointmentId||paymentIntent.metadata?.customerId!==currentPayment.customerId||paymentIntent.metadata?.purpose!==currentPayment.purpose)throw new AppError('Invalid appointment Stripe payment identity',409);
-        const pendingCapture=await tx.refund.findFirst({where:{paymentId:currentPayment.id,reason:'LATE_PAYMENT_AFTER_APPOINTMENT_EXPIRY'}});
-        const settled=['PAID','PARTIALLY_REFUNDED','REFUNDED'].includes(currentPayment.status);
-        if(pendingCapture||settled){
-          if(pendingCapture)return rejectAppointmentCapture();
-          await tx.stripeWebhookEvent.create({data:{id:event.id,type:event.type}});
-          return {alreadyProcessed:true,lateAppointmentPayment:null as LateAppointmentPayment|null};
+      if (currentPayment.appointmentId) {
+        if (
+          paymentIntent.metadata?.paymentId !== currentPayment.id ||
+          paymentIntent.metadata?.appointmentId !==
+            currentPayment.appointmentId ||
+          paymentIntent.metadata?.customerId !== currentPayment.customerId ||
+          paymentIntent.metadata?.purpose !== currentPayment.purpose
+        )
+          throw new AppError(
+            "Invalid appointment Stripe payment identity",
+            409,
+          );
+        const pendingCapture = await tx.refund.findFirst({
+          where: {
+            paymentId: currentPayment.id,
+            reason: "LATE_PAYMENT_AFTER_APPOINTMENT_EXPIRY",
+          },
+        });
+        const settled = ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(
+          currentPayment.status,
+        );
+        if (pendingCapture || settled) {
+          if (pendingCapture) return rejectAppointmentCapture();
+          await tx.stripeWebhookEvent.create({
+            data: { id: event.id, type: event.type },
+          });
+          return {
+            alreadyProcessed: true,
+            lateAppointmentPayment: null as LateAppointmentPayment | null,
+          };
         }
-        const other=await tx.payment.findFirst({where:{appointmentId:currentPayment.appointmentId,purpose:currentPayment.purpose,id:{not:currentPayment.id},status:{in:['PAID','PARTIALLY_REFUNDED','REFUNDED']}}});
-        if(other)return rejectAppointmentCapture();
+        const other = await tx.payment.findFirst({
+          where: {
+            appointmentId: currentPayment.appointmentId,
+            purpose: currentPayment.purpose,
+            id: { not: currentPayment.id },
+            status: { in: ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"] },
+          },
+        });
+        if (other) return rejectAppointmentCapture();
       }
-
 
       // ===============================================
       // APPOINTMENT PAYMENT
@@ -1138,7 +1211,12 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       // MARK WEBHOOK PROCESSED
       // ===============================================
 
-      if(lateAppointmentPayment)await getOrCreateLateGroupPurchaseRefund(currentPayment.id,currentPayment.amount,tx);
+      if (lateAppointmentPayment)
+        await getOrCreateLateGroupPurchaseRefund(
+          currentPayment.id,
+          currentPayment.amount,
+          tx,
+        );
       if (!lateAppointmentPayment) {
         await tx.stripeWebhookEvent.create({
           data: {
@@ -1170,7 +1248,8 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
     // LATE APPOINTMENT PAYMENT AUTO-REFUND
     // ===================================================
 
-    if (latePayment) return reconcileUnappliedCapture(latePayment.paymentId,event);
+    if (latePayment)
+      return reconcileUnappliedCapture(latePayment.paymentId, event);
 
     return {
       received: true as const,
@@ -2835,7 +2914,7 @@ const handleGroupPurchaseRemainingStripeEvent = async (
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const settlement=await prisma.$transaction(
+      const settlement = await prisma.$transaction(
         async (tx) => {
           await tx.$queryRaw`
             SELECT "id"
@@ -2880,16 +2959,35 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             throw new AppError("Payment or purchase not found", 404);
           }
 
-          const captureRefund=await tx.refund.findFirst({where:{paymentId:currentPayment.id,reason:'LATE_GROUP_PURCHASE_PAYMENT'}});
-          if(captureRefund)return {received:true as const,refundRequired:true};
-          if(['PAID','PARTIALLY_REFUNDED','REFUNDED'].includes(currentPayment.status)){
-            await tx.stripeWebhookEvent.create({data:{id:event.id,type:event.type}});
-            return {received:true as const};
+          const captureRefund = await tx.refund.findFirst({
+            where: {
+              paymentId: currentPayment.id,
+              reason: "LATE_GROUP_PURCHASE_PAYMENT",
+            },
+          });
+          if (captureRefund)
+            return { received: true as const, refundRequired: true };
+          if (
+            ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(
+              currentPayment.status,
+            )
+          ) {
+            await tx.stripeWebhookEvent.create({
+              data: { id: event.id, type: event.type },
+            });
+            return { received: true as const };
           }
-          const rejectCapture=async()=>{
-            await getOrCreateLateGroupPurchaseRefund(currentPayment.id,currentPayment.amount,tx);
-            await tx.payment.update({where:{id:currentPayment.id},data:{status:'PAID',paidAt:new Date(),failedAt:null}});
-            return {received:true as const,refundRequired:true};
+          const rejectCapture = async () => {
+            await getOrCreateLateGroupPurchaseRefund(
+              currentPayment.id,
+              currentPayment.amount,
+              tx,
+            );
+            await tx.payment.update({
+              where: { id: currentPayment.id },
+              data: { status: "PAID", paidAt: new Date(), failedAt: null },
+            });
+            return { received: true as const, refundRequired: true };
           };
           // =================================================
           // 5. VALIDATE PURCHASE
@@ -3096,7 +3194,8 @@ const handleGroupPurchaseRemainingStripeEvent = async (
           timeout: 15000,
         },
       );
-      if('refundRequired' in settlement&&settlement.refundRequired)return reconcileUnappliedCapture(payment.id,event);
+      if ("refundRequired" in settlement && settlement.refundRequired)
+        return reconcileUnappliedCapture(payment.id, event);
       return settlement;
     } catch (error) {
       if (
@@ -3245,6 +3344,13 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
         createdAt: true,
         purpose: true,
         groupPurchaseId: true,
+
+        // Fallback order number from appointment
+        appointment: {
+          select: {
+            orderNumber: true,
+          },
+        },
       },
     }),
 
@@ -3279,7 +3385,7 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
       : [];
 
   // =====================================================
-  // 5. REFUND AMOUNT LOOKUP MAP
+  // 5. REFUNDED AMOUNT MAP
   // =====================================================
 
   const refundedAmountMap = new Map<string, number>();
@@ -3289,72 +3395,81 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   }
 
   // =====================================================
-  // 6. PAYMENT LABEL MAPPING
+  // 6. PAYMENT LABELS
   // =====================================================
 
   const paymentLabels: Record<PaymentPurpose, string> = {
     [PaymentPurpose.APPOINTMENT]: "Appointment Payment",
-
     [PaymentPurpose.GROUP_PURCHASE]: "Group Purchase",
-
     [PaymentPurpose.WALLET_TOP_UP]: "Wallet Top Up",
-
     [PaymentPurpose.APPOINTMENT_DEPOSIT]: "Appointment Deposit",
-
     [PaymentPurpose.APPOINTMENT_REMAINING]: "Appointment Remaining Payment",
   };
 
   // =====================================================
-  // 7. BUILD PAYMENT HISTORY WITH REFUND ELIGIBILITY
+  // 7. BATCH REFUND ELIGIBILITY
   // =====================================================
 
-  const items: IMyPaymentItem[] = await Promise.all(
-    payments.map(async (payment) => {
-      const refundEligibility = await getPaymentRefundEligibility(customerId, {
-        id: payment.id,
-        purpose: payment.purpose,
-        status: payment.status,
-        appointmentId: payment.appointmentId,
-        groupPurchaseId: payment.groupPurchaseId,
-      });
-
-      return {
-        id: payment.id,
-
-        orderNumber: payment.orderNumber,
-
-        amount: Number(payment.amount),
-
-        currency: payment.currency,
-
-        paymentStatus: payment.status,
-
-        provider: payment.provider,
-
-        providerPaymentId: payment.providerPaymentId,
-
-        appointmentId: payment.appointmentId,
-
-        createdAt: payment.createdAt,
-
-        purpose: payment.purpose,
-
-        groupPurchaseId: payment.groupPurchaseId,
-
-        label: paymentLabels[payment.purpose] ?? "Payment",
-
-        refundedAmount: refundedAmountMap.get(payment.id) ?? 0,
-
-        // G7 - Refund Eligibility
-        canRefund: refundEligibility.canRefund,
-
-        refundBlockedReason: refundEligibility.refundBlockedReason,
-      };
-    }),
+  const eligibilityMap = await getPaymentsRefundEligibilityBatch(
+    customerId,
+    payments.map((payment) => ({
+      id: payment.id,
+      purpose: payment.purpose,
+      status: payment.status,
+      appointmentId: payment.appointmentId,
+      groupPurchaseId: payment.groupPurchaseId,
+    })),
   );
 
   // =====================================================
-  // 8. PAGINATION RESPONSE
+  // 8. BUILD PAYMENT HISTORY
+  // =====================================================
+
+  const items: IMyPaymentItem[] = payments.map((payment) => {
+    const refundEligibility = eligibilityMap.get(payment.id);
+
+    if (!refundEligibility) {
+      throw new AppError("PAYMENT_REFUND_ELIGIBILITY_MISSING", 500);
+    }
+
+    return {
+      id: payment.id,
+
+      // Prefer Payment order number.
+      // Fallback to linked Appointment order number.
+      orderNumber:
+        payment.orderNumber ?? payment.appointment?.orderNumber ?? null,
+
+      amount: Number(payment.amount),
+
+      currency: payment.currency,
+
+      paymentStatus: payment.status,
+
+      provider: payment.provider,
+
+      providerPaymentId: payment.providerPaymentId,
+
+      appointmentId: payment.appointmentId,
+
+      createdAt: payment.createdAt,
+
+      purpose: payment.purpose,
+
+      groupPurchaseId: payment.groupPurchaseId,
+
+      label: paymentLabels[payment.purpose] ?? "Payment",
+
+      refundedAmount: refundedAmountMap.get(payment.id) ?? 0,
+
+      canRefund: refundEligibility.canRefund,
+
+      refundBlockedReason: refundEligibility.refundBlockedReason,
+    };
+  });
+
+  // =====================================================
+  // 9. PAGINATION RESPONSE
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);

@@ -424,7 +424,6 @@ const getNearbyBranchesValidationSchema = z.object({
       .number()
       .finite()
       .positive("radiusKm must be greater than 0")
-      .max(100, "radiusKm cannot exceed 100")
       .default(10),
 
     page: z.coerce.number().int().min(1, "Page must be at least 1").default(1),

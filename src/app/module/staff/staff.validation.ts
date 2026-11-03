@@ -132,17 +132,160 @@ const updateStaffScheduleValidationSchema = z.object({
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 const createStaffUnavailabilityValidationSchema = z.object({
-  body: z.object({
-    type: z.enum(["BREAK", "TIME_OFF", "LEAVE", "BLOCKED"]),
+  body: z
+    .object({
+      type: z.enum(["BREAK", "TIME_OFF", "LEAVE", "BLOCKED"]),
 
-    date: z.string().regex(dateRegex, "date must be in YYYY-MM-DD format"),
+      // Existing single-day support
+      date: z
+        .string()
+        .regex(dateRegex, "date must be in YYYY-MM-DD format")
+        .optional(),
 
-    startTime: z.string().regex(timeRegex, "startTime must be in HH:mm format"),
+      startTime: z
+        .string()
+        .regex(timeRegex, "startTime must be in HH:mm format")
+        .optional(),
 
-    endTime: z.string().regex(timeRegex, "endTime must be in HH:mm format"),
+      endTime: z
+        .string()
+        .regex(timeRegex, "endTime must be in HH:mm format")
+        .optional(),
 
-    reason: z.string().max(500).optional(),
-  }),
+      // New multiple-day support
+      startDate: z
+        .string()
+        .regex(dateRegex, "startDate must be in YYYY-MM-DD format")
+        .optional(),
+
+      endDate: z
+        .string()
+        .regex(dateRegex, "endDate must be in YYYY-MM-DD format")
+        .optional(),
+
+      fullDay: z.boolean().optional(),
+
+      reason: z.string().trim().max(500).optional(),
+    })
+    .superRefine((data, ctx) => {
+      const addError = (path: string, message: string) => {
+        ctx.addIssue({
+          code: "custom",
+          path: [path],
+          message,
+        });
+      };
+
+      const parseDate = (value: string | undefined) => {
+        if (!value || !dateRegex.test(value)) return null;
+
+        const date = new Date(`${value}T00:00:00.000Z`);
+
+        if (
+          Number.isNaN(date.getTime()) ||
+          date.toISOString().slice(0, 10) !== value
+        ) {
+          return null;
+        }
+
+        return date;
+      };
+
+      // ---------------------------------------------
+      // Date validation
+      // ---------------------------------------------
+
+      if (data.date && data.startDate) {
+        addError("date", "Use either date or startDate, not both");
+      }
+
+      if (!data.date && !data.startDate) {
+        addError("date", "date or startDate is required");
+      }
+
+      if (data.endDate && !data.startDate) {
+        addError("endDate", "startDate is required when endDate is provided");
+      }
+
+      for (const field of ["date", "startDate", "endDate"] as const) {
+        const value = data[field];
+
+        if (value && !parseDate(value)) {
+          addError(field, `${field} must be a valid calendar date`);
+        }
+      }
+
+      const start = parseDate(data.startDate ?? data.date);
+      const end = parseDate(data.endDate ?? data.startDate ?? data.date);
+
+      if (start && end) {
+        if (start > end) {
+          addError("endDate", "endDate must not be earlier than startDate");
+        } else {
+          const totalDays =
+            Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+
+          if (totalDays > 31) {
+            addError(
+              "endDate",
+              "Unavailability duration cannot exceed 31 days",
+            );
+          }
+
+          if (totalDays > 1 && !["LEAVE", "TIME_OFF"].includes(data.type)) {
+            addError(
+              "type",
+              "Multiple-day unavailability is only supported for LEAVE and TIME_OFF",
+            );
+          }
+        }
+      }
+
+      // ---------------------------------------------
+      // Full-day validation
+      // ---------------------------------------------
+
+      if (data.fullDay === true) {
+        if (!["LEAVE", "TIME_OFF"].includes(data.type)) {
+          addError(
+            "fullDay",
+            "Full-day unavailability is only supported for LEAVE and TIME_OFF",
+          );
+        }
+
+        if (data.startTime || data.endTime) {
+          addError(
+            "fullDay",
+            "Do not provide startTime or endTime for full-day leave",
+          );
+        }
+      } else {
+        // Existing time-based behavior
+
+        if (!data.startTime) {
+          addError("startTime", "startTime is required");
+        }
+
+        if (!data.endTime) {
+          addError("endTime", "endTime is required");
+        }
+
+        if (data.startTime && data.endTime) {
+          const toMinutes = (time: string) => {
+            const [hours, minutes] = time.split(":").map(Number);
+            return hours * 60 + minutes;
+          };
+
+          if (
+            timeRegex.test(data.startTime) &&
+            timeRegex.test(data.endTime) &&
+            toMinutes(data.startTime) >= toMinutes(data.endTime)
+          ) {
+            addError("endTime", "endTime must be later than startTime");
+          }
+        }
+      }
+    }),
 });
 
 const updateStaffUnavailabilityValidationSchema = z.object({

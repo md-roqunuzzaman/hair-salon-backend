@@ -30,6 +30,8 @@ model Branch {
   policyPurchases GroupPurchase[] @relation("PurchasePolicyBranch")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+
+  @@index([status, latitude, longitude])
 }
 
 model BranchBusinessHour {
@@ -44,7 +46,8 @@ model BranchBusinessHour {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch Branch                @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  breaks BranchBusinessBreak[]
 
   @@unique([branchId, day])
 }
@@ -56,8 +59,8 @@ model BranchBookingPolicy {
   slotIntervalMinutes         Int                @default(5)
   minimumBookingNoticeMinutes Int                @default(120)
   maximumAdvanceBookingDays   Int                @default(30)
-  cancellationCutoffMinutes     Int                @default(720)
-  rescheduleCutoffMinutes       Int                @default(720)
+  cancellationCutoffMinutes   Int                @default(720)
+  rescheduleCutoffMinutes     Int                @default(720)
   reserveExpiryRule           ReserveExpiryRule  @default(APPOINTMENT_TIME)
   depositEnabled              Boolean            @default(true)
   depositPercentage           Decimal?           @db.Decimal(5, 2)
@@ -81,4 +84,16 @@ model BranchManagerBranch {
 
   @@id([userId, branchId])
   @@index([branchId])
+}
+
+model BranchBusinessBreak {
+  id             String @id @default(uuid())
+  businessHourId String
+
+  startTime String
+  endTime   String
+
+  businessHour BranchBusinessHour @relation(fields: [businessHourId], references: [id], onDelete: Cascade)
+
+  @@index([businessHourId])
 }

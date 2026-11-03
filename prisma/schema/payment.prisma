@@ -29,8 +29,8 @@ model Payment {
   groupPurchase        GroupPurchase? @relation(fields: [groupPurchaseId], references: [id], onDelete: Restrict)
   settledGroupPurchase GroupPurchase? @relation("GroupPurchaseSettlement")
 
-  refunds Refund[]
-  refundAllocations RefundAllocation[]
+  refunds            Refund[]
+  refundAllocations  RefundAllocation[]
   walletTransactions WalletTransaction[]
 
   walletTopupId String?
@@ -76,9 +76,9 @@ model Refund {
 
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  refundRequest RefundRequest?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  refundRequest    RefundRequest?
   refundAllocation RefundAllocation?
 
   @@index([paymentId])

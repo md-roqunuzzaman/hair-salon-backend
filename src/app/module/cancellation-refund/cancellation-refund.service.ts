@@ -22,9 +22,13 @@ import {
 } from "./cancellation-refund.interface.js";
 import { policyTimeMinutes } from "./policy-time.js";
 import { purchaseExpired } from "./policy.snapshot.js";
-import { groupRefundFunding, allocateRefund } from '../refund-request/refund-allocation.plan.js';
-import { randomUUID } from 'node:crypto';
-import { PaymentProvider } from '../../../../generated/prisma/enums.js';
+import {
+  groupRefundFunding,
+  allocateRefund,
+} from "../refund-request/refund-allocation.plan.js";
+import { randomUUID } from "node:crypto";
+import { PaymentProvider } from "../../../../generated/prisma/enums.js";
+import { walletPaymentsFundingBatch } from "../wallet/wallet-payment-ledger.js";
 const active = ["PENDING", "APPROVED", "PROCESSING"] as const;
 const signature = (value: unknown) =>
   createHmac("sha256", config.jwt_access_secret)
@@ -90,14 +94,19 @@ async function funding(tx: Prisma.TransactionClient, payments: any[]) {
     : null;
   return { payment, pending };
 }
-async function appointmentEvaluation(
+
+async function loadAppointmentRefundBatch(
   tx: Prisma.TransactionClient,
-  id: string,
-  userId: string,
-  role: string,
+  appointmentIds: string[],
 ) {
-  const appointment = await tx.appointment.findUnique({
-    where: { id },
+  const ids = [...new Set(appointmentIds)];
+
+  const appointments = await tx.appointment.findMany({
+    where: {
+      id: {
+        in: ids,
+      },
+    },
     include: {
       payments: {
         include: {
@@ -108,11 +117,359 @@ async function appointmentEvaluation(
     },
   });
 
+  type AppointmentWithRefundData = (typeof appointments)[number];
+
+  const appointmentMap = new Map<string, AppointmentWithRefundData>(
+    appointments.map((appointment) => [appointment.id, appointment]),
+  );
+
+  const eligiblePaymentIds = appointments.flatMap((appointment) => {
+    if (appointment.groupPurchaseId !== null) {
+      return [];
+    }
+
+    return appointment.payments
+      .filter(
+        (payment) =>
+          ["APPOINTMENT", "APPOINTMENT_DEPOSIT"].includes(payment.purpose) &&
+          ["STRIPE", "WALLET"].includes(payment.provider) &&
+          ["PAID", "PARTIALLY_REFUNDED"].includes(payment.status),
+      )
+      .map((payment) => payment.id);
+  });
+
+  const pendingRequests =
+    eligiblePaymentIds.length > 0
+      ? await tx.refundRequest.findMany({
+          where: {
+            paymentId: {
+              in: eligiblePaymentIds,
+            },
+            status: {
+              in: ["PENDING", "APPROVED", "PROCESSING"],
+            },
+          },
+          select: {
+            paymentId: true,
+          },
+        })
+      : [];
+
+  const pendingPaymentIds = new Set<string>(
+    pendingRequests.map((request) => request.paymentId),
+  );
+
+  return {
+    appointments: appointmentMap,
+    pendingPaymentIds,
+  };
+}
+
+async function loadGroupRefundBatch(
+  tx: Prisma.TransactionClient,
+  purchaseIds: string[],
+) {
+  // =====================================================
+  // 1. UNIQUE PURCHASE IDS
+  // =====================================================
+
+  const ids = [...new Set(purchaseIds)];
+
+  // =====================================================
+  // 2. BATCH LOAD PURCHASES
+  // =====================================================
+
+  const purchases = ids.length
+    ? await tx.groupPurchase.findMany({
+        where: {
+          id: { in: ids },
+        },
+        include: {
+          appointments: true,
+          payments: {
+            include: {
+              refunds: true,
+            },
+            orderBy: [{ paidAt: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+          },
+        },
+      })
+    : [];
+
+  type Purchase = (typeof purchases)[number];
+  type Payment = Purchase["payments"][number];
+
+  const purchaseMap = new Map<string, Purchase>(
+    purchases.map((purchase) => [purchase.id, purchase]),
+  );
+
+  // =====================================================
+  // 3. FILTER ELIGIBLE PAYMENTS
+  // =====================================================
+
+  const eligibleByPurchase = new Map<string, Payment[]>();
+
+  const allPayments: Payment[] = [];
+
+  for (const purchase of purchases) {
+    const eligible = purchase.payments.filter(
+      (payment) =>
+        payment.purpose === "GROUP_PURCHASE" &&
+        ["STRIPE", "WALLET"].includes(payment.provider) &&
+        ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(payment.status) &&
+        !payment.refunds.some(
+          (refund) =>
+            refund.idempotencyKey ===
+            `late-group-purchase-refund-${payment.id}`,
+        ),
+    );
+
+    eligibleByPurchase.set(purchase.id, eligible);
+
+    allPayments.push(...eligible);
+  }
+
+  // =====================================================
+  // 4. BATCH LOAD ALLOCATIONS
+  // =====================================================
+
+  const paymentIds = allPayments.map((payment) => payment.id);
+
+  const allocations = paymentIds.length
+    ? await tx.refundAllocation.findMany({
+        where: {
+          paymentId: { in: paymentIds },
+          status: {
+            in: ["RESERVED", "PROCESSING"],
+          },
+        },
+        select: {
+          paymentId: true,
+          amount: true,
+        },
+      })
+    : [];
+
+  const reservedCentsByPayment = new Map<string, number>();
+
+  for (const allocation of allocations) {
+    reservedCentsByPayment.set(
+      allocation.paymentId,
+      (reservedCentsByPayment.get(allocation.paymentId) ?? 0) +
+        cents(allocation.amount),
+    );
+  }
+
+  // =====================================================
+  // 5. BATCH LOAD PENDING REFUND REQUESTS
+  // =====================================================
+
+  const pendingRequests = paymentIds.length
+    ? await tx.refundRequest.findMany({
+        where: {
+          paymentId: { in: paymentIds },
+          status: {
+            in: ["PENDING", "APPROVED", "PROCESSING"],
+          },
+        },
+        select: {
+          paymentId: true,
+        },
+      })
+    : [];
+
+  const pendingPaymentIds = new Set<string>(
+    pendingRequests.map((request) => request.paymentId),
+  );
+
+  // =====================================================
+  // 6. VALIDATE PAYMENTS PER PURCHASE
+  // =====================================================
+
+  const errorsByPurchase = new Map<string, AppError>();
+
+  for (const purchase of purchases) {
+    const payments = eligibleByPurchase.get(purchase.id) ?? [];
+
+    try {
+      for (const payment of payments) {
+        if (
+          payment.customerId !== purchase.customerId ||
+          payment.currency !== "HKD" ||
+          (payment.provider === "STRIPE" && !payment.providerPaymentId) ||
+          payment.refunds.some((refund) => refund.status === "PENDING")
+        ) {
+          throw new AppError("REFUND_RECONCILIATION_REQUIRED", 409);
+        }
+      }
+    } catch (error) {
+      if (error instanceof AppError) {
+        errorsByPurchase.set(purchase.id, error);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  // =====================================================
+  // 7. BATCH VALIDATE WALLET FUNDING
+  // =====================================================
+
+  const validPurchases = purchases.filter(
+    (purchase) => !errorsByPurchase.has(purchase.id),
+  );
+
+  const walletPayments = validPurchases.flatMap((purchase) =>
+    (eligibleByPurchase.get(purchase.id) ?? []).filter(
+      (payment) => payment.provider === "WALLET",
+    ),
+  );
+
+  if (walletPayments.length) {
+    try {
+      await walletPaymentsFundingBatch(tx, walletPayments);
+    } catch (error) {
+      if (!(error instanceof AppError)) {
+        throw error;
+      }
+
+      // Fallback: isolate the failed purchase.
+      for (const purchase of validPurchases) {
+        const payments = (eligibleByPurchase.get(purchase.id) ?? []).filter(
+          (payment) => payment.provider === "WALLET",
+        );
+
+        if (!payments.length) {
+          continue;
+        }
+
+        try {
+          await walletPaymentsFundingBatch(tx, payments);
+        } catch (purchaseError) {
+          if (purchaseError instanceof AppError) {
+            errorsByPurchase.set(purchase.id, purchaseError);
+          } else {
+            throw purchaseError;
+          }
+        }
+      }
+    }
+  }
+
+  // =====================================================
+  // 8. BUILD PURCHASE-WISE FUNDING
+  // =====================================================
+
+  const fundingByPurchase = new Map<
+    string,
+    {
+      payments: Payment[];
+      funds: {
+        paymentId: string;
+        provider: Payment["provider"];
+        paidCents: number;
+        remainingCents: number;
+      }[];
+      pending: boolean;
+    }
+  >();
+
+  for (const purchase of purchases) {
+    if (errorsByPurchase.has(purchase.id)) {
+      continue;
+    }
+
+    const payments = eligibleByPurchase.get(purchase.id) ?? [];
+
+    try {
+      const funds = payments.map((payment) => {
+        const paidCents = cents(payment.amount);
+
+        const refundedCents = payment.refunds
+          .filter((refund) => refund.status === "SUCCEEDED")
+          .reduce((sum, refund) => sum + cents(refund.amount), 0);
+
+        const reservedCents = reservedCentsByPayment.get(payment.id) ?? 0;
+
+        const remainingCents = paidCents - refundedCents - reservedCents;
+
+        if (remainingCents < 0) {
+          throw new AppError("REFUND_RECONCILIATION_REQUIRED", 409);
+        }
+
+        return {
+          paymentId: payment.id,
+          provider: payment.provider,
+          paidCents,
+          remainingCents,
+        };
+      });
+
+      fundingByPurchase.set(purchase.id, {
+        payments,
+        funds,
+        pending: payments.some((payment) => pendingPaymentIds.has(payment.id)),
+      });
+    } catch (error) {
+      if (error instanceof AppError) {
+        errorsByPurchase.set(purchase.id, error);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  // =====================================================
+  // 9. RETURN BATCH DATA
+  // =====================================================
+
+  return {
+    purchases: purchaseMap,
+    reservedCentsByPayment,
+    pendingPaymentIds,
+    fundingByPurchase,
+    errorsByPurchase,
+  };
+}
+
+async function appointmentEvaluation(
+  tx: Prisma.TransactionClient,
+  id: string,
+  userId: string,
+  role: string,
+  batch?: Awaited<ReturnType<typeof loadAppointmentRefundBatch>>,
+) {
+  // =====================================================
+  // 1. FETCH APPOINTMENT
+  // =====================================================
+
+  const appointment = batch
+    ? batch.appointments.get(id)
+    : await tx.appointment.findUnique({
+        where: { id },
+        include: {
+          payments: {
+            include: {
+              refunds: true,
+            },
+          },
+          groupPurchase: true,
+        },
+      });
+
   if (!appointment) {
     throw new AppError("Appointment not found", 404);
   }
 
+  // =====================================================
+  // 2. ACCESS CONTROL
+  // =====================================================
+
   await access(tx, appointment, userId, role);
+
+  // =====================================================
+  // 3. VALIDATE POLICY SNAPSHOT
+  // =====================================================
 
   const snapshot = policyTimeMinutes(appointment.cancellationPolicySnapshot);
 
@@ -129,22 +486,64 @@ async function appointmentEvaluation(
     throw new AppError("POLICY_SNAPSHOT_MISMATCH", 409);
   }
 
+  // =====================================================
+  // 4. APPOINTMENT TIME
+  // =====================================================
+
   const evaluatedAt = new Date();
 
   const ms =
     appointmentTime(appointment.date, appointment.startTime).getTime() -
     evaluatedAt.getTime();
 
-  const { payment, pending } = await funding(
-    tx,
-    group
-      ? []
-      : appointment.payments.filter((p) =>
-          ["APPOINTMENT", "APPOINTMENT_DEPOSIT"].some(
-            (purpose) => purpose === p.purpose,
-          ),
-        ),
-  );
+  // =====================================================
+  // 5. FUNDING VALIDATION
+  // =====================================================
+
+  const fundingPayments = group
+    ? []
+    : appointment.payments.filter((payment) =>
+        ["APPOINTMENT", "APPOINTMENT_DEPOSIT"].includes(payment.purpose),
+      );
+
+  let payment: (typeof fundingPayments)[number] | null = null;
+
+  let pending = false;
+
+  if (batch) {
+    const eligiblePayments = fundingPayments.filter(
+      (item) =>
+        ["STRIPE", "WALLET"].includes(item.provider) &&
+        ["PAID", "PARTIALLY_REFUNDED"].includes(item.status),
+    );
+
+    if (
+      eligiblePayments.some(
+        (item) =>
+          item.currency !== "HKD" ||
+          item.refunds.some((refund) => refund.status === "PENDING"),
+      )
+    ) {
+      throw new AppError("REFUND_RECONCILIATION_REQUIRED", 409);
+    }
+
+    if (eligiblePayments.length > 1) {
+      throw new AppError("MULTIPLE_PAYMENTS_REQUIRE_MANUAL_REVIEW", 409);
+    }
+
+    payment = eligiblePayments[0] ?? null;
+
+    pending = payment ? batch.pendingPaymentIds.has(payment.id) : false;
+  } else {
+    const result = await funding(tx, fundingPayments);
+
+    payment = result.payment;
+    pending = Boolean(result.pending);
+  }
+
+  // =====================================================
+  // 6. REFUND POLICY CALCULATION
+  // =====================================================
 
   const eligible = payment ? remaining(payment) : 0;
 
@@ -152,28 +551,22 @@ async function appointmentEvaluation(
 
   let reason = calculation.reason;
 
-  // Existing appointment status validation
   if (!["RESERVED", "CONFIRMED"].includes(appointment.appointmentStatus)) {
     reason = "APPOINTMENT_NOT_CANCELLABLE";
   }
 
-  // NEW: Prevent cancellation after QR check-in
   if (appointment.qrVerifiedAt !== null) {
     reason = "APPOINTMENT_ALREADY_CHECKED_IN";
   }
 
-  // Existing refund request validation
   if (pending) {
     reason = "REFUND_REQUEST_ALREADY_EXISTS";
   }
 
-  // Initial Direct Booking is the QR/salon settlement anchor.
-  // Cancelling it requires separate whole-purchase processing.
   if (group && appointment.bookingMethod !== "GROUP_PURCHASE") {
     reason = "INITIAL_BOOKING_REQUIRES_PURCHASE_REVIEW";
   }
 
-  // Existing group purchase validation
   if (
     group &&
     (!appointment.groupPurchase ||
@@ -184,6 +577,10 @@ async function appointmentEvaluation(
   ) {
     reason = "GROUP_PURCHASE_NOT_CANCELLABLE";
   }
+
+  // =====================================================
+  // 7. REFUND RESPONSE
+  // =====================================================
 
   const refund = {
     eligiblePaidAmount: money(eligible),
@@ -208,6 +605,10 @@ async function appointmentEvaluation(
 
   const outcome = reason ? null : calculation.entitlementOutcome;
 
+  // =====================================================
+  // 8. PREVIEW TOKEN
+  // =====================================================
+
   const token = signature({
     userId,
     id,
@@ -219,6 +620,10 @@ async function appointmentEvaluation(
     refund,
     outcome,
   });
+
+  // =====================================================
+  // 9. BUILD VIEW
+  // =====================================================
 
   const view = {
     appointmentId: id,
@@ -245,6 +650,10 @@ async function appointmentEvaluation(
     previewToken: token,
   };
 
+  // =====================================================
+  // 10. PRESERVE EXISTING RETURN STRUCTURE
+  // =====================================================
+
   return {
     view,
     appointment,
@@ -255,31 +664,71 @@ async function appointmentEvaluation(
     evaluatedAt,
   };
 }
+
 async function groupEvaluation(
   tx: Prisma.TransactionClient,
   id: string,
   userId: string,
+  batch?: Awaited<ReturnType<typeof loadGroupRefundBatch>>,
 ) {
-  const purchase = await tx.groupPurchase.findUnique({
-    where: { id },
-    include: { appointments: true, payments: { include: { refunds: true } } },
-  });
-  if (!purchase) throw new AppError("Group purchase not found", 404);
-  if (purchase.customerId !== userId)
+  // =====================================================
+  // 1. FETCH GROUP PURCHASE
+  // =====================================================
+
+  const purchase = batch
+    ? batch.purchases.get(id)
+    : await tx.groupPurchase.findUnique({
+        where: { id },
+        include: {
+          appointments: true,
+          payments: {
+            include: {
+              refunds: true,
+            },
+          },
+        },
+      });
+
+  if (!purchase) {
+    throw new AppError("Group purchase not found", 404);
+  }
+
+  // =====================================================
+  // 2. CUSTOMER ACCESS CONTROL
+  // =====================================================
+
+  if (purchase.customerId !== userId) {
     throw new AppError("REFUND_ACCESS_DENIED", 403);
+  }
+
+  // =====================================================
+  // 3. POLICY SNAPSHOT VALIDATION
+  // =====================================================
+
   const snapshot = policyTimeMinutes(purchase.refundPolicySnapshot);
+
   if (
     !isSnapshot(snapshot) ||
     snapshot.module !== "GROUP_REFUND" ||
     !purchase.purchaseBranchId
-  )
+  ) {
     throw new AppError("LEGACY_PURCHASE_BRANCH_REVIEW_REQUIRED", 409);
+  }
+
+  // =====================================================
+  // 4. CALCULATE GROUP PURCHASE USAGE
+  // =====================================================
+
   const allocated = purchase.appointments.filter(
-    (a) => a.appointmentStatus !== "CANCELLED",
+    (appointment) => appointment.appointmentStatus !== "CANCELLED",
   );
-  const activeBookings = allocated.some((a) =>
-    ["RESERVED", "CONFIRMED", "PENDING_PAYMENT"].includes(a.appointmentStatus),
+
+  const activeBookings = allocated.some((appointment) =>
+    ["RESERVED", "CONFIRMED", "PENDING_PAYMENT"].includes(
+      appointment.appointmentStatus,
+    ),
   );
+
   const remainingQuantity = Math.max(
     0,
     purchase.quantity -
@@ -287,50 +736,132 @@ async function groupEvaluation(
       purchase.forfeitedQuantity -
       purchase.refundedQuantity,
   );
-  const {payments, funds, pending} = await groupRefundFunding(tx,purchase.id,purchase.customerId);
-  const payment=payments.find(p=>(funds.find(f=>f.paymentId===p.id)?.remainingCents??0)>0)??null;
+
+  // =====================================================
+  // 5. FUNDING VALIDATION — BATCH AWARE
+  // =====================================================
+
+  const batchError = batch?.errorsByPurchase.get(purchase.id);
+
+  if (batchError) {
+    throw batchError;
+  }
+
+  const batchFunding = batch?.fundingByPurchase.get(purchase.id);
+
+  if (batch && !batchFunding) {
+    throw new AppError("REFUND_RECONCILIATION_REQUIRED", 409);
+  }
+
+  // Normal preview/refund execution continues using
+  // groupRefundFunding() with fresh database validation.
+
+  const funding = batchFunding
+    ? batchFunding
+    : await groupRefundFunding(tx, purchase.id, purchase.customerId);
+
+  const { payments, funds, pending } = funding;
+
+  // =====================================================
+  // 6. FIND REFUND SOURCE PAYMENT
+  // =====================================================
+
+  const remainingByPayment = new Map(
+    funds.map((fund) => [fund.paymentId, fund.remainingCents]),
+  );
+
+  const payment =
+    payments.find((item) => (remainingByPayment.get(item.id) ?? 0) > 0) ?? null;
+
+  // =====================================================
+  // 7. CALCULATE REFUNDABLE BALANCE
+  // =====================================================
+
   const eligible = payment
     ? Math.min(
-        funds.reduce((s,p)=>s+p.remainingCents,0),
-        new Prisma.Decimal(funds.reduce((s,p)=>s+p.paidCents,0))
+        funds.reduce((sum, fund) => sum + fund.remainingCents, 0),
+        new Prisma.Decimal(funds.reduce((sum, fund) => sum + fund.paidCents, 0))
           .mul(remainingQuantity)
           .div(purchase.quantity)
           .toDecimalPlaces(0, Prisma.Decimal.ROUND_DOWN)
           .toNumber(),
       )
     : 0;
+
+  // =====================================================
+  // 8. EVALUATE POLICY
+  // =====================================================
+
   const evaluatedAt = new Date();
+
   const age = purchase.purchasedAt
     ? evaluatedAt.getTime() - purchase.purchasedAt.getTime()
     : 0;
+
   const calculation = evaluatePolicy(snapshot, eligible, age);
+
   let reason = calculation.reason;
+
   if (
     !["PAID", "PARTIALLY_REFUNDED"].includes(purchase.paymentStatus) ||
     !purchase.purchasedAt
-  )
+  ) {
     reason = "GROUP_PURCHASE_NOT_PAID";
-  if (purchaseExpired(purchase) && !snapshot.config.allowExpiredRefund)
+  }
+
+  if (purchaseExpired(purchase) && !snapshot.config.allowExpiredRefund) {
     reason = "GROUP_PURCHASE_EXPIRED";
+  }
+
   if (
     !snapshot.config.allowPartiallyUsedRefund &&
     (allocated.length > 0 || purchase.forfeitedQuantity > 0)
-  )
+  ) {
     reason = "USED_GROUP_PURCHASE_NOT_REFUNDABLE";
-  if (activeBookings) reason = "ACTIVE_APPOINTMENT_RESOLUTION_REQUIRED";
-  if (remainingQuantity <= 0 || eligible <= 0 || calculation.refundCents <= 0)
+  }
+
+  if (activeBookings) {
+    reason = "ACTIVE_APPOINTMENT_RESOLUTION_REQUIRED";
+  }
+
+  if (remainingQuantity <= 0 || eligible <= 0 || calculation.refundCents <= 0) {
     reason = "NO_REFUNDABLE_BALANCE";
-  if (pending) reason = "REFUND_REQUEST_ALREADY_EXISTS";
+  }
+
+  if (pending) {
+    reason = "REFUND_REQUEST_ALREADY_EXISTS";
+  }
+
+  // =====================================================
+  // 9. BUILD REFUND DETAILS
+  // =====================================================
+
   const refund = {
     eligiblePaidAmount: money(eligible),
+
     deductionAmount: money(calculation.deductionCents),
+
     refundAmount: reason ? 0 : money(calculation.refundCents),
+
     currency: "HKD",
+
     destination: payment?.provider ?? null,
+
     paymentId: payment?.id ?? null,
-    destinations: funds.map(p=>({paymentId:p.paymentId,provider:p.provider,availableAmount:money(p.remainingCents)})),
+
+    destinations: funds.map((fund) => ({
+      paymentId: fund.paymentId,
+      provider: fund.provider,
+      availableAmount: money(fund.remainingCents),
+    })),
+
     approvalRequired: true,
   };
+
+  // =====================================================
+  // 10. GENERATE PREVIEW TOKEN
+  // =====================================================
+
   const token = signature({
     userId,
     id,
@@ -343,21 +874,43 @@ async function groupEvaluation(
     tier: calculation.tier,
     refund,
   });
+
+  // =====================================================
+  // 11. BUILD RESPONSE VIEW
+  // =====================================================
+
   const view = {
     purchaseId: id,
+
     canRequestRefund: reason === null,
+
     reason,
+
     purchaseAgeMinutes: age / 60000,
+
     purchasedQuantity: purchase.quantity,
+
     usedQuantity: allocated.length,
+
     forfeitedQuantity: purchase.forfeitedQuantity,
+
     refundedQuantity: purchase.refundedQuantity,
+
     remainingRefundableQuantity: remainingQuantity,
+
     applicableTier: calculation.tier,
+
     policyVersion: snapshot.version,
+
     refund,
+
     previewToken: token,
   };
+
+  // =====================================================
+  // 12. PRESERVE EXISTING RETURN STRUCTURE
+  // =====================================================
+
   return {
     view,
     purchase,
@@ -370,6 +923,7 @@ async function groupEvaluation(
     funds,
   };
 }
+
 export const previewAppointment = (
   id: string,
   userId: string,
@@ -417,10 +971,19 @@ async function createRequest(
       policyEvaluatedAt: new Date(snapshot.evaluatedAt),
     },
   });
-  if(snapshot.funding?.length){
-    for(const fund of snapshot.funding){
-      const id=randomUUID();
-      await tx.refundAllocation.create({data:{id,refundRequestId:request.id,paymentId:fund.paymentId,amount:money(fund.amountCents),provider:fund.provider as PaymentProvider,idempotencyKey:`refund-allocation-${id}`}});
+  if (snapshot.funding?.length) {
+    for (const fund of snapshot.funding) {
+      const id = randomUUID();
+      await tx.refundAllocation.create({
+        data: {
+          id,
+          refundRequestId: request.id,
+          paymentId: fund.paymentId,
+          amount: money(fund.amountCents),
+          provider: fund.provider as PaymentProvider,
+          idempotencyKey: `refund-allocation-${id}`,
+        },
+      });
     }
   }
   await auditLogService.createAuditLog(
@@ -635,7 +1198,9 @@ export async function cancelWithPolicy(
           message: request
             ? "Your appointment was cancelled. Your refund is awaiting merchant approval."
             : "Your appointment has been cancelled.",
-          translations: notificationTemplates.POLICY_BOOKING_CANCELLED(Boolean(request)),
+          translations: notificationTemplates.POLICY_BOOKING_CANCELLED(
+            Boolean(request),
+          ),
         },
         tx,
       );
@@ -684,7 +1249,19 @@ export async function requestGroupRefund(
         policy: result.snapshot,
         evaluatedAt: result.evaluatedAt.toISOString(),
         refundableQuantity: result.remainingQuantity,
-        ...(result.funds.length>1?{funding:allocateRefund(result.funds,result.calculation.refundCents).map(a=>({...a,paidCents:result.funds.find(f=>f.paymentId===a.paymentId)!.paidCents}))}:{}),
+        ...(result.funds.length > 1
+          ? {
+              funding: allocateRefund(
+                result.funds,
+                result.calculation.refundCents,
+              ).map((a) => ({
+                ...a,
+                paidCents: result.funds.find(
+                  (f) => f.paymentId === a.paymentId,
+                )!.paidCents,
+              })),
+            }
+          : {}),
         calculation: {
           eligibleCents: result.eligible,
           deductionCents: result.calculation.deductionCents,
@@ -807,4 +1384,246 @@ export const getPaymentRefundEligibility = async (
 
     throw error;
   }
+};
+
+export const getPaymentsRefundEligibilityBatch = async (
+  customerId: string,
+  payments: {
+    id: string;
+    purpose: string;
+    status: string;
+    appointmentId: string | null;
+    groupPurchaseId: string | null;
+  }[],
+): Promise<
+  Map<
+    string,
+    {
+      canRefund: boolean;
+      refundBlockedReason: string | null;
+    }
+  >
+> => {
+  type Eligibility = {
+    canRefund: boolean;
+    refundBlockedReason: string | null;
+  };
+
+  const results = new Map<string, Eligibility>();
+
+  if (payments.length === 0) {
+    return results;
+  }
+
+  // =====================================================
+  // 1. COLLECT UNIQUE APPOINTMENT IDS
+  // =====================================================
+
+  const appointmentIds = [
+    ...new Set(
+      payments
+        .filter(
+          (payment) =>
+            ["PAID", "PARTIALLY_REFUNDED"].includes(payment.status) &&
+            ["APPOINTMENT", "APPOINTMENT_DEPOSIT"].includes(payment.purpose) &&
+            payment.appointmentId !== null,
+        )
+        .map((payment) => payment.appointmentId!),
+    ),
+  ];
+
+  // =====================================================
+  // 2. COLLECT UNIQUE GROUP PURCHASE IDS
+  // =====================================================
+
+  const groupPurchaseIds = [
+    ...new Set(
+      payments
+        .filter(
+          (payment) =>
+            ["PAID", "PARTIALLY_REFUNDED"].includes(payment.status) &&
+            payment.purpose === "GROUP_PURCHASE" &&
+            payment.groupPurchaseId !== null,
+        )
+        .map((payment) => payment.groupPurchaseId!),
+    ),
+  ];
+
+  // =====================================================
+  // 3. BATCH LOAD REFUND DATA
+  // =====================================================
+
+  // Load appointment and group funding in the same
+  // read-only transaction to reduce repeated queries.
+
+  const { appointmentBatch, groupBatch } = await prisma.$transaction(
+    async (tx) => {
+      const appointmentBatch = await loadAppointmentRefundBatch(
+        tx,
+        appointmentIds,
+      );
+
+      const groupBatch = await loadGroupRefundBatch(tx, groupPurchaseIds);
+
+      return {
+        appointmentBatch,
+        groupBatch,
+      };
+    },
+  );
+
+  // =====================================================
+  // 4. CACHE EVALUATIONS PER RESOURCE
+  // =====================================================
+
+  const appointmentCache = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof appointmentEvaluation>>>
+  >();
+
+  const groupCache = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof groupEvaluation>>>
+  >();
+
+  // =====================================================
+  // 5. EVALUATE PAYMENT ELIGIBILITY
+  // =====================================================
+
+  const evaluate = async (
+    payment: (typeof payments)[number],
+  ): Promise<Eligibility> => {
+    if (!["PAID", "PARTIALLY_REFUNDED"].includes(payment.status)) {
+      return {
+        canRefund: false,
+        refundBlockedReason: "PAYMENT_NOT_PAID",
+      };
+    }
+
+    if (payment.purpose === "WALLET_TOP_UP") {
+      return {
+        canRefund: false,
+        refundBlockedReason: "NOT_REFUNDABLE_PURPOSE",
+      };
+    }
+
+    if (payment.purpose === "APPOINTMENT_REMAINING") {
+      return {
+        canRefund: false,
+        refundBlockedReason: "REFUND_REVIEW_REQUIRED",
+      };
+    }
+
+    try {
+      // ================================================
+      // APPOINTMENT PAYMENT
+      // ================================================
+
+      if (
+        ["APPOINTMENT", "APPOINTMENT_DEPOSIT"].includes(payment.purpose) &&
+        payment.appointmentId
+      ) {
+        const appointmentId = payment.appointmentId;
+
+        let evaluation = appointmentCache.get(appointmentId);
+
+        if (!evaluation) {
+          evaluation = prisma.$transaction((tx) =>
+            appointmentEvaluation(
+              tx,
+              appointmentId,
+              customerId,
+              Role.CUSTOMER,
+              appointmentBatch,
+            ),
+          );
+
+          appointmentCache.set(appointmentId, evaluation);
+        }
+
+        const { view } = await evaluation;
+
+        const isSource = view.refund.paymentId === payment.id;
+
+        const refundableAmount = view.refund.refundAmount;
+
+        return {
+          canRefund: isSource && view.canCancel && refundableAmount > 0,
+
+          refundBlockedReason: !isSource
+            ? "PAYMENT_NOT_REFUND_SOURCE"
+            : (view.reason ??
+              (refundableAmount <= 0 ? "NO_REFUNDABLE_BALANCE" : null)),
+        };
+      }
+
+      // ================================================
+      // GROUP PURCHASE PAYMENT
+      // ================================================
+
+      if (payment.purpose === "GROUP_PURCHASE" && payment.groupPurchaseId) {
+        const purchaseId = payment.groupPurchaseId;
+
+        let evaluation = groupCache.get(purchaseId);
+
+        if (!evaluation) {
+          evaluation = prisma.$transaction((tx) =>
+            groupEvaluation(tx, purchaseId, customerId, groupBatch),
+          );
+
+          groupCache.set(purchaseId, evaluation);
+        }
+
+        const { view } = await evaluation;
+
+        const isSource = view.refund.paymentId === payment.id;
+
+        const refundableAmount = view.refund.refundAmount;
+
+        return {
+          canRefund: isSource && view.canRequestRefund && refundableAmount > 0,
+
+          refundBlockedReason: !isSource
+            ? "PAYMENT_NOT_REFUND_SOURCE"
+            : (view.reason ??
+              (refundableAmount <= 0 ? "NO_REFUNDABLE_BALANCE" : null)),
+        };
+      }
+
+      return {
+        canRefund: false,
+        refundBlockedReason: "NOT_REFUNDABLE_PURPOSE",
+      };
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode === 409) {
+        return {
+          canRefund: false,
+          refundBlockedReason: error.message,
+        };
+      }
+
+      throw error;
+    }
+  };
+
+  // =====================================================
+  // 6. RESOLVE ELIGIBILITY RESULTS
+  // =====================================================
+
+  const eligibilityResults = await Promise.all(
+    payments.map(async (payment) => ({
+      paymentId: payment.id,
+      eligibility: await evaluate(payment),
+    })),
+  );
+
+  // =====================================================
+  // 7. BUILD RESPONSE MAP
+  // =====================================================
+
+  for (const result of eligibilityResults) {
+    results.set(result.paymentId, result.eligibility);
+  }
+
+  return results;
 };

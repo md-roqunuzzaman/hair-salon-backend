@@ -1,8 +1,22 @@
 import OpenAI from "openai";
 
+// =====================================================
+// 1. OPENAI CLIENT CONFIGURATION
+// =====================================================
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+
+  // Timeout per API attempt: 8 seconds.
+  timeout: 8000,
+
+  // Initial attempt + 1 retry = maximum 2 attempts.
+  maxRetries: 1,
 });
+
+// =====================================================
+// 2. MODERATION RESULT INTERFACE
+// =====================================================
 
 export interface IModerationResult {
   safe: boolean;
@@ -11,9 +25,13 @@ export interface IModerationResult {
   categories: string[];
 }
 
+// =====================================================
+// 3. VALIDATE INDIVIDUAL MODERATION RESULT
+// =====================================================
+
 const extractModerationResult = (result: unknown): IModerationResult => {
   // =====================================================
-  // 1. VALIDATE MODERATION RESPONSE STRUCTURE
+  // 3.1 VALIDATE RESPONSE STRUCTURE
   // =====================================================
 
   if (typeof result !== "object" || result === null || Array.isArray(result)) {
@@ -23,7 +41,7 @@ const extractModerationResult = (result: unknown): IModerationResult => {
   const moderation = result as Record<string, unknown>;
 
   // =====================================================
-  // 2. VALIDATE FLAGGED FIELD
+  // 3.2 VALIDATE FLAGGED FIELD
   // =====================================================
 
   if (typeof moderation.flagged !== "boolean") {
@@ -31,7 +49,7 @@ const extractModerationResult = (result: unknown): IModerationResult => {
   }
 
   // =====================================================
-  // 3. VALIDATE CATEGORIES
+  // 3.3 VALIDATE CATEGORIES
   // =====================================================
 
   const categories = moderation.categories;
@@ -54,7 +72,7 @@ const extractModerationResult = (result: unknown): IModerationResult => {
   }
 
   // =====================================================
-  // 4. EXTRACT FLAGGED CATEGORIES
+  // 3.4 EXTRACT FLAGGED CATEGORIES
   // =====================================================
 
   const flaggedCategories = categoryEntries
@@ -66,7 +84,7 @@ const extractModerationResult = (result: unknown): IModerationResult => {
   }
 
   // =====================================================
-  // 5. RETURN VALIDATED RESULT
+  // 3.5 RETURN VALIDATED RESULT
   // =====================================================
 
   return {
@@ -77,19 +95,52 @@ const extractModerationResult = (result: unknown): IModerationResult => {
   };
 };
 
+// =====================================================
+// 4. VALIDATE COMPLETE MODERATION RESPONSE
+// =====================================================
+
 const extractModerationResponse = (response: unknown): IModerationResult => {
-  if (typeof response !== "object" || response === null || Array.isArray(response)) {
+  // =====================================================
+  // 4.1 VALIDATE RESPONSE STRUCTURE
+  // =====================================================
+
+  if (
+    typeof response !== "object" ||
+    response === null ||
+    Array.isArray(response)
+  ) {
     throw new Error("MODERATION_RESPONSE_INVALID");
   }
+
   const results = (response as Record<string, unknown>).results;
+
   if (!Array.isArray(results) || results.length === 0) {
     throw new Error("MODERATION_RESPONSE_INVALID");
   }
 
-  // Validate every result; neither malformed nor flagged later items can be ignored.
+  // =====================================================
+  // 4.2 VALIDATE EVERY RESULT
+  // =====================================================
+
+  // Neither malformed results nor flagged later
+  // items can be ignored.
+
   const validated = Array.from(results, extractModerationResult);
-  const categories = [...new Set(validated.flatMap(result => result.categories))];
-  const flagged = validated.some(result => result.flagged);
+
+  // =====================================================
+  // 4.3 COMBINE FLAGGED CATEGORIES
+  // =====================================================
+
+  const categories = [
+    ...new Set(validated.flatMap((result) => result.categories)),
+  ];
+
+  const flagged = validated.some((result) => result.flagged);
+
+  // =====================================================
+  // 4.4 RETURN COMBINED RESULT
+  // =====================================================
+
   return {
     safe: !flagged,
     flagged,
@@ -99,7 +150,7 @@ const extractModerationResponse = (response: unknown): IModerationResult => {
 };
 
 // =====================================================
-// TEXT MODERATION
+// 5. TEXT MODERATION
 // =====================================================
 
 const moderateText = async (
@@ -115,23 +166,36 @@ const moderateText = async (
     };
   }
 
+  // Timeout and retry are controlled by the
+  // OpenAI client configuration.
+
   const response = await openai.moderations.create({
     model: "omni-moderation-latest",
-
     input: text.trim(),
   });
+
+  // Invalid responses throw an error.
+  // API failures are never treated as safe.
 
   return extractModerationResponse(response);
 };
 
 // =====================================================
-// IMAGE MODERATION
+// 6. IMAGE MODERATION
 // =====================================================
 
 const moderateImage = async (imageUrl: string): Promise<IModerationResult> => {
+  // =====================================================
+  // 6.1 VALIDATE IMAGE URL
+  // =====================================================
+
   if (!imageUrl?.trim()) {
     throw new Error("IMAGE_URL_REQUIRED");
   }
+
+  // =====================================================
+  // 6.2 MODERATE IMAGE
+  // =====================================================
 
   const response = await openai.moderations.create({
     model: "omni-moderation-latest",
@@ -139,7 +203,6 @@ const moderateImage = async (imageUrl: string): Promise<IModerationResult> => {
     input: [
       {
         type: "image_url",
-
         image_url: {
           url: imageUrl,
         },
@@ -147,11 +210,15 @@ const moderateImage = async (imageUrl: string): Promise<IModerationResult> => {
     ],
   });
 
+  // =====================================================
+  // 6.3 RETURN VALIDATED RESULT
+  // =====================================================
+
   return extractModerationResponse(response);
 };
 
 // =====================================================
-// REVIEW CONTENT MODERATION
+// 7. REVIEW CONTENT MODERATION
 // Text + multiple images
 // =====================================================
 
@@ -161,12 +228,20 @@ const moderateReviewContent = async (
 ): Promise<IModerationResult> => {
   const inputs: any[] = [];
 
+  // =====================================================
+  // 7.1 ADD TEXT INPUT
+  // =====================================================
+
   if (text?.trim()) {
     inputs.push({
       type: "text",
       text: text.trim(),
     });
   }
+
+  // =====================================================
+  // 7.2 ADD IMAGE INPUTS
+  // =====================================================
 
   for (const imageUrl of imageUrls) {
     inputs.push({
@@ -178,8 +253,10 @@ const moderateReviewContent = async (
     });
   }
 
-  // Rating-only review:
-  // no text + no image
+  // =====================================================
+  // 7.3 HANDLE RATING-ONLY REVIEW
+  // =====================================================
+
   if (inputs.length === 0) {
     return {
       safe: true,
@@ -189,14 +266,25 @@ const moderateReviewContent = async (
     };
   }
 
+  // =====================================================
+  // 7.4 MODERATE REVIEW CONTENT
+  // =====================================================
+
   const response = await openai.moderations.create({
     model: "omni-moderation-latest",
-
     input: inputs,
   });
 
+  // =====================================================
+  // 7.5 RETURN VALIDATED RESULT
+  // =====================================================
+
   return extractModerationResponse(response);
 };
+
+// =====================================================
+// 8. EXPORT SERVICE
+// =====================================================
 
 export const contentModerationService = {
   moderateText,
