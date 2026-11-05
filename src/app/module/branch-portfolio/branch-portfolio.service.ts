@@ -1156,6 +1156,353 @@ const deleteBranchPortfolioImage = async (
   };
 };
 
+const getBranchPortfolioForManagement = async (
+  branchId: string,
+  requester: {
+    id: string;
+    role: Role;
+  },
+  query: {
+    page?: number | string;
+    limit?: number | string;
+    status?: StaffPortfolioStatus;
+    serviceId?: string;
+    staffId?: string;
+  },
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. AUTHORIZATION
+  // =====================================================
+
+  if (requester.role !== Role.BRAND_OWNER) {
+    throw new AppError(
+      "Only brand owners can manage branch portfolio cases",
+      403,
+    );
+  }
+
+  // =====================================================
+  // 2. VALIDATE PAGINATION
+  // =====================================================
+
+  const page = Number(query.page ?? 1);
+  const limit = Number(query.limit ?? 20);
+
+  if (!Number.isInteger(page) || page < 1) {
+    throw new AppError("page must be at least 1", 400);
+  }
+
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new AppError("limit must be between 1 and 100", 400);
+  }
+
+  const skip = (page - 1) * limit;
+
+  // =====================================================
+  // 3. VERIFY BRANCH
+  // =====================================================
+
+  const branch = await prisma.branch.findUnique({
+    where: {
+      id: branchId,
+    },
+    select: {
+      id: true,
+      name: true,
+      translations: true,
+      status: true,
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Branch not found", 404);
+  }
+
+  // Allow owner to manage drafts even if branch is inactive.
+
+  // =====================================================
+  // 4. BUILD FILTERS
+  // =====================================================
+
+  const staffWhere: Prisma.StaffPortfolioCaseWhereInput = {
+    branchId,
+
+    ...(query.status ? { status: query.status } : {}),
+
+    ...(query.serviceId ? { serviceId: query.serviceId } : {}),
+
+    ...(query.staffId ? { staffId: query.staffId } : {}),
+  };
+
+  const branchWhere: Prisma.BranchPortfolioCaseWhereInput = {
+    branchId,
+
+    ...(query.status ? { status: query.status } : {}),
+
+    ...(query.serviceId ? { serviceId: query.serviceId } : {}),
+
+    ...(query.staffId ? { staffId: query.staffId } : {}),
+  };
+
+  // =====================================================
+  // 5. FETCH STAFF + BRANCH PORTFOLIO
+  // =====================================================
+
+  const [staffCases, branchCases, staffTotal, branchTotal] = await Promise.all([
+    prisma.staffPortfolioCase.findMany({
+      where: staffWhere,
+
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }, { id: "asc" }],
+
+      select: {
+        id: true,
+        staffId: true,
+        branchId: true,
+        serviceId: true,
+        title: true,
+        description: true,
+        tags: true,
+        translations: true,
+        status: true,
+        sortOrder: true,
+        createdAt: true,
+        updatedAt: true,
+
+        staff: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        service: {
+          select: {
+            id: true,
+            name: true,
+            translations: true,
+          },
+        },
+
+        images: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            objectKey: true,
+            isCover: true,
+            sortOrder: true,
+          },
+        },
+      },
+    }),
+
+    prisma.branchPortfolioCase.findMany({
+      where: branchWhere,
+
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }, { id: "asc" }],
+
+      select: {
+        id: true,
+        branchId: true,
+        staffId: true,
+        serviceId: true,
+        title: true,
+        description: true,
+        tags: true,
+        translations: true,
+        status: true,
+        sortOrder: true,
+        createdAt: true,
+        updatedAt: true,
+
+        staff: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        service: {
+          select: {
+            id: true,
+            name: true,
+            translations: true,
+          },
+        },
+
+        images: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+            objectKey: true,
+            isCover: true,
+            sortOrder: true,
+          },
+        },
+      },
+    }),
+
+    prisma.staffPortfolioCase.count({
+      where: staffWhere,
+    }),
+
+    prisma.branchPortfolioCase.count({
+      where: branchWhere,
+    }),
+  ]);
+
+  // =====================================================
+  // 6. NORMALIZE SOURCES
+  // =====================================================
+
+  const normalizedStaffCases = staffCases.map((item) => ({
+    ...item,
+    source: "STAFF" as const,
+  }));
+
+  const normalizedBranchCases = branchCases.map((item) => ({
+    ...item,
+    source: "BRANCH" as const,
+  }));
+
+  // =====================================================
+  // 7. GLOBAL SORT + PAGINATION
+  // =====================================================
+
+  const mergedCases = [...normalizedStaffCases, ...normalizedBranchCases].sort(
+    (a, b) => {
+      if (a.sortOrder !== b.sortOrder) {
+        return a.sortOrder - b.sortOrder;
+      }
+
+      const dateDifference = b.createdAt.getTime() - a.createdAt.getTime();
+
+      if (dateDifference !== 0) {
+        return dateDifference;
+      }
+
+      const sourceComparison = a.source.localeCompare(b.source);
+
+      if (sourceComparison !== 0) {
+        return sourceComparison;
+      }
+
+      return a.id.localeCompare(b.id);
+    },
+  );
+
+  const paginatedCases = mergedCases.slice(skip, skip + limit);
+
+  // =====================================================
+  // 8. LOCALIZE + GENERATE IMAGE URLS
+  // =====================================================
+
+  const items = await Promise.all(
+    paginatedCases.map(async (item) => {
+      const localizedCase = getLocalizedContent(item.translations, language, {
+        title: item.title,
+        description: item.description ?? "",
+      });
+
+      const localizedService = item.service
+        ? getLocalizedContent(item.service.translations, language, {
+            name: item.service.name,
+          })
+        : null;
+
+      const images = await Promise.all(
+        item.images.map(async (image) => ({
+          id: image.id,
+          objectKey: image.objectKey,
+          imageUrl: await uploadService.getImageUrl(image.objectKey),
+          isCover: image.isCover,
+          sortOrder: image.sortOrder,
+        })),
+      );
+
+      const coverImage =
+        images.find((image) => image.isCover) ?? images[0] ?? null;
+
+      return {
+        id: item.id,
+        source: item.source,
+
+        branchId: item.branchId,
+        staffId: item.staffId,
+        serviceId: item.serviceId,
+
+        title: localizedCase.title,
+        description: localizedCase.description || null,
+
+        tags: item.tags,
+
+        // Important: return DRAFT / PUBLISHED status.
+        status: item.status,
+        sortOrder: item.sortOrder,
+
+        staff: item.staff
+          ? {
+              id: item.staff.id,
+              name: item.staff.name,
+            }
+          : null,
+
+        service: item.service
+          ? {
+              id: item.service.id,
+              name: localizedService!.name,
+            }
+          : null,
+
+        coverImage,
+        images,
+        imageCount: images.length,
+
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      };
+    }),
+  );
+
+  // =====================================================
+  // 9. LOCALIZE BRANCH
+  // =====================================================
+
+  const localizedBranch = getLocalizedContent(branch.translations, language, {
+    name: branch.name,
+  });
+
+  // =====================================================
+  // 10. PAGINATION
+  // =====================================================
+
+  const total = staffTotal + branchTotal;
+
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+  // =====================================================
+  // 11. FINAL RESPONSE
+  // =====================================================
+
+  return {
+    branch: {
+      id: branch.id,
+      name: localizedBranch.name,
+    },
+
+    items,
+
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    },
+  };
+};
+
 export const branchPortfolioService = {
   getBranchPortfolio,
   createBranchPortfolioCase,
@@ -1163,4 +1510,5 @@ export const branchPortfolioService = {
   deleteBranchPortfolioImage,
   reorderBranchPortfolioImages,
   addBranchPortfolioImages,
+  getBranchPortfolioForManagement,
 };

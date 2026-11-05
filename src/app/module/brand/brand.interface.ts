@@ -28,3 +28,23 @@ export interface IBrandTheme {
 }
 
 export type IUpdateBrandThemePayload = Partial<IBrandTheme>;
+
+// =====================================================
+// BRAND INTERNATIONAL SETTINGS
+// =====================================================
+
+export interface IBrandInternationalSettings {
+  countryCode: string;
+  currency: string;
+  timezone: string;
+}
+
+// =====================================================
+// UPDATE BRAND INTERNATIONAL SETTINGS
+// =====================================================
+
+export interface IUpdateBrandInternationalSettingsPayload {
+  countryCode?: string;
+  currency?: string;
+  timezone?: string;
+}

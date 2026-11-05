@@ -271,19 +271,29 @@ const createPortfolioCase = catchAsync(async (req: Request, res: Response) => {
 // =====================================================
 
 const updatePortfolioCase = catchAsync(async (req: Request, res: Response) => {
-  // 1. Validate IDs
+  // =====================================================
+  // 1. VALIDATE IDS
+  // =====================================================
+
   const staffId = z.uuid().parse(req.params.staffId);
   const caseId = z.uuid().parse(req.params.caseId);
 
-  // 2. Translation validation
+  // =====================================================
+  // 2. TRANSLATION VALIDATION
+  // =====================================================
+
   const translationSchema = z
     .object({
       title: z.string().trim().min(1).max(200).optional(),
+
       description: z.string().trim().max(5000).optional(),
     })
     .strict();
 
-  // 3. Validate partial update payload
+  // =====================================================
+  // 3. VALIDATE PARTIAL UPDATE PAYLOAD
+  // =====================================================
+
   const body = z
     .object({
       title: z.string().trim().min(1).max(200).optional(),
@@ -292,12 +302,17 @@ const updatePortfolioCase = catchAsync(async (req: Request, res: Response) => {
 
       serviceId: z.uuid().nullable().optional(),
 
+      // NEW: Branch association
+      branchId: z.uuid().nullable().optional(),
+
       tags: z.array(z.string().trim().min(1).max(50)).max(20).optional(),
 
       translations: z
         .object({
           en: translationSchema.optional(),
+
           "zh-CN": translationSchema.optional(),
+
           "zh-HK": translationSchema.optional(),
         })
         .strict()
@@ -314,13 +329,19 @@ const updatePortfolioCase = catchAsync(async (req: Request, res: Response) => {
     })
     .parse(req.body);
 
-  // 4. Authenticated requester
+  // =====================================================
+  // 4. AUTHENTICATED REQUESTER
+  // =====================================================
+
   const requester = {
     id: req.user!.userId,
     role: req.user!.role,
   };
 
-  // 5. Call service
+  // =====================================================
+  // 5. CALL SERVICE
+  // =====================================================
+
   const result = await staffPortfolioService.updatePortfolioCase(
     staffId,
     caseId,
@@ -328,7 +349,10 @@ const updatePortfolioCase = catchAsync(async (req: Request, res: Response) => {
     body,
   );
 
-  // 6. Response
+  // =====================================================
+  // 6. RESPONSE
+  // =====================================================
+
   sendResponse(res, {
     statusCode: 200,
     success: true,

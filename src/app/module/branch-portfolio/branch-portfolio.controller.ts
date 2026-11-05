@@ -369,6 +369,74 @@ const deleteBranchPortfolioImage = catchAsync(
   },
 );
 
+const getBranchPortfolioForManagement = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. VALIDATE BRANCH ID
+    // =====================================================
+
+    const branchId = z.uuid().parse(req.params.branchId);
+
+    // =====================================================
+    // 2. VALIDATE QUERY PARAMETERS
+    // =====================================================
+
+    const query = z
+      .object({
+        page: z.coerce.number().int().min(1).default(1),
+
+        limit: z.coerce.number().int().min(1).max(100).default(20),
+
+        status: z.nativeEnum(StaffPortfolioStatus).optional(),
+
+        serviceId: z.uuid().optional(),
+
+        staffId: z.uuid().optional(),
+      })
+      .strict()
+      .parse(req.query);
+
+    // =====================================================
+    // 3. AUTHENTICATED REQUESTER
+    // =====================================================
+
+    const requester = {
+      id: req.user!.userId,
+      role: req.user!.role,
+    };
+
+    // =====================================================
+    // 4. RESOLVE LANGUAGE
+    // =====================================================
+
+    const language: Language =
+      (req.headers["accept-language"]?.split(",")[0]?.trim() as Language) ||
+      DEFAULT_LANGUAGE;
+
+    // =====================================================
+    // 5. FETCH MANAGEMENT PORTFOLIO
+    // =====================================================
+
+    const result = await branchPortfolioService.getBranchPortfolioForManagement(
+      branchId,
+      requester,
+      query,
+      language,
+    );
+
+    // =====================================================
+    // 6. SEND RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message: "Branch portfolio management list retrieved successfully",
+      data: result,
+    });
+  },
+);
+
 export const branchPortfolioController = {
   getBranchPortfolio,
   createBranchPortfolioCase,
@@ -376,4 +444,5 @@ export const branchPortfolioController = {
   addBranchPortfolioImages,
   reorderBranchPortfolioImages,
   deleteBranchPortfolioImage,
+  getBranchPortfolioForManagement,
 };

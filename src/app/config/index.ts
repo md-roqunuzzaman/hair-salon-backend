@@ -35,4 +35,18 @@ export default {
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     bucketName: process.env.R2_BUCKET_NAME,
   },
+
+  tencent: {
+    secretId: process.env.TENCENT_SECRET_ID,
+    secretKey: process.env.TENCENT_SECRET_KEY,
+
+    // Tencent TMS - Text Moderation
+    moderationBizType: process.env.TENCENT_MODERATION_BIZ_TYPE || "text_common",
+
+    // Tencent IMS - Image Moderation
+    imageBizType: process.env.TENCENT_IMS_BIZ_TYPE || "image_common",
+
+    // Verified working region for both TMS and IMS
+    region: process.env.TENCENT_REGION || "ap-guangzhou",
+  },
 };

@@ -73,4 +73,10 @@ router.delete(
   auth(Role.BRAND_OWNER),
   staffPortfolioController.deletePortfolioCase,
 );
+
+router.patch(
+  "/:staffId/portfolio/cases/:caseId/branch-visibility",
+  auth(Role.BRAND_OWNER),
+  staffPortfolioController.updateBranchPortfolioVisibility,
+);
 export const staffPortfolioRoutes = router;

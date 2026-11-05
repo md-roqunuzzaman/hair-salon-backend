@@ -64,4 +64,10 @@ router.delete(
   branchPortfolioController.deleteBranchPortfolioImage,
 );
 
+router.get(
+  "/:branchId/portfolio/manage",
+  auth(Role.BRAND_OWNER),
+  branchPortfolioController.getBranchPortfolioForManagement,
+);
+
 export const branchPortfolioRoutes = router;

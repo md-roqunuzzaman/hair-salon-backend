@@ -1,109 +1,77 @@
-import OpenAI from "openai";
+import * as tencentcloud from "tencentcloud-sdk-nodejs";
+import config from "../../config/index.js";
 
 // =====================================================
-// 1. OPENAI CLIENT CONFIGURATION
+// 1. MODERATION RESULT INTERFACE
 // =====================================================
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-
-  // Timeout per API attempt: 8 seconds.
-  timeout: 8000,
-
-  // Initial attempt + 1 retry = maximum 2 attempts.
-  maxRetries: 1,
-});
-
-// =====================================================
-// 2. MODERATION RESULT INTERFACE
-// =====================================================
+export type ModerationDecision = "PASS" | "REVIEW" | "REJECT";
 
 export interface IModerationResult {
   safe: boolean;
   flagged: boolean;
   reason: string | null;
   categories: string[];
+
+  // Backward-compatible addition.
+  decision?: ModerationDecision;
 }
 
 // =====================================================
-// 3. VALIDATE INDIVIDUAL MODERATION RESULT
+// 2. TENCENT CLIENT CONFIGURATION
 // =====================================================
 
-const extractModerationResult = (result: unknown): IModerationResult => {
-  // =====================================================
-  // 3.1 VALIDATE RESPONSE STRUCTURE
-  // =====================================================
+const getTencentCredentials = () => {
+  const secretId = config.tencent.secretId?.trim();
+  const secretKey = config.tencent.secretKey?.trim();
 
-  if (typeof result !== "object" || result === null || Array.isArray(result)) {
-    throw new Error("MODERATION_RESPONSE_INVALID");
+  if (!secretId || !secretKey) {
+    throw new Error("TENCENT_MODERATION_CREDENTIALS_MISSING");
   }
 
-  const moderation = result as Record<string, unknown>;
+  return { secretId, secretKey };
+};
 
-  // =====================================================
-  // 3.2 VALIDATE FLAGGED FIELD
-  // =====================================================
+const createTencentClientConfig = (endpoint: string) => ({
+  credential: getTencentCredentials(),
+  region: config.tencent.region || "ap-guangzhou",
+  profile: {
+    httpProfile: {
+      endpoint,
+      reqTimeout: 10,
+    },
+  },
+});
 
-  if (typeof moderation.flagged !== "boolean") {
-    throw new Error("MODERATION_RESPONSE_INVALID");
-  }
+const getTextClient = () => {
+  return new tencentcloud.tms.v20201229.Client(
+    createTencentClientConfig("tms.tencentcloudapi.com"),
+  );
+};
 
-  // =====================================================
-  // 3.3 VALIDATE CATEGORIES
-  // =====================================================
-
-  const categories = moderation.categories;
-
-  if (
-    typeof categories !== "object" ||
-    categories === null ||
-    Array.isArray(categories)
-  ) {
-    throw new Error("MODERATION_RESPONSE_INVALID");
-  }
-
-  const categoryEntries = Object.entries(categories);
-
-  if (
-    categoryEntries.length === 0 ||
-    categoryEntries.some(([, flagged]) => typeof flagged !== "boolean")
-  ) {
-    throw new Error("MODERATION_RESPONSE_INVALID");
-  }
-
-  // =====================================================
-  // 3.4 EXTRACT FLAGGED CATEGORIES
-  // =====================================================
-
-  const flaggedCategories = categoryEntries
-    .filter(([, flagged]) => flagged === true)
-    .map(([category]) => category);
-
-  if (!moderation.flagged && flaggedCategories.length > 0) {
-    throw new Error("MODERATION_RESPONSE_INVALID");
-  }
-
-  // =====================================================
-  // 3.5 RETURN VALIDATED RESULT
-  // =====================================================
-
-  return {
-    safe: !moderation.flagged,
-    flagged: moderation.flagged,
-    reason: flaggedCategories.length > 0 ? flaggedCategories.join(", ") : null,
-    categories: flaggedCategories,
-  };
+const getImageClient = () => {
+  return new tencentcloud.ims.v20201229.Client(
+    createTencentClientConfig("ims.tencentcloudapi.com"),
+  );
 };
 
 // =====================================================
-// 4. VALIDATE COMPLETE MODERATION RESPONSE
+// 3. SAFE EMPTY RESULT
 // =====================================================
 
-const extractModerationResponse = (response: unknown): IModerationResult => {
-  // =====================================================
-  // 4.1 VALIDATE RESPONSE STRUCTURE
-  // =====================================================
+const emptyResult = (): IModerationResult => ({
+  safe: true,
+  flagged: false,
+  reason: null,
+  categories: [],
+  decision: "PASS",
+});
 
+// =====================================================
+// 4. VALIDATE TENCENT MODERATION RESPONSE
+// =====================================================
+
+const extractModerationResult = (response: unknown): IModerationResult => {
   if (
     typeof response !== "object" ||
     response === null ||
@@ -112,45 +80,116 @@ const extractModerationResponse = (response: unknown): IModerationResult => {
     throw new Error("MODERATION_RESPONSE_INVALID");
   }
 
-  const results = (response as Record<string, unknown>).results;
+  const data = response as Record<string, unknown>;
 
-  if (!Array.isArray(results) || results.length === 0) {
+  if (
+    data.Suggestion !== "Pass" &&
+    data.Suggestion !== "Review" &&
+    data.Suggestion !== "Block"
+  ) {
     throw new Error("MODERATION_RESPONSE_INVALID");
   }
 
-  // =====================================================
-  // 4.2 VALIDATE EVERY RESULT
-  // =====================================================
+  const decision: ModerationDecision =
+    data.Suggestion === "Pass"
+      ? "PASS"
+      : data.Suggestion === "Review"
+        ? "REVIEW"
+        : "REJECT";
 
-  // Neither malformed results nor flagged later
-  // items can be ignored.
+  const categories: string[] = [];
 
-  const validated = Array.from(results, extractModerationResult);
+  if (typeof data.Label === "string") {
+    const label = data.Label.trim();
 
-  // =====================================================
-  // 4.3 COMBINE FLAGGED CATEGORIES
-  // =====================================================
+    if (label && label.toLowerCase() !== "normal") {
+      categories.push(label);
+    }
+  }
 
-  const categories = [
-    ...new Set(validated.flatMap((result) => result.categories)),
-  ];
+  if (typeof data.SubLabel === "string") {
+    const subLabel = data.SubLabel.trim();
 
-  const flagged = validated.some((result) => result.flagged);
+    if (
+      subLabel &&
+      subLabel.toLowerCase() !== "normal" &&
+      !categories.includes(subLabel)
+    ) {
+      categories.push(subLabel);
+    }
+  }
 
-  // =====================================================
-  // 4.4 RETURN COMBINED RESULT
-  // =====================================================
+  const safe = decision === "PASS";
 
   return {
-    safe: !flagged,
-    flagged,
-    reason: categories.length > 0 ? categories.join(", ") : null,
+    safe,
+    flagged: !safe,
+    reason: safe
+      ? null
+      : categories.length > 0
+        ? categories.join(", ")
+        : `Tencent moderation: ${data.Suggestion}`,
     categories,
+    decision,
   };
 };
 
 // =====================================================
-// 5. TEXT MODERATION
+// 5. COMBINE TEXT + IMAGE MODERATION RESULTS
+// =====================================================
+
+const combineModerationResults = (
+  results: IModerationResult[],
+): IModerationResult => {
+  if (results.length === 0) {
+    return emptyResult();
+  }
+
+  const decisions = results.map((result) => {
+    if (result.decision) {
+      return result.decision;
+    }
+
+    // Conservative fallback for legacy results.
+    return result.safe && !result.flagged ? "PASS" : "REJECT";
+  });
+
+  // Priority: REJECT > REVIEW > PASS.
+  const decision: ModerationDecision = decisions.includes("REJECT")
+    ? "REJECT"
+    : decisions.includes("REVIEW")
+      ? "REVIEW"
+      : "PASS";
+
+  const categories = [
+    ...new Set(results.flatMap((result) => result.categories)),
+  ];
+
+  const reasons = [
+    ...new Set(
+      results
+        .map((result) => result.reason)
+        .filter((reason): reason is string => Boolean(reason)),
+    ),
+  ];
+
+  const safe = decision === "PASS";
+
+  return {
+    safe,
+    flagged: !safe,
+    reason: safe
+      ? null
+      : reasons.length > 0
+        ? reasons.join("; ")
+        : `Tencent moderation: ${decision}`,
+    categories,
+    decision,
+  };
+};
+
+// =====================================================
+// 6. TEXT MODERATION - TENCENT TMS
 // =====================================================
 
 const moderateText = async (
@@ -158,67 +197,79 @@ const moderateText = async (
 ): Promise<IModerationResult> => {
   // Rating-only review is allowed.
   if (!text?.trim()) {
-    return {
-      safe: true,
-      flagged: false,
-      reason: null,
-      categories: [],
-    };
+    return emptyResult();
   }
 
-  // Timeout and retry are controlled by the
-  // OpenAI client configuration.
+  const content = text.trim();
 
-  const response = await openai.moderations.create({
-    model: "omni-moderation-latest",
-    input: text.trim(),
-  });
+  const request = {
+    Content: Buffer.from(content, "utf8").toString("base64"),
+    Type: "TEXT",
+    ...(config.tencent.moderationBizType
+      ? { BizType: config.tencent.moderationBizType }
+      : {}),
+  };
 
-  // Invalid responses throw an error.
-  // API failures are never treated as safe.
+  // API errors must propagate to the caller.
+  // Never treat an API failure as safe.
+  const response = await getTextClient().TextModeration(request);
 
-  return extractModerationResponse(response);
+  return extractModerationResult(response);
 };
 
 // =====================================================
-// 6. IMAGE MODERATION
+// 7. IMAGE MODERATION - TENCENT IMS
 // =====================================================
 
 const moderateImage = async (imageUrl: string): Promise<IModerationResult> => {
   // =====================================================
-  // 6.1 VALIDATE IMAGE URL
+  // 7.1 VALIDATE IMAGE URL
   // =====================================================
 
   if (!imageUrl?.trim()) {
     throw new Error("IMAGE_URL_REQUIRED");
   }
 
+  let parsedUrl: URL;
+
+  try {
+    parsedUrl = new URL(imageUrl.trim());
+  } catch {
+    throw new Error("IMAGE_URL_INVALID");
+  }
+
+  if (parsedUrl.protocol !== "https:" || !parsedUrl.hostname) {
+    throw new Error("IMAGE_URL_INVALID");
+  }
+
+  // IMPORTANT:
+  // This URL must originate from our trusted
+  // Cloudflare R2 signed URL generator.
+  // Do not expose this function to arbitrary
+  // user-provided URLs.
+
   // =====================================================
-  // 6.2 MODERATE IMAGE
+  // 7.2 MODERATE IMAGE
   // =====================================================
 
-  const response = await openai.moderations.create({
-    model: "omni-moderation-latest",
+  const request = {
+    FileUrl: parsedUrl.toString(),
+    ...(config.tencent.imageBizType
+      ? { BizType: config.tencent.imageBizType }
+      : {}),
+  };
 
-    input: [
-      {
-        type: "image_url",
-        image_url: {
-          url: imageUrl,
-        },
-      },
-    ],
-  });
+  const response = await getImageClient().ImageModeration(request);
 
   // =====================================================
-  // 6.3 RETURN VALIDATED RESULT
+  // 7.3 VALIDATE AND RETURN RESULT
   // =====================================================
 
-  return extractModerationResponse(response);
+  return extractModerationResult(response);
 };
 
 // =====================================================
-// 7. REVIEW CONTENT MODERATION
+// 8. REVIEW CONTENT MODERATION
 // Text + multiple images
 // =====================================================
 
@@ -226,64 +277,49 @@ const moderateReviewContent = async (
   text: string | null | undefined,
   imageUrls: string[],
 ): Promise<IModerationResult> => {
-  const inputs: any[] = [];
+  const results: IModerationResult[] = [];
 
   // =====================================================
-  // 7.1 ADD TEXT INPUT
+  // 8.1 HANDLE RATING-ONLY REVIEW
+  // =====================================================
+
+  if (!text?.trim() && imageUrls.length === 0) {
+    return emptyResult();
+  }
+
+  // =====================================================
+  // 8.2 MODERATE TEXT
   // =====================================================
 
   if (text?.trim()) {
-    inputs.push({
-      type: "text",
-      text: text.trim(),
-    });
+    const textResult = await moderateText(text);
+    results.push(textResult);
   }
 
   // =====================================================
-  // 7.2 ADD IMAGE INPUTS
+  // 8.3 MODERATE EVERY IMAGE
   // =====================================================
 
+  // Sequential requests avoid uncontrolled API bursts.
+  // Do not stop at the first flagged image:
+  // every image must receive a moderation result.
   for (const imageUrl of imageUrls) {
-    inputs.push({
-      type: "image_url",
-
-      image_url: {
-        url: imageUrl,
-      },
-    });
+    const imageResult = await moderateImage(imageUrl);
+    results.push(imageResult);
   }
 
   // =====================================================
-  // 7.3 HANDLE RATING-ONLY REVIEW
+  // 8.4 COMBINE RESULTS
   // =====================================================
 
-  if (inputs.length === 0) {
-    return {
-      safe: true,
-      flagged: false,
-      reason: null,
-      categories: [],
-    };
-  }
+  // Any failed request throws before this point.
+  // REJECT takes priority over REVIEW and PASS.
 
-  // =====================================================
-  // 7.4 MODERATE REVIEW CONTENT
-  // =====================================================
-
-  const response = await openai.moderations.create({
-    model: "omni-moderation-latest",
-    input: inputs,
-  });
-
-  // =====================================================
-  // 7.5 RETURN VALIDATED RESULT
-  // =====================================================
-
-  return extractModerationResponse(response);
+  return combineModerationResults(results);
 };
 
 // =====================================================
-// 8. EXPORT SERVICE
+// 9. EXPORT SERVICE
 // =====================================================
 
 export const contentModerationService = {

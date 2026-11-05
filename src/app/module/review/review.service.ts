@@ -78,9 +78,6 @@ const createReview = async (
 
   // =====================================================
   // 5. ONE REVIEW PER APPOINTMENT
-  //
-  // Early check for a clear API error.
-  // Database unique constraint is the final protection.
   // =====================================================
 
   const existingReview = await prisma.review.findUnique({
@@ -103,16 +100,12 @@ const createReview = async (
 
   const imageObjectKeys = payload.imageObjectKeys ?? [];
 
-  // Prevent duplicate images in the same review.
-
   if (new Set(imageObjectKeys).size !== imageObjectKeys.length) {
     throw new AppError("Duplicate review images are not allowed", 400);
   }
 
   if (imageObjectKeys.length > 0) {
     const expectedPrefix = `reviews/${customerId}/`;
-
-    // Validate image object key ownership.
 
     const invalidObjectKey = imageObjectKeys.find(
       (objectKey) => !objectKey.startsWith(expectedPrefix),
@@ -121,8 +114,6 @@ const createReview = async (
     if (invalidObjectKey) {
       throw new AppError("Invalid review image object key", 400);
     }
-
-    // Verify referenced images exist in Cloudflare R2.
 
     await Promise.all(
       imageObjectKeys.map((objectKey) =>
@@ -133,18 +124,11 @@ const createReview = async (
 
   // =====================================================
   // 7. GENERATE TEMPORARY SIGNED IMAGE URLS
-  //
-  // Used for:
-  // - Automated image moderation
-  // - Immediate API response
-  //
-  // Database stores objectKey only.
   // =====================================================
 
   const reviewImages = await Promise.all(
     imageObjectKeys.map(async (objectKey) => ({
       objectKey,
-
       url: await uploadService.getImageUrl(objectKey),
     })),
   );
@@ -152,7 +136,7 @@ const createReview = async (
   const imageUrls = reviewImages.map((image) => image.url);
 
   // =====================================================
-  // 8. AUTOMATED TEXT + IMAGE MODERATION
+  // 8. TENCENT TEXT + IMAGE MODERATION
   // =====================================================
 
   let moderationStatus: ReviewModerationStatus = ReviewModerationStatus.PENDING;
@@ -166,32 +150,50 @@ const createReview = async (
         imageUrls,
       );
 
-    if (moderationResult.safe) {
-      moderationStatus = ReviewModerationStatus.VISIBLE;
+    // Tencent decision mapping:
+    // PASS   -> VISIBLE
+    // REVIEW -> PENDING
+    // REJECT -> HIDDEN
 
-      moderationReason = null;
-    } else {
-      moderationStatus = ReviewModerationStatus.HIDDEN;
+    switch (moderationResult.decision) {
+      case "PASS": {
+        moderationStatus = ReviewModerationStatus.VISIBLE;
+        moderationReason = null;
+        break;
+      }
 
-      moderationReason = moderationResult.reason ?? "Unsafe review content";
+      case "REVIEW": {
+        moderationStatus = ReviewModerationStatus.PENDING;
+        moderationReason =
+          moderationResult.reason ?? "Manual moderation required";
+        break;
+      }
+
+      case "REJECT": {
+        moderationStatus = ReviewModerationStatus.HIDDEN;
+        moderationReason = moderationResult.reason ?? "Unsafe review content";
+        break;
+      }
+
+      default: {
+        // Unknown decisions must never be published.
+        moderationStatus = ReviewModerationStatus.PENDING;
+        moderationReason = "Moderation decision unavailable";
+        break;
+      }
     }
   } catch (error) {
     logUnexpectedError(error, {
-      source: "src/app/module/review/review.service.ts:178",
+      source: "review.service.ts:createReview:moderation",
     });
 
+    // Fail closed: do not publish unverified content.
     moderationStatus = ReviewModerationStatus.PENDING;
-
     moderationReason = "Moderation service unavailable";
   }
 
   // =====================================================
-  // 9. CREATE REVIEW — CONCURRENCY SAFE
-  //
-  // Database unique constraint prevents multiple reviews
-  // for the same appointment.
-  //
-  // Prisma P2002 is converted to a meaningful API error.
+  // 9. CREATE REVIEW - CONCURRENCY SAFE
   // =====================================================
 
   const review = await (async () => {
@@ -199,19 +201,14 @@ const createReview = async (
       return await prisma.review.create({
         data: {
           customerId,
-
           appointmentId: appointment.id,
-
           branchId: appointment.branchId,
-
           staffId: appointment.staffId,
 
           rating: payload.rating,
-
           comment: payload.comment,
 
           moderationStatus,
-
           moderationReason,
 
           images:
@@ -227,20 +224,15 @@ const createReview = async (
 
         select: {
           id: true,
-
           rating: true,
-
           comment: true,
-
           moderationStatus: true,
-
           moderationReason: true,
 
           images: {
             orderBy: {
               sortOrder: "asc",
             },
-
             select: {
               objectKey: true,
               sortOrder: true,
@@ -251,22 +243,14 @@ const createReview = async (
         },
       });
     } catch (error) {
-      // -------------------------------------------------
-      // HANDLE UNIQUE CONSTRAINT VIOLATION
-      // -------------------------------------------------
-
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2002"
       ) {
-        // Check whether the conflict is caused by
-        // an existing review for this appointment.
-
         const duplicateReview = await prisma.review.findUnique({
           where: {
             appointmentId,
           },
-
           select: {
             id: true,
           },
@@ -277,17 +261,12 @@ const createReview = async (
         }
       }
 
-      // Preserve all unrelated Prisma/database errors.
-
       throw error;
     }
   })();
 
   // =====================================================
   // 10. GENERATE RESPONSE IMAGE URLS
-  //
-  // Database image ordering is the source of truth.
-  // Reuse already generated signed URLs where possible.
   // =====================================================
 
   const images = await Promise.all(
@@ -310,92 +289,47 @@ const createReview = async (
 
   // =====================================================
   // 11. MULTILINGUAL REVIEW NOTIFICATION
-  //
-  // Supported languages:
-  // - en
-  // - zh-CN
-  // - zh-HK
-  //
-  // Notification failure must not fail review creation.
   // =====================================================
 
   try {
     let notificationType: string;
-
     let translations: INotificationTranslations;
-
-    // -------------------------------------------------
-    // REVIEW PUBLISHED
-    // -------------------------------------------------
 
     if (review.moderationStatus === ReviewModerationStatus.VISIBLE) {
       notificationType = "REVIEW_PUBLISHED";
-
       translations = notificationTemplates.REVIEW_PUBLISHED();
-    }
-
-    // -------------------------------------------------
-    // REVIEW HIDDEN / NEEDS CHANGES
-    // -------------------------------------------------
-    else if (review.moderationStatus === ReviewModerationStatus.HIDDEN) {
+    } else if (review.moderationStatus === ReviewModerationStatus.HIDDEN) {
       notificationType = "REVIEW_NEEDS_CHANGES";
-
       translations = notificationTemplates.REVIEW_NEEDS_CHANGES();
-    }
-
-    // -------------------------------------------------
-    // REVIEW PENDING MODERATION
-    // -------------------------------------------------
-    else {
+    } else {
       notificationType = "REVIEW_PENDING";
-
       translations = notificationTemplates.REVIEW_PENDING();
     }
 
-    // -------------------------------------------------
-    // SAVE MULTILINGUAL NOTIFICATION
-    // -------------------------------------------------
-
     await notificationService.createNotification({
       userId: customerId,
-
       type: notificationType,
-
-      // Default English fallback.
-
       title: translations.en!.title!,
-
       message: translations.en!.message!,
-
-      // All supported languages.
-
       translations,
     });
   } catch (error) {
     logUnexpectedError(error, {
-      source: "src/app/module/review/review.service.ts:372",
+      source: "review.service.ts:createReview:notification",
     });
   }
 
   // =====================================================
   // 12. RESPONSE
-  //
-  // Preserve existing API response structure.
   // =====================================================
 
   return {
     id: review.id,
-
     rating: review.rating,
-
     comment: review.comment,
-
     images,
-
     moderationStatus: review.moderationStatus,
-
     moderationReason: review.moderationReason,
-
     createdAt: review.createdAt.toISOString(),
   };
 };
@@ -1090,6 +1024,7 @@ const getMyReviews = async (
     },
   };
 };
+
 const getStaffReviews = async (
   staffId: string,
   query: Record<string, any>,
@@ -1316,6 +1251,7 @@ const getMyStaffReview = async (
 
   return getStaffReviews(staff.id, query, language);
 };
+
 const updateReview = async (
   customerId: string,
   reviewId: string,
@@ -1437,7 +1373,7 @@ const updateReview = async (
     const imageUrls = signedImages.map((image) => image.url);
 
     // ===================================================
-    // 9. MODERATE FINAL TEXT + IMAGES
+    // 9. TENCENT TEXT + IMAGE MODERATION
     // ===================================================
 
     try {
@@ -1447,20 +1383,45 @@ const updateReview = async (
           imageUrls,
         );
 
-      if (moderationResult.safe) {
-        moderationUpdate = {
-          moderationStatus: ReviewModerationStatus.VISIBLE,
-          moderationReason: null,
-        };
-      } else {
-        moderationUpdate = {
-          moderationStatus: ReviewModerationStatus.HIDDEN,
-          moderationReason: moderationResult.reason ?? "Unsafe review content",
-        };
+      switch (moderationResult.decision) {
+        case "PASS": {
+          moderationUpdate = {
+            moderationStatus: ReviewModerationStatus.VISIBLE,
+            moderationReason: null,
+          };
+          break;
+        }
+
+        case "REVIEW": {
+          moderationUpdate = {
+            moderationStatus: ReviewModerationStatus.PENDING,
+            moderationReason:
+              moderationResult.reason ?? "Manual moderation required",
+          };
+          break;
+        }
+
+        case "REJECT": {
+          moderationUpdate = {
+            moderationStatus: ReviewModerationStatus.HIDDEN,
+            moderationReason:
+              moderationResult.reason ?? "Unsafe review content",
+          };
+          break;
+        }
+
+        default: {
+          // Unknown decision must never publish content.
+          moderationUpdate = {
+            moderationStatus: ReviewModerationStatus.PENDING,
+            moderationReason: "Moderation decision unavailable",
+          };
+          break;
+        }
       }
     } catch (error) {
       logUnexpectedError(error, {
-        source: "src/app/module/review/review.service.ts:1457",
+        source: "review.service.ts:updateReview:moderation",
       });
 
       moderationUpdate = {
@@ -1585,7 +1546,7 @@ const updateReview = async (
       });
     } catch (error) {
       logUnexpectedError(error, {
-        source: "src/app/module/review/review.service.ts:1580",
+        source: "review.service.ts:updateReview:notification",
       });
     }
   }
@@ -1908,28 +1869,7 @@ const saveReviewReply = async (
   const isNewReply = !review.replyText;
 
   // =====================================================
-  // 6. AUTOMATED REPLY MODERATION
-  // =====================================================
-
-  // let moderationResult;
-
-  // try {
-  //   moderationResult = await contentModerationService.moderateText(
-  //     payload.reply,
-  //   );
-  // } catch {
-  //   throw new AppError("REVIEW_REPLY_MODERATION_UNAVAILABLE", 503);
-  // }
-
-  // if (!moderationResult.safe) {
-  //   throw new AppError("REVIEW_REPLY_CONTENT_NOT_ALLOWED", 422);
-  // }
-  // =====================================================
-  // 6. AUTOMATED REPLY MODERATION
-  // =====================================================
-
-  // =====================================================
-  // 6. AUTOMATED REPLY MODERATION
+  // 6. TENCENT TEXT MODERATION
   // =====================================================
 
   let moderationResult;
@@ -1943,20 +1883,16 @@ const saveReviewReply = async (
       source: "review.service.ts:saveReviewReply:moderateText",
     });
 
-    const status =
-      error !== null && typeof error === "object" && "status" in error
-        ? error.status
-        : undefined;
-
-    console.error("Review reply moderation failure", {
-      provider: "OpenAI",
-      status: typeof status === "number" ? status : undefined,
-    });
-
+    // Tencent API unavailable or response invalid.
+    // Do not save unverified replies.
     throw new AppError("REVIEW_REPLY_MODERATION_UNAVAILABLE", 503);
   }
 
-  if (!moderationResult.safe) {
+  // Only PASS may be published.
+  // REVIEW and REJECT are both blocked for replies.
+  // The current schema has no separate reply moderation status.
+
+  if (moderationResult.decision !== "PASS") {
     throw new AppError("REVIEW_REPLY_CONTENT_NOT_ALLOWED", 422);
   }
 
@@ -1989,8 +1925,6 @@ const saveReviewReply = async (
 
   // =====================================================
   // 8. MULTILINGUAL CUSTOMER NOTIFICATION
-  //
-  // Only first reply, not reply edits.
   // =====================================================
 
   if (isNewReply) {
@@ -2006,7 +1940,7 @@ const saveReviewReply = async (
       });
     } catch (error) {
       logUnexpectedError(error, {
-        source: "src/app/module/review/review.service.ts:1960",
+        source: "review.service.ts:saveReviewReply:notification",
       });
     }
   }
@@ -2268,6 +2202,270 @@ const getPendingReviews = async (
     },
   };
 };
+const getModerationReviews = async (
+  userId: string,
+  role: Role,
+  query: {
+    page?: number | string;
+    limit?: number | string;
+    status?: string;
+    branchId?: string;
+    rating?: number | string;
+  },
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  // =====================================================
+  // 1. ROLE VALIDATION
+  // =====================================================
+
+  if (role !== Role.BRAND_OWNER && role !== Role.BRANCH_MANAGER) {
+    throw new AppError("FORBIDDEN", 403);
+  }
+
+  // =====================================================
+  // 2. PAGINATION
+  // =====================================================
+
+  const page = Number(query.page ?? 1);
+  const limit = Number(query.limit ?? 20);
+
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new AppError("Invalid page", 400);
+  }
+
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new AppError("Invalid limit", 400);
+  }
+
+  const skip = (page - 1) * limit;
+
+  if (!Number.isSafeInteger(skip)) {
+    throw new AppError("Pagination offset is too large", 400);
+  }
+
+  // =====================================================
+  // 3. MODERATION STATUS FILTER
+  // =====================================================
+
+  const status = query.status ?? "ALL";
+
+  const allowedStatuses = ["ALL", "PENDING", "VISIBLE", "HIDDEN"];
+
+  if (!allowedStatuses.includes(status)) {
+    throw new AppError("Invalid moderation status", 400);
+  }
+
+  // =====================================================
+  // 4. RATING FILTER
+  // =====================================================
+
+  let rating: number | undefined;
+
+  if (query.rating !== undefined && query.rating !== "") {
+    rating = Number(query.rating);
+
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      throw new AppError("Rating must be between 1 and 5", 400);
+    }
+  }
+
+  // =====================================================
+  // 5. BRANCH ACCESS SCOPE
+  // =====================================================
+
+  let allowedBranchIds: string[] | undefined;
+
+  if (role === Role.BRANCH_MANAGER) {
+    const assignments = await prisma.branchManagerBranch.findMany({
+      where: {
+        userId,
+      },
+      select: {
+        branchId: true,
+      },
+    });
+
+    allowedBranchIds = assignments.map((item) => item.branchId);
+
+    if (query.branchId && !allowedBranchIds.includes(query.branchId)) {
+      throw new AppError("FORBIDDEN_BRANCH_SCOPE", 403);
+    }
+  }
+
+  // =====================================================
+  // 6. BUILD FILTER
+  // =====================================================
+
+  const where: Prisma.ReviewWhereInput = {
+    ...(query.branchId
+      ? { branchId: query.branchId }
+      : allowedBranchIds !== undefined
+        ? { branchId: { in: allowedBranchIds } }
+        : {}),
+
+    ...(status !== "ALL" && {
+      moderationStatus: status as ReviewModerationStatus,
+    }),
+
+    ...(rating !== undefined && { rating }),
+  };
+
+  // =====================================================
+  // 7. FETCH REVIEWS + TOTAL
+  // =====================================================
+
+  const [reviews, total] = await prisma.$transaction([
+    prisma.review.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        branchId: true,
+        rating: true,
+        comment: true,
+        moderationStatus: true,
+        moderationReason: true,
+        createdAt: true,
+        updatedAt: true,
+        replyText: true,
+        repliedAt: true,
+
+        customer: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        branch: {
+          select: {
+            id: true,
+            name: true,
+            translations: true,
+          },
+        },
+
+        staff: {
+          select: {
+            id: true,
+            user: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        },
+
+        appointment: {
+          select: {
+            id: true,
+            itemName: true,
+            itemNameTranslations: true,
+          },
+        },
+
+        images: {
+          orderBy: {
+            sortOrder: "asc",
+          },
+          select: {
+            objectKey: true,
+            sortOrder: true,
+          },
+        },
+      },
+    }),
+
+    prisma.review.count({ where }),
+  ]);
+
+  // =====================================================
+  // 8. RESPONSE + LOCALIZATION
+  // =====================================================
+
+  const items = await Promise.all(
+    reviews.map(async (review) => {
+      const localizedBranch = getLocalizedContent(
+        review.branch.translations,
+        language,
+        { name: review.branch.name },
+      );
+
+      const localizedItem = getLocalizedContent(
+        review.appointment.itemNameTranslations,
+        language,
+        { name: review.appointment.itemName },
+      );
+
+      const images = await Promise.all(
+        review.images.map(async (image) => ({
+          objectKey: image.objectKey,
+          url: await uploadService.getImageUrl(image.objectKey),
+          sortOrder: image.sortOrder,
+        })),
+      );
+
+      return {
+        id: review.id,
+        branchId: review.branchId,
+        rating: review.rating,
+        comment: review.comment,
+
+        moderationStatus: review.moderationStatus,
+        moderationReason: review.moderationReason,
+
+        customer: review.customer,
+
+        branch: {
+          id: review.branch.id,
+          name: localizedBranch.name,
+        },
+
+        staff: {
+          id: review.staff.id,
+          name: review.staff.user.name,
+        },
+
+        appointment: {
+          id: review.appointment.id,
+          itemName: localizedItem.name,
+        },
+
+        reply: review.replyText
+          ? {
+              text: review.replyText,
+              repliedAt: review.repliedAt?.toISOString() ?? null,
+            }
+          : null,
+
+        images,
+
+        createdAt: review.createdAt.toISOString(),
+        updatedAt: review.updatedAt.toISOString(),
+      };
+    }),
+  );
+
+  // =====================================================
+  // 9. PAGINATION RESPONSE
+  // =====================================================
+
+  const totalPages = Math.ceil(total / limit);
+
+  return {
+    items,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    },
+  };
+};
 export const reviewService = {
   createReview,
   getBranchReviews,
@@ -2280,4 +2478,5 @@ export const reviewService = {
   saveReviewReply,
   deleteReviewReply,
   getPendingReviews,
+  getModerationReviews,
 };

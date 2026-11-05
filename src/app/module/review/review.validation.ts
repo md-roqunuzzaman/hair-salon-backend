@@ -92,6 +92,19 @@ const getPendingReviewsValidationSchema = z.object({
   }),
 });
 
+const getModerationReviewsValidationSchema = z.object({
+  query: z.object({
+    page: z.coerce.number().int().positive().default(1),
+
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+
+    status: z.enum(["ALL", "PENDING", "VISIBLE", "HIDDEN"]).default("ALL"),
+
+    branchId: z.uuid().optional(),
+
+    rating: z.coerce.number().int().min(1).max(5).optional(),
+  }),
+});
 export const reviewValidation = {
   createReviewValidationSchema,
   getReviewsValidationSchema,
@@ -99,4 +112,5 @@ export const reviewValidation = {
   moderateReviewValidationSchema,
   reviewReplyValidationSchema,
   getPendingReviewsValidationSchema,
+  getModerationReviewsValidationSchema,
 };

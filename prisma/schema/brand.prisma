@@ -7,6 +7,14 @@ model Brand {
   logoObjectKey String?
   translations  Json?
   banners       Banner[]
+
+  // =====================================================
+  // BRAND INTERNATIONAL CONFIGURATION
+  // =====================================================
+
+  countryCode String @default("HK")
+  currency    String @default("HKD")
+  timezone    String @default("Asia/Hong_Kong")
   // Banner carousel override settings
 
   primaryColor           String                  @default("#0F766E")

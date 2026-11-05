@@ -291,6 +291,62 @@ const getPendingReviews = catchAsync(async (req: Request, res: Response) => {
     data,
   });
 });
+
+const getModerationReviews = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. CHECK AUTHENTICATION
+  // =====================================================
+
+  if (!req.user) {
+    throw new AppError("AUTH_REQUIRED", 401);
+  }
+
+  // =====================================================
+  // 2. RESOLVE LANGUAGE
+  // =====================================================
+
+  const language = isLanguage(res.locals.language)
+    ? res.locals.language
+    : DEFAULT_LANGUAGE;
+
+  // =====================================================
+  // 3. READ QUERY PARAMETERS
+  // =====================================================
+
+  const getQueryString = (value: unknown): string | undefined => {
+    return typeof value === "string" ? value : undefined;
+  };
+
+  const query = {
+    page: getQueryString(req.query.page),
+    limit: getQueryString(req.query.limit),
+    status: getQueryString(req.query.status),
+    branchId: getQueryString(req.query.branchId),
+    rating: getQueryString(req.query.rating),
+  };
+
+  // =====================================================
+  // 4. FETCH MERCHANT MODERATION REVIEWS
+  // =====================================================
+
+  const result = await reviewService.getModerationReviews(
+    req.user.userId,
+    req.user.role,
+    query,
+    language,
+  );
+
+  // =====================================================
+  // 5. SEND RESPONSE
+  // =====================================================
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: "Moderation reviews fetched successfully",
+    data: result,
+  });
+});
 export const reviewController = {
   createReview,
   getBranchReviews,
@@ -303,4 +359,5 @@ export const reviewController = {
   saveReviewReply,
   deleteReviewReply,
   getPendingReviews,
+  getModerationReviews,
 };

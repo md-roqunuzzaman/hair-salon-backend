@@ -452,10 +452,16 @@ const getMyAppointments = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user.userId;
 
   // =====================================================
-  // 2. QUERY
+  // 2. READ QUERY PARAMETERS FROM URL
   // =====================================================
 
-  const query = req.body as IMyStaffAppointmentsQuery;
+  const query: IMyStaffAppointmentsQuery = {
+    type: req.query.type as IMyStaffAppointmentsQuery["type"],
+    date: req.query.date as string | undefined,
+    status: req.query.status as IMyStaffAppointmentsQuery["status"],
+    page: req.query.page as string | undefined,
+    limit: req.query.limit as string | undefined,
+  };
 
   // =====================================================
   // 3. LANGUAGE
@@ -466,7 +472,7 @@ const getMyAppointments = catchAsync(async (req: Request, res: Response) => {
     : DEFAULT_LANGUAGE;
 
   // =====================================================
-  // 4. SERVICE
+  // 4. FETCH STAFF APPOINTMENTS
   // =====================================================
 
   const result = await staffService.getMyAppointments(userId, query, language);
