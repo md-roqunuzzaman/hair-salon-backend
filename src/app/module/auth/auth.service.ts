@@ -26,6 +26,7 @@ import { AppError } from "../../utils/app-error.js";
 import { clearSuccessfulLoginAccountLimit } from "../../middleware/login-rate-limit.js";
 import { assertBcryptPasswordLength } from "../../utils/password-security.js";
 import { withAuthSessionStorage } from "../../utils/auth-session.js";
+import parsePhoneNumberFromString from "libphonenumber-js";
 
 const OTP_TTL_SECONDS = 5 * 60; // 5 minutes
 const RESET_TOKEN_TTL_SECONDS = 10 * 60; // 10 minutes
@@ -100,7 +101,42 @@ const registerUser = async (payload: IRegisterUserPayload) => {
 
   const normalizedName = name.trim();
   const email = payload.email.trim().toLowerCase();
-  const phone = payload.phone?.trim() || null;
+
+  // =====================================================
+  // INTERNATIONAL PHONE NUMBER VALIDATION + NORMALIZATION
+  // =====================================================
+
+  let phone: string | null = null;
+
+  if (payload.phone !== undefined && payload.phone !== null) {
+    const rawPhone = payload.phone.trim();
+
+    if (rawPhone.length === 0) {
+      throw new AppError("Phone number cannot be empty when provided", 422);
+    }
+
+    // Require an international number with country calling code.
+    if (!rawPhone.startsWith("+")) {
+      throw new AppError(
+        "Phone number must include country code (e.g. +85291234567)",
+        422,
+      );
+    }
+
+    const parsedPhone = parsePhoneNumberFromString(rawPhone);
+
+    if (!parsedPhone || !parsedPhone.isValid()) {
+      throw new AppError("Invalid international phone number", 422);
+    }
+
+    // Save standardized E.164 format.
+    // HK: +85291234567
+    // BD: +8801712345678
+    // CN: +8613812345678
+    // UK: +447911123456
+
+    phone = parsedPhone.number;
+  }
 
   // =====================================================
   // 1. CHECK EXISTING EMAIL

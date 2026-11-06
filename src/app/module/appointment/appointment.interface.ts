@@ -181,6 +181,7 @@ export interface IAppointmentDetails {
 
   price: number;
   currency: string;
+  timezone: string | null;
 
   // =====================================================
   // G8 — DEPOSIT & REMAINING BALANCE

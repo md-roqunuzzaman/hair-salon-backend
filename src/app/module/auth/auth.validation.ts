@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { isWithinBcryptPasswordLimit } from "../../utils/password-security.js";
-
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 const registerValidationSchema = z.object({
   body: z.object({
     name: z
@@ -10,10 +10,32 @@ const registerValidationSchema = z.object({
 
     email: z.email("Not email !!"),
 
+    // =====================================================
+    // INTERNATIONAL PHONE NUMBER VALIDATION
+    // Supports all countries supported by libphonenumber-js
+    // Phone is optional
+    // Country code is required (E.164)
+    // =====================================================
+
     phone: z
       .string()
-      .min(8, "Phone number must be at least 8 characters")
-      .max(20, "Phone number must not exceed 20 characters")
+      .trim()
+      .refine(
+        (value) => {
+          const parsedPhone = parsePhoneNumberFromString(value);
+
+          return parsedPhone?.isValid() === true;
+        },
+        {
+          message:
+            "Invalid international phone number. Please include a valid country code (e.g. +85291234567)",
+        },
+      )
+      .transform((value) => {
+        const parsedPhone = parsePhoneNumberFromString(value);
+
+        return parsedPhone!.number;
+      })
       .optional(),
 
     password: z
@@ -31,7 +53,6 @@ const registerValidationSchema = z.object({
       }),
   }),
 });
-
 const LoginZodSchema = z.object({
   body: z.object({
     email: z.email("Not email !!"),

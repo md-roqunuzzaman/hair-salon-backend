@@ -39,12 +39,10 @@ export interface IPackageDisplayFields {
 }
 
 // =====================================================
-// CREATE PACKAGE
+// CREATE GROUP PURCHASE PACKAGE
 // =====================================================
 
 export interface ICreatePackagePayload extends IPackageDisplayFields {
-  type: PackageType;
-
   name: string;
 
   description?: string;
@@ -61,19 +59,21 @@ export interface ICreatePackagePayload extends IPackageDisplayFields {
 
   branchIds: string[];
 
-  imageObjectKeys?: string[]; // optional
+  staffIds?: string[];
+
+  imageObjectKeys?: string[];
 
   listingStatus: ListingStatus;
 
-  // GROUP_PURCHASE_PACKAGE only
+  // GROUP PURCHASE SETTINGS
 
-  capacity?: number;
+  capacity: number;
 
-  purchaseLimitPerCustomer?: number;
+  purchaseLimitPerCustomer: number;
 
-  salesStartAt?: string;
+  salesStartAt: string;
 
-  salesEndAt?: string;
+  salesEndAt: string;
 }
 
 // =====================================================

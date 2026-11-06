@@ -1,4 +1,8 @@
-import { assertCurrencyAmount, assertSameCurrency, getPurchaseCurrency } from "../../utils/transaction-currency.utils.js";
+import {
+  assertCurrencyAmount,
+  assertSameCurrency,
+  getPurchaseCurrency,
+} from "../../utils/transaction-currency.utils.js";
 import { appointmentTimezone } from "../../utils/appointment-timezone.utils.js";
 import { snapshotData } from "../cancellation-refund/policy.snapshot.js";
 import { isSnapshot } from "../cancellation-refund/policy.calculation.js";
@@ -60,7 +64,10 @@ import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
 import { getPaymentDisplayStatus } from "../../utils/getPaymentDisplayStatus.js";
-import { createDateTimeInTimezone, assertTimezoneDuration } from "../../utils/brand-timezone.utils.js";
+import {
+  createDateTimeInTimezone,
+  assertTimezoneDuration,
+} from "../../utils/brand-timezone.utils.js";
 
 const PAY_NOW_HOLD_MINUTES = 5;
 const MAX_TRANSACTION_RETRIES = 3;
@@ -1085,7 +1092,13 @@ const createPayNowAppointment = async (
           // =================================================
 
           assertCurrencyAmount(price, bookingCurrency);
-          assertTimezoneDuration(date, startTime, endTime, durationMinutes, bookingTimezone);
+          assertTimezoneDuration(
+            date,
+            startTime,
+            endTime,
+            durationMinutes,
+            bookingTimezone,
+          );
           const appointmentStartUTC = createDateTimeInTimezone(
             date,
             startTime,
@@ -1546,7 +1559,13 @@ const createDepositAppointment = async (
           // =================================================
 
           assertCurrencyAmount(price, bookingCurrency);
-          assertTimezoneDuration(date, startTime, endTime, durationMinutes, bookingTimezone);
+          assertTimezoneDuration(
+            date,
+            startTime,
+            endTime,
+            durationMinutes,
+            bookingTimezone,
+          );
           const appointmentStartUTC = createDateTimeInTimezone(
             date,
             startTime,
@@ -1666,8 +1685,14 @@ const createDepositAppointment = async (
               timezone: bookingTimezone,
 
               depositPercentage,
-              depositAmount: assertCurrencyAmount(depositAmount, bookingCurrency),
-              remainingAmount: assertCurrencyAmount(remainingAmount, bookingCurrency),
+              depositAmount: assertCurrencyAmount(
+                depositAmount,
+                bookingCurrency,
+              ),
+              remainingAmount: assertCurrencyAmount(
+                remainingAmount,
+                bookingCurrency,
+              ),
 
               holdExpiresAt,
 
@@ -2041,7 +2066,13 @@ const createReserveAppointment = async (
           // =================================================
 
           assertCurrencyAmount(price, bookingCurrency);
-          assertTimezoneDuration(date, startTime, endTime, durationMinutes, bookingTimezone);
+          assertTimezoneDuration(
+            date,
+            startTime,
+            endTime,
+            durationMinutes,
+            bookingTimezone,
+          );
           const appointmentStartUTC = createDateTimeInTimezone(
             date,
             startTime,
@@ -2332,7 +2363,7 @@ const getMyAppointments = async (
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 2. DYNAMIC BRAND DATE AND TIME — H01 FIX
+  // 2. CURRENT BRAND TIMEZONE — LEGACY FALLBACK
   // =====================================================
 
   const brand = await prisma.brand.findFirst({
@@ -2346,31 +2377,6 @@ const getMyAppointments = async (
   }
 
   const now = new Date();
-
-  const brandParts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: brand.timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
-
-  const getPart = (type: string): string =>
-    brandParts.find((part) => part.type === type)?.value ?? "";
-
-  const brandToday = [getPart("year"), getPart("month"), getPart("day")].join(
-    "-",
-  );
-
-  const brandTime = `${getPart("hour")}:${getPart("minute")}`;
-
-  // Appointment.date is a calendar-date key
-  // normalized to UTC midnight.
-  // It is not a local-midnight timestamp.
-
-  const todayDate = new Date(`${brandToday}T00:00:00.000Z`);
 
   // =====================================================
   // 3. APPOINTMENT STATUS GROUPS
@@ -2390,74 +2396,178 @@ const getMyAppointments = async (
   ];
 
   // =====================================================
-  // 4. APPOINTMENT TYPE FILTER — H01 FIX
+  // 4. RESOLVE APPOINTMENT TIMEZONES
+  // =====================================================
+
+  // A customer may have appointments created under
+  // different brand timezones.
+  //
+  // Find distinct persisted timezone values before
+  // building the database-level date filters.
+
+  const timezoneRows = await prisma.appointment.findMany({
+    where: {
+      customerId,
+    },
+    select: {
+      timezone: true,
+    },
+    distinct: ["timezone"],
+  });
+
+  // =====================================================
+  // 5. TIMEZONE-AWARE CURRENT DATE/TIME
+  // =====================================================
+
+  const getCurrentLocalTime = (timezone: string) => {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now);
+
+    const getPart = (type: string): string =>
+      parts.find((part) => part.type === type)?.value ?? "";
+
+    const localDate = [getPart("year"), getPart("month"), getPart("day")].join(
+      "-",
+    );
+
+    const localTime = `${getPart("hour")}:${getPart("minute")}`;
+
+    // Appointment.date is a date-only calendar key
+    // stored as UTC midnight, not an instant.
+
+    const todayDate = new Date(`${localDate}T00:00:00.000Z`);
+
+    return {
+      todayDate,
+      localTime,
+    };
+  };
+
+  // =====================================================
+  // 6. BUILD TIMEZONE-SPECIFIC FILTERS
+  // =====================================================
+
+  const timezoneFilters: Prisma.AppointmentWhereInput[] = [];
+
+  for (const row of timezoneRows) {
+    const savedTimezone = row.timezone;
+
+    // Legacy appointments with null timezone use
+    // the current brand timezone as a fallback.
+
+    const effectiveTimezone = savedTimezone ?? brand.timezone;
+
+    const { todayDate, localTime } = getCurrentLocalTime(effectiveTimezone);
+
+    const timezoneCondition: Prisma.AppointmentWhereInput = {
+      timezone: savedTimezone,
+    };
+
+    const upcomingDateCondition: Prisma.AppointmentWhereInput = {
+      OR: [
+        {
+          date: {
+            gt: todayDate,
+          },
+        },
+        {
+          date: todayDate,
+          endTime: {
+            gt: localTime,
+          },
+        },
+      ],
+    };
+
+    const historyDateCondition: Prisma.AppointmentWhereInput = {
+      OR: [
+        {
+          date: {
+            lt: todayDate,
+          },
+        },
+        {
+          date: todayDate,
+          endTime: {
+            lte: localTime,
+          },
+        },
+      ],
+    };
+
+    if (query.type === "UPCOMING") {
+      timezoneFilters.push({
+        AND: [
+          timezoneCondition,
+          {
+            appointmentStatus: {
+              in: activeStatuses,
+            },
+          },
+          upcomingDateCondition,
+        ],
+      });
+    } else {
+      // Preserve original behavior:
+      // Any type other than UPCOMING uses HISTORY.
+
+      timezoneFilters.push({
+        AND: [
+          timezoneCondition,
+          {
+            OR: [
+              {
+                appointmentStatus: {
+                  in: historyStatuses,
+                },
+              },
+              {
+                AND: [
+                  {
+                    appointmentStatus: {
+                      in: activeStatuses,
+                    },
+                  },
+                  historyDateCondition,
+                ],
+              },
+            ],
+          },
+        ],
+      });
+    }
+  }
+
+  // =====================================================
+  // 7. FINAL DATABASE FILTER
   // =====================================================
 
   const where: Prisma.AppointmentWhereInput = {
     customerId,
 
-    ...(query.type === "UPCOMING"
+    // If no appointments exist, return an empty result.
+    // Do not accidentally query every appointment.
+
+    ...(timezoneFilters.length > 0
       ? {
-          AND: [
-            {
-              appointmentStatus: {
-                in: activeStatuses,
-              },
-            },
-            {
-              OR: [
-                {
-                  date: {
-                    gt: todayDate,
-                  },
-                },
-                {
-                  date: todayDate,
-                  endTime: {
-                    gt: brandTime,
-                  },
-                },
-              ],
-            },
-          ],
+          OR: timezoneFilters,
         }
       : {
-          OR: [
-            {
-              appointmentStatus: {
-                in: historyStatuses,
-              },
-            },
-            {
-              AND: [
-                {
-                  appointmentStatus: {
-                    in: activeStatuses,
-                  },
-                },
-                {
-                  OR: [
-                    {
-                      date: {
-                        lt: todayDate,
-                      },
-                    },
-                    {
-                      date: todayDate,
-                      endTime: {
-                        lte: brandTime,
-                      },
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
+          id: {
+            in: [],
+          },
         }),
   };
 
   // =====================================================
-  // 5. FETCH CUSTOMER APPOINTMENTS
+  // 8. FETCH CUSTOMER APPOINTMENTS
   // =====================================================
 
   const [appointments, total] = await prisma.$transaction([
@@ -2486,8 +2596,8 @@ const getMyAppointments = async (
         itemName: true,
         price: true,
 
-        // Saved appointment currency snapshot
         currency: true,
+        timezone: true,
 
         depositPercentage: true,
         depositAmount: true,
@@ -2527,7 +2637,6 @@ const getMyAppointments = async (
           },
         },
 
-        // Actual payment and refund records
         payments: {
           select: {
             amount: true,
@@ -2555,7 +2664,7 @@ const getMyAppointments = async (
   ]);
 
   // =====================================================
-  // 6. RESPONSE DTO WITH LOCALIZATION
+  // 9. RESPONSE DTO WITH LOCALIZATION
   // =====================================================
 
   const items = appointments.map((appointment) => {
@@ -2580,7 +2689,7 @@ const getMyAppointments = async (
       : null;
 
     // =====================================================
-    // 7. QR STATE — ALL BOOKING METHODS
+    // 10. QR STATE
     // =====================================================
 
     const qrEligibleStatuses: AppointmentStatus[] = [
@@ -2594,7 +2703,7 @@ const getMyAppointments = async (
       !appointment.qrVerifiedAt;
 
     // =====================================================
-    // 8. PAYMENT SUMMARY
+    // 11. PAYMENT SUMMARY
     // =====================================================
 
     const price = Number(appointment.price);
@@ -2615,7 +2724,7 @@ const getMyAppointments = async (
       : price;
 
     // =====================================================
-    // 9. ACTUAL SUCCESSFUL PAYMENTS
+    // 12. ACTUAL SUCCESSFUL PAYMENTS
     // =====================================================
 
     const successfulPaymentStatuses: PaymentStatus[] = [
@@ -2644,7 +2753,7 @@ const getMyAppointments = async (
     const netPaid = Math.max(0, Number((grossPaid - totalRefunded).toFixed(2)));
 
     // =====================================================
-    // 10. VERIFY ACTUAL DEPOSIT PAYMENT
+    // 13. VERIFY ACTUAL DEPOSIT PAYMENT
     // =====================================================
 
     const depositPaid =
@@ -2675,7 +2784,7 @@ const getMyAppointments = async (
       });
 
     // =====================================================
-    // 11. PAYMENT DISPLAY STATUS
+    // 14. PAYMENT DISPLAY STATUS
     // =====================================================
 
     const paymentDisplayStatus = getPaymentDisplayStatus(
@@ -2685,7 +2794,7 @@ const getMyAppointments = async (
     );
 
     // =====================================================
-    // 12. APPOINTMENT COLLECTION STATE
+    // 15. APPOINTMENT COLLECTION STATE
     // =====================================================
 
     const closedStatuses: AppointmentStatus[] = [
@@ -2698,7 +2807,8 @@ const getMyAppointments = async (
       appointment.appointmentStatus,
     );
 
-    let amountPaid = netPaid;
+    const amountPaid = netPaid;
+
     let amountDue = 0;
 
     if (appointment.paymentStatus === PaymentStatus.PAID) {
@@ -2718,7 +2828,7 @@ const getMyAppointments = async (
     }
 
     // =====================================================
-    // 13. REMAINING BALANCE
+    // 16. REMAINING BALANCE
     // =====================================================
 
     let remainingAmount = amountDue;
@@ -2743,7 +2853,7 @@ const getMyAppointments = async (
     }
 
     // =====================================================
-    // 14. FINAL RESPONSE DTO
+    // 17. FINAL RESPONSE DTO
     // =====================================================
 
     return {
@@ -2787,8 +2897,9 @@ const getMyAppointments = async (
 
       price,
 
-      // Preserve the currency saved at booking time
+      // Persisted booking-time snapshots.
       currency: appointment.currency,
+      timezone: appointment.timezone,
 
       depositPercentage,
       depositAmount,
@@ -2802,7 +2913,7 @@ const getMyAppointments = async (
   });
 
   // =====================================================
-  // 15. PAGINATION RESPONSE
+  // 18. PAGINATION RESPONSE
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
@@ -3239,7 +3350,17 @@ const getAppointmentById = async (
     endTime: appointment.endTime,
 
     price,
+
+    // ===================================================
+    // BOOKING-TIME CURRENCY AND TIMEZONE SNAPSHOTS
+    // ===================================================
+
     currency: appointment.currency,
+
+    // Use the timezone saved when the appointment was created.
+    // Do not substitute the brand's current timezone.
+    // Legacy appointments may have a null timezone.
+    timezone: appointment.timezone,
 
     depositPercentage,
     depositAmount,
@@ -3813,10 +3934,7 @@ const rescheduleAppointment = async (
   // =====================================================
 
   const appointment = await prisma.appointment.findUnique({
-    where: {
-      id: appointmentId,
-    },
-
+    where: { id: appointmentId },
     include: {
       branch: {
         include: {
@@ -3831,7 +3949,7 @@ const rescheduleAppointment = async (
   }
 
   // =====================================================
-  // 2. CUSTOMER OWNERSHIP
+  // 2. OWNERSHIP
   // =====================================================
 
   if (appointment.customerId !== customerId) {
@@ -3842,7 +3960,7 @@ const rescheduleAppointment = async (
   }
 
   // =====================================================
-  // 3. VALID STATUS
+  // 3. STATUS / CHECK-IN VALIDATION
   // =====================================================
 
   const reschedulableStatuses: AppointmentStatus[] = [
@@ -3865,40 +3983,36 @@ const rescheduleAppointment = async (
     throw new AppError("Appointment can no longer be rescheduled", 422);
   }
 
-  if (!appointment.branch.bookingPolicy) {
+  const bookingPolicy = appointment.branch.bookingPolicy;
+
+  if (!bookingPolicy) {
     throw new AppError("Branch booking policy not found", 404);
   }
 
   // =====================================================
-  // 4. RESCHEDULE CUTOFF — DYNAMIC BRAND TIMEZONE
+  // 4. RESOLVE SAVED TIMEZONE
   // =====================================================
 
-  const brand = await prisma.brand.findFirst({
-    select: {
-      timezone: true,
-    },
-  });
+  // Always use the booking-time timezone snapshot.
+  // Legacy records use the helper's controlled fallback.
 
-  if (!brand) {
-    throw new AppError("Brand not found", 404);
-  }
+  const timezone = await appointmentTimezone(prisma, appointment.id);
+
+  // =====================================================
+  // 5. ORIGINAL APPOINTMENT CUTOFF
+  // =====================================================
 
   const currentAppointmentDate = appointment.date.toISOString().slice(0, 10);
 
   const currentAppointmentDateTime = createDateTimeInTimezone(
     currentAppointmentDate,
     appointment.startTime,
-    await appointmentTimezone(prisma, appointment.id),
+    timezone,
   );
 
-  const cutoffMilliseconds =
-    appointment.branch.bookingPolicy.rescheduleCutoffMinutes * 60 * 1000;
+  const cutoffMilliseconds = bookingPolicy.rescheduleCutoffMinutes * 60 * 1000;
 
-  const latestAllowedRescheduleTime = new Date(
-    currentAppointmentDateTime.getTime() - cutoffMilliseconds,
-  );
-
-  if (new Date() >= latestAllowedRescheduleTime) {
+  if (Date.now() >= currentAppointmentDateTime.getTime() - cutoffMilliseconds) {
     throw new AppError(
       "Reschedule is no longer allowed for this appointment",
       422,
@@ -3906,32 +4020,61 @@ const rescheduleAppointment = async (
   }
 
   // =====================================================
-  // 5. HYBRID AVAILABILITY CHECK
+  // 6. VALIDATE TARGET DATE AND TIME
+  // =====================================================
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new AppError("Invalid appointment date", 400);
+  }
+
+  const newDateOnly = new Date(`${date}T00:00:00.000Z`);
+
+  if (
+    Number.isNaN(newDateOnly.getTime()) ||
+    newDateOnly.toISOString().slice(0, 10) !== date
+  ) {
+    throw new AppError("Invalid appointment date", 400);
+  }
+
+  if (!/^\d{2}:\d{2}$/.test(startTime)) {
+    throw new AppError("Invalid appointment start time", 400);
+  }
+
+  const requestedStart = timeToMinutes(startTime);
+
+  const requestedEnd = requestedStart + appointment.durationMinutes;
+
+  if (requestedStart < 0 || requestedStart >= 1440 || requestedEnd > 1440) {
+    throw new AppError("Appointment time is outside the valid day range", 422);
+  }
+
+  const endTime = minutesToTime(requestedEnd);
+
+  // Validate target time against saved timezone,
+  // including actual elapsed duration.
+
+  assertTimezoneDuration(
+    date,
+    startTime,
+    endTime,
+    appointment.durationMinutes,
+    timezone,
+  );
+
+  // =====================================================
+  // 7. HYBRID AVAILABILITY PRECHECK
   // =====================================================
 
   const availability = await AvailabilityService.getAvailableSlots({
     branchId: appointment.branchId,
 
-    ...(appointment.serviceId
-      ? {
-          serviceId: appointment.serviceId,
-        }
-      : {}),
+    ...(appointment.serviceId ? { serviceId: appointment.serviceId } : {}),
 
-    ...(appointment.packageId
-      ? {
-          packageId: appointment.packageId,
-        }
-      : {}),
+    ...(appointment.packageId ? { packageId: appointment.packageId } : {}),
 
-    ...(staffId
-      ? {
-          staffId,
-        }
-      : {}),
+    ...(staffId ? { staffId } : {}),
 
     date,
-
     excludeAppointmentId: appointmentId,
   });
 
@@ -3947,41 +4090,35 @@ const rescheduleAppointment = async (
   }
 
   // =====================================================
-  // 6. RESOLVE STAFF
-  // =====================================================
-
-  const newDateOnly = new Date(`${date}T00:00:00.000Z`);
-
-  const requestedStart = timeToMinutes(startTime);
-
-  const requestedEnd = requestedStart + appointment.durationMinutes;
-
-  const endTime = minutesToTime(requestedEnd);
-
-  // =====================================================
-  // 7. TRANSACTION + FINAL HYBRID RECHECK
+  // 8. SERIALIZABLE TRANSACTION + RETRY
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
     try {
       const result = await prisma.$transaction(
         async (tx) => {
+          // =============================================
+          // 8.1 RE-READ CURRENT APPOINTMENT
+          // =============================================
+
           const current = await tx.appointment.findUnique({
-            where: {
-              id: appointmentId,
-            },
+            where: { id: appointmentId },
 
             select: {
               id: true,
               customerId: true,
               branchId: true,
+
               appointmentStatus: true,
               qrVerifiedAt: true,
               bookingMethod: true,
+
               staffId: true,
               date: true,
               startTime: true,
               endTime: true,
+              timezone: true,
+
               emailScheduleRevision: true,
             },
           });
@@ -3989,6 +4126,10 @@ const rescheduleAppointment = async (
           if (!current) {
             throw new AppError("Appointment not found", 404);
           }
+
+          // =============================================
+          // 8.2 RECHECK OWNERSHIP / STATUS
+          // =============================================
 
           if (current.customerId !== customerId) {
             throw new AppError(
@@ -4012,16 +4153,39 @@ const rescheduleAppointment = async (
             throw new AppError("Appointment can no longer be rescheduled", 422);
           }
 
+          // =============================================
+          // 8.3 REJECT STALE RESCHEDULE REQUEST
+          // =============================================
+
+          // The appointment must still match the
+          // schedule initially loaded by this request.
+
+          if (
+            current.date.getTime() !== appointment.date.getTime() ||
+            current.startTime !== appointment.startTime ||
+            current.endTime !== appointment.endTime ||
+            current.staffId !== appointment.staffId ||
+            current.emailScheduleRevision !==
+              appointment.emailScheduleRevision ||
+            current.timezone !== appointment.timezone
+          ) {
+            throw new AppError(
+              "Appointment schedule has changed. Please refresh and try again",
+              409,
+            );
+          }
+
           const now = new Date();
 
           // =============================================
-          // RECHECK RESCHEDULE CUTOFF INSIDE TRANSACTION
+          // 8.4 RECHECK CUTOFF
           // =============================================
 
           const currentPolicy = await tx.branchBookingPolicy.findUnique({
             where: {
               branchId: current.branchId,
             },
+
             select: {
               rescheduleCutoffMinutes: true,
             },
@@ -4031,20 +4195,12 @@ const rescheduleAppointment = async (
             throw new AppError("Branch booking policy not found", 404);
           }
 
-          const transactionBrand = await tx.brand.findFirst({
-            select: {
-              timezone: true,
-            },
-          });
-
-          if (!transactionBrand) {
-            throw new AppError("Brand not found", 404);
-          }
+          const currentTimezone = await appointmentTimezone(tx, current.id);
 
           const currentDateTime = createDateTimeInTimezone(
             current.date.toISOString().slice(0, 10),
             current.startTime,
-            await appointmentTimezone(tx, current.id),
+            currentTimezone,
           );
 
           const currentCutoffMilliseconds =
@@ -4061,23 +4217,45 @@ const rescheduleAppointment = async (
           }
 
           // =============================================
-          // H05: FINAL STAFF + BRANCH BREAK VALIDATION
+          // 8.5 VALIDATE TARGET TIMEZONE / DURATION
           // =============================================
 
-          assertTimezoneDuration(date, startTime, endTime, appointment.durationMinutes, await appointmentTimezone(tx, current.id));
+          assertTimezoneDuration(
+            date,
+            startTime,
+            endTime,
+            appointment.durationMinutes,
+            currentTimezone,
+          );
+
+          // =============================================
+          // 8.6 FINAL STAFF SELECTION
+          // =============================================
+
           const resolvedStaffId = await resolveAvailableStaff({
             tx,
+
             branchId: current.branchId,
+
             serviceId: appointment.serviceId ?? undefined,
+
             packageId: appointment.packageId ?? undefined,
+
             staffId: staffId ?? undefined,
+
             date,
             dateOnly: newDateOnly,
+
             requestedStart,
             requestedEnd,
+
             now,
             excludeAppointmentId: appointmentId,
           });
+
+          // =============================================
+          // 8.7 FINAL STAFF AVAILABILITY
+          // =============================================
 
           await assertStaffSlotAvailable(
             tx,
@@ -4090,7 +4268,7 @@ const rescheduleAppointment = async (
           );
 
           // =============================================
-          // FINAL BRANCH CAPACITY CHECK
+          // 8.8 FINAL BRANCH CAPACITY
           // =============================================
 
           await assertBranchHourlyCapacityAvailable(
@@ -4105,12 +4283,37 @@ const rescheduleAppointment = async (
           );
 
           // =============================================
-          // UPDATE APPOINTMENT
+          // 8.9 DETECT SCHEDULE CHANGE
           // =============================================
 
-          const updatedAppointment = await tx.appointment.update({
+          const scheduleChanged =
+            current.date.getTime() !== newDateOnly.getTime() ||
+            current.startTime !== startTime ||
+            current.endTime !== endTime ||
+            current.staffId !== resolvedStaffId;
+
+          // =============================================
+          // 8.10 ATOMIC UPDATE
+          // =============================================
+
+          const updatedCount = await tx.appointment.updateMany({
             where: {
               id: appointmentId,
+
+              customerId,
+
+              appointmentStatus: {
+                in: reschedulableStatuses,
+              },
+
+              date: current.date,
+              startTime: current.startTime,
+              endTime: current.endTime,
+              staffId: current.staffId,
+
+              emailScheduleRevision: current.emailScheduleRevision,
+
+              timezone: current.timezone,
             },
 
             data: {
@@ -4119,16 +4322,33 @@ const rescheduleAppointment = async (
               startTime,
               endTime,
 
-              ...(current.date.getTime() !== newDateOnly.getTime() ||
-              current.startTime !== startTime ||
-              current.endTime !== endTime ||
-              current.staffId !== resolvedStaffId
+              // Deliberately do not update timezone.
+              // The original snapshot remains immutable.
+
+              ...(scheduleChanged
                 ? {
                     emailScheduleRevision: {
                       increment: 1,
                     },
                   }
                 : {}),
+            },
+          });
+
+          if (updatedCount.count !== 1) {
+            throw new AppError(
+              "Appointment schedule changed during rescheduling",
+              409,
+            );
+          }
+
+          // =============================================
+          // 8.11 FETCH UPDATED APPOINTMENT
+          // =============================================
+
+          const updatedAppointment = await tx.appointment.findUniqueOrThrow({
+            where: {
+              id: appointmentId,
             },
 
             select: {
@@ -4140,7 +4360,7 @@ const rescheduleAppointment = async (
           });
 
           // =============================================
-          // CREATE MULTILINGUAL RESCHEDULE NOTIFICATION
+          // 8.12 MULTILINGUAL NOTIFICATION
           // =============================================
 
           const translations = notificationTemplates.BOOKING_RESCHEDULED(
@@ -4151,6 +4371,7 @@ const rescheduleAppointment = async (
           await notificationService.createNotification(
             {
               appointmentId: current.id,
+
               previousStaffId: current.staffId,
 
               emailIntent: {
@@ -4170,13 +4391,7 @@ const rescheduleAppointment = async (
                   staffId: resolvedStaffId,
 
                   revision:
-                    current.emailScheduleRevision +
-                    (current.date.getTime() !== newDateOnly.getTime() ||
-                    current.startTime !== startTime ||
-                    current.endTime !== endTime ||
-                    current.staffId !== resolvedStaffId
-                      ? 1
-                      : 0),
+                    current.emailScheduleRevision + (scheduleChanged ? 1 : 0),
                 },
               },
 
@@ -4199,6 +4414,10 @@ const rescheduleAppointment = async (
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         },
       );
+
+      // =====================================================
+      // 9. FINAL RESPONSE
+      // =====================================================
 
       return {
         appointmentId: result.id,
@@ -5952,6 +6171,7 @@ const getBranchAppointments = async (
 
         price: true,
         currency: true,
+        timezone: true,
 
         depositPercentage: true,
         depositAmount: true,
@@ -6207,6 +6427,7 @@ const getBranchAppointments = async (
 
       price,
       currency: appointment.currency,
+      timezone: appointment.timezone,
 
       depositPercentage,
       depositAmount,
@@ -6806,7 +7027,10 @@ const recordRemainingPayment = async (
               purpose: PaymentPurpose.APPOINTMENT_REMAINING,
               provider: PaymentProvider.SALON,
               salonPaymentMethod: payload.paymentMethod,
-              amount: assertCurrencyAmount(remainingAmount, appointment.currency),
+              amount: assertCurrencyAmount(
+                remainingAmount,
+                appointment.currency,
+              ),
               currency: appointment.currency,
               status: PaymentStatus.PAID,
               paidAt: now,
@@ -7471,7 +7695,10 @@ const recordGroupPurchaseRemainingPayment = async (
           // 10. CREATE SALON PAYMENT
           // =====================================================
 
-          assertSameCurrency(appointment.currency, await getPurchaseCurrency(tx, purchase.id));
+          assertSameCurrency(
+            appointment.currency,
+            await getPurchaseCurrency(tx, purchase.id),
+          );
           const payment = await tx.payment.create({
             data: {
               customerId: purchase.customerId,
@@ -7480,7 +7707,10 @@ const recordGroupPurchaseRemainingPayment = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.SALON,
               salonPaymentMethod: payload.paymentMethod,
-              amount: assertCurrencyAmount(remainingAmount, appointment.currency),
+              amount: assertCurrencyAmount(
+                remainingAmount,
+                appointment.currency,
+              ),
 
               // Dynamic saved appointment currency
               currency: appointment.currency,

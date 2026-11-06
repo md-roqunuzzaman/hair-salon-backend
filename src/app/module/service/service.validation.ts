@@ -66,6 +66,7 @@ const createServiceValidationSchema = z.object({
     branchIds: z
       .array(z.string().uuid("Invalid branch ID"))
       .min(1, "At least one branch is required"),
+    staffIds: z.array(z.string().uuid("Invalid staff ID")).optional(),
 
     imageObjectKeys: z
       .array(z.string().min(1, "Invalid image object key"))

@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import jwt from 'jsonwebtoken';
+import { createRequire } from 'node:module';
+import { getExampleNumber } from 'libphonenumber-js';
 import { setup } from './test-support/public-worker.mjs';
 
 const password='StrongPassword123!';
+const phoneExamples=createRequire(import.meta.url)('libphonenumber-js/examples.mobile.json');
 async function fixture(t,configured=true){
   const ctx=await setup(t,'true','false');
   const {api,ownerToken}=ctx;
@@ -20,6 +23,38 @@ async function fixture(t,configured=true){
   const state=email=>control({authEmail:email});
   return {...ctx,control,root,register,verify,resend,state};
 }
+
+test('international phones on Workers: registration, profile persistence and canonical duplicate protection',async t=>{
+  const {api,state}=await fixture(t);
+  const saved=[];
+  const countries=['BD','HK','IN','CN','GB','US'];
+  const replacements=['AU','DE','FR','JP','AE','SG'];
+  for(const [index,country] of countries.entries())await t.test(country,async()=>{
+    const phone=getExampleNumber(country,phoneExamples);
+    const email=`international-phone-${country.toLowerCase()}@example.com`;
+    const registered=(await api('/api/v1/auth/register',{status:201,clientIp:`192.0.2.${100+index}`,body:{name:'Synthetic customer',email,password,phone:` ${phone.formatInternational()} `}})).data;
+    assert.equal(registered.phone,phone.number);
+    await api('/api/v1/auth/verify-email',{body:{email,otp:(await state(email)).verification.otp}});
+    const token=(await api('/api/v1/auth/login',{body:{email,password}})).data.accessToken;
+    assert.equal((await api('/api/v1/users/me',{roleToken:token})).data.phone,phone.number);
+    const next=getExampleNumber(replacements[index],phoneExamples);
+    const updated=(await api('/api/v1/users/me',{method:'PATCH',roleToken:token,body:{phone:` ${next.formatInternational()} `}})).data;
+    assert.equal(updated.phone,next.number);
+    assert.equal((await api('/api/v1/users/me',{roleToken:token})).data.phone,next.number);
+    saved.push({token,phone:next.number,formatted:next.formatInternational()});
+  });
+  await t.test('duplicates stay rejected after normalization without overwriting the profile',async()=>{
+    await api('/api/v1/auth/register',{status:409,clientIp:'192.0.2.150',body:{name:'Duplicate customer',email:'duplicate-phone@example.com',password,phone:saved[0].formatted}});
+    await api('/api/v1/users/me',{method:'PATCH',roleToken:saved[0].token,status:409,body:{phone:saved[1].formatted}});
+    assert.equal((await api('/api/v1/users/me',{roleToken:saved[0].token})).data.phone,saved[0].phone);
+  });
+  await t.test('invalid and unauthenticated profile writes preserve the original phone',async()=>{
+    await api('/api/v1/auth/register',{status:400,body:{name:'Invalid customer',email:'invalid-phone@example.com',password,phone:'+99912345'}});
+    await api('/api/v1/users/me',{method:'PATCH',roleToken:saved[0].token,status:400,body:{phone:'91234567'}});
+    await api('/api/v1/users/me',{method:'PATCH',roleToken:'',status:401,body:{phone:saved[0].phone}});
+    assert.equal((await api('/api/v1/users/me',{roleToken:saved[0].token})).data.phone,saved[0].phone);
+  });
+});
 
 test('registration on Workers: Gmail OTP, hash/TTL, unverified gates, verify/login and replay protection',async t=>{
   const {api,direct,register,verify,state,ownerToken,root}=await fixture(t);

@@ -55,6 +55,19 @@ test('exact normal production artifact boots, initializes disposable v36 storage
   assert.equal(brand.headers.get('access-control-allow-origin'), 'https://frontend.example.com');
   assert.equal(brand.headers.get('x-frame-options'), 'SAMEORIGIN');
   assert.equal(brand.headers.get('strict-transport-security'), 'max-age=31536000; includeSubDomains');
+  await t.test('bundled international phone parser runs through authenticated production profile APIs',async()=>{
+    const login=await mf.dispatchFetch('https://test/api/v1/auth/login',{method:'POST',headers:{'content-type':'application/json','cf-connecting-ip':'192.0.2.20'},body:JSON.stringify({email:'production-boot@example.com',password:'OwnerPassword123!'})});
+    assert.equal(login.status,200);
+    const token=(await login.json()).data.accessToken;
+    const headers={'content-type':'application/json',authorization:'Bearer '+token};
+    const changed=await mf.dispatchFetch('https://test/api/v1/users/me',{method:'PATCH',headers,body:JSON.stringify({phone:'+880 1712-345678'})});
+    assert.equal(changed.status,200);
+    assert.equal((await changed.json()).data.phone,'+8801712345678');
+    const profile=await mf.dispatchFetch('https://test/api/v1/users/me',{headers});
+    assert.equal(profile.status,200);assert.equal((await profile.json()).data.phone,'+8801712345678');
+    const invalid=await mf.dispatchFetch('https://test/api/v1/users/me',{method:'PATCH',headers,body:JSON.stringify({phone:'1712345678'})});
+    assert.equal(invalid.status,400);await invalid.text();
+  });
   assert.equal(externalCalls, 0);
   assert.equal(createHash('sha256').update(await readFile(config.main)).digest('hex'), digest, 'Test must not replace the production artifact');
 });

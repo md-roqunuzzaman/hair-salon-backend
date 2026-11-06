@@ -1,5 +1,10 @@
 import { appointmentTimezone } from "../../utils/appointment-timezone.utils.js";
-import { assertCurrencyAmount, currencyDigits, historicalPurchaseCurrency, getPurchaseCurrency } from "../../utils/transaction-currency.utils.js";
+import {
+  assertCurrencyAmount,
+  currencyDigits,
+  historicalPurchaseCurrency,
+  getPurchaseCurrency,
+} from "../../utils/transaction-currency.utils.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { createHmac } from "node:crypto";
 import { Prisma, Role } from "../../../../generated/prisma/client.js";
@@ -31,6 +36,10 @@ import {
 import { randomUUID } from "node:crypto";
 import { PaymentProvider } from "../../../../generated/prisma/enums.js";
 import { walletPaymentsFundingBatch } from "../wallet/wallet-payment-ledger.js";
+import {
+  createPolicyPreviewToken,
+  verifyPolicyPreviewToken,
+} from "../../utils/policy-preview-token.utils.js";
 const active = ["PENDING", "APPROVED", "PROCESSING"] as const;
 const signature = (value: unknown) =>
   createHmac("sha256", config.jwt_access_secret)
@@ -297,7 +306,11 @@ async function loadGroupRefundBatch(
       for (const payment of payments) {
         if (
           payment.customerId !== purchase.customerId ||
-          payment.currency !== historicalPurchaseCurrency(purchase.currency, payments.map(row => row.currency)) ||
+          payment.currency !==
+            historicalPurchaseCurrency(
+              purchase.currency,
+              payments.map((row) => row.currency),
+            ) ||
           (payment.provider === "STRIPE" && !payment.providerPaymentId) ||
           payment.refunds.some((refund) => refund.status === "PENDING")
         ) {
@@ -489,14 +502,35 @@ async function appointmentEvaluation(
   }
 
   // =====================================================
-  // 4. APPOINTMENT TIME
+  // 4. APPOINTMENT TIME — SAVED TIMEZONE SNAPSHOT
   // =====================================================
 
   const evaluatedAt = new Date();
 
-  const ms =
-    appointmentTime(appointment.date, appointment.startTime, await appointmentTimezone(tx, appointment.id)).getTime() -
-    evaluatedAt.getTime();
+  // Resolve timezone only once.
+  //
+  // New appointments:
+  //   Use the persisted appointment timezone.
+  //
+  // Legacy appointments:
+  //   Use the controlled brand timezone fallback.
+
+  const timezone = await appointmentTimezone(tx, appointment.id);
+
+  // Convert the appointment's local date and startTime
+  // into its actual UTC instant using the saved timezone.
+
+  const appointmentStartsAt = appointmentTime(
+    appointment.date,
+    appointment.startTime,
+    timezone,
+  );
+
+  // Positive: appointment is in the future.
+  // Zero: appointment starts now.
+  // Negative: appointment start time has passed.
+
+  const ms = appointmentStartsAt.getTime() - evaluatedAt.getTime();
 
   // =====================================================
   // 5. FUNDING VALIDATION
@@ -550,26 +584,48 @@ async function appointmentEvaluation(
   const eligible = payment ? remaining(payment) : 0;
 
   const calculation = evaluatePolicy(snapshot, eligible, ms);
+
   assertCurrencyAmount(money(calculation.refundCents), appointment.currency);
+
   assertCurrencyAmount(money(calculation.deductionCents), appointment.currency);
 
   let reason = calculation.reason;
+
+  // =====================================================
+  // 6.1 APPOINTMENT STATUS
+  // =====================================================
 
   if (!["RESERVED", "CONFIRMED"].includes(appointment.appointmentStatus)) {
     reason = "APPOINTMENT_NOT_CANCELLABLE";
   }
 
+  // =====================================================
+  // 6.2 CHECK-IN PROTECTION
+  // =====================================================
+
   if (appointment.qrVerifiedAt !== null) {
     reason = "APPOINTMENT_ALREADY_CHECKED_IN";
   }
+
+  // =====================================================
+  // 6.3 EXISTING REFUND REQUEST
+  // =====================================================
 
   if (pending) {
     reason = "REFUND_REQUEST_ALREADY_EXISTS";
   }
 
+  // =====================================================
+  // 6.4 GROUP PURCHASE BOOKING RULE
+  // =====================================================
+
   if (group && appointment.bookingMethod !== "GROUP_PURCHASE") {
     reason = "INITIAL_BOOKING_REQUIRES_PURCHASE_REVIEW";
   }
+
+  // =====================================================
+  // 6.5 GROUP PURCHASE VALIDATION
+  // =====================================================
 
   if (
     group &&
@@ -613,7 +669,13 @@ async function appointmentEvaluation(
   // 8. PREVIEW TOKEN
   // =====================================================
 
-  const token = signature({
+  // Preserve the existing signature contract.
+  //
+  // The token is recalculated during cancellation.
+  // A separate token-expiry mechanism should be added
+  // only after reviewing signature() and confirmationBody.
+
+  const previewPayload = {
     userId,
     id,
     snapshot,
@@ -623,10 +685,26 @@ async function appointmentEvaluation(
     reason,
     refund,
     outcome,
-  });
+  };
+
+  const token = createPolicyPreviewToken(previewPayload, evaluatedAt);
+  // =====================================================
+  // 9. CANCELLATION DEADLINE
+  // =====================================================
+
+  // Use the exact same appointment UTC instant
+  // calculated in section 4.
+  //
+  // This avoids resolving timezone twice and keeps
+  // the preview deadline consistent with policy time.
+
+  const cancellationDeadline = new Date(
+    appointmentStartsAt.getTime() -
+      snapshot.config.minimumCancellationMinutes * 60_000,
+  );
 
   // =====================================================
-  // 9. BUILD VIEW
+  // 10. BUILD PREVIEW RESPONSE
   // =====================================================
 
   const view = {
@@ -638,14 +716,11 @@ async function appointmentEvaluation(
 
     reason,
 
-    minutesBeforeAppointment: ms / 60000,
+    minutesBeforeAppointment: ms / 60_000,
 
     policyVersion: snapshot.version,
 
-    cancellationDeadline: new Date(
-      appointmentTime(appointment.date, appointment.startTime, await appointmentTimezone(tx, appointment.id)).getTime() -
-        snapshot.config.minimumCancellationMinutes * 60000,
-    ),
+    cancellationDeadline,
 
     entitlementOutcome: outcome,
 
@@ -655,7 +730,7 @@ async function appointmentEvaluation(
   };
 
   // =====================================================
-  // 10. PRESERVE EXISTING RETURN STRUCTURE
+  // 11. PRESERVE EXISTING RETURN STRUCTURE
   // =====================================================
 
   return {
@@ -666,6 +741,7 @@ async function appointmentEvaluation(
     calculation,
     eligible,
     evaluatedAt,
+    previewPayload,
   };
 }
 
@@ -869,7 +945,7 @@ async function groupEvaluation(
   // 10. GENERATE PREVIEW TOKEN
   // =====================================================
 
-  const token = signature({
+  const previewPayload = {
     userId,
     id,
     snapshot,
@@ -880,7 +956,9 @@ async function groupEvaluation(
     reason,
     tier: calculation.tier,
     refund,
-  });
+  };
+
+  const token = createPolicyPreviewToken(previewPayload, evaluatedAt);
 
   // =====================================================
   // 11. BUILD RESPONSE VIEW
@@ -928,6 +1006,7 @@ async function groupEvaluation(
     remainingQuantity,
     evaluatedAt,
     funds,
+    previewPayload,
   };
 }
 
@@ -1009,21 +1088,37 @@ async function createRequest(
   );
   return request;
 }
+
 export async function cancelWithPolicy(
   id: string,
   userId: string,
   role: string,
   body: Confirmation,
 ) {
+  // =====================================================
+  // 1. VALIDATE CONFIRMATION INPUT
+  // =====================================================
+
   const input = confirmationBody.parse(body);
+
   const key = `cancel:${userId}:${input.idempotencyKey}`;
 
   return prisma.$transaction(
     async (tx) => {
+      // =====================================================
+      // 2. FIND GROUP PURCHASE REFERENCE
+      // =====================================================
+
       const initial = await tx.appointment.findUnique({
         where: { id },
-        select: { groupPurchaseId: true },
+        select: {
+          groupPurchaseId: true,
+        },
       });
+
+      // =====================================================
+      // 3. LOCK GROUP PURCHASE FIRST
+      // =====================================================
 
       if (initial?.groupPurchaseId) {
         await tx.$queryRaw`
@@ -1034,12 +1129,20 @@ export async function cancelWithPolicy(
         `;
       }
 
+      // =====================================================
+      // 4. LOCK APPOINTMENT
+      // =====================================================
+
       await tx.$queryRaw`
         SELECT "id"
         FROM "Appointment"
         WHERE "id" = ${id}
         FOR UPDATE
       `;
+
+      // =====================================================
+      // 5. FETCH LATEST APPOINTMENT
+      // =====================================================
 
       const old = await tx.appointment.findUnique({
         where: { id },
@@ -1049,9 +1152,21 @@ export async function cancelWithPolicy(
         throw new AppError("Appointment not found", 404);
       }
 
+      // =====================================================
+      // 6. ACCESS CONTROL
+      // =====================================================
+
       await access(tx, old, userId, role);
 
-      // Already completed requests retain their idempotent response.
+      // =====================================================
+      // 7. IDEMPOTENCY PROTECTION
+      // =====================================================
+
+      // A successfully completed cancellation must
+      // return its original response on retry.
+      //
+      // Token expiry must not break idempotent retries.
+
       if (old.cancellationIdempotencyKey === key && old.cancellationResult) {
         if (old.cancellationReason !== input.reason) {
           throw new AppError("IDEMPOTENCY_KEY_CONFLICT", 409);
@@ -1060,7 +1175,10 @@ export async function cancelWithPolicy(
         return old.cancellationResult;
       }
 
-      // Block cancellation after customer check-in.
+      // =====================================================
+      // 8. CHECK-IN PROTECTION
+      // =====================================================
+
       if (old.qrVerifiedAt !== null) {
         throw new AppError(
           "Appointment cannot be cancelled because the customer has already checked in",
@@ -1068,19 +1186,48 @@ export async function cancelWithPolicy(
         );
       }
 
+      // =====================================================
+      // 9. RE-EVALUATE CANCELLATION POLICY
+      // =====================================================
+
+      // This uses the saved appointment timezone,
+      // policy snapshot and latest funding state.
+
       const result = await appointmentEvaluation(tx, id, userId, role);
 
       if (!result.view.canCancel) {
-        throw new AppError(result.view.reason!, 409);
+        throw new AppError(
+          result.view.reason ?? "CANCELLATION_NOT_ALLOWED",
+          409,
+        );
       }
 
-      if (input.previewToken !== result.view.previewToken) {
-        throw new AppError("POLICY_PREVIEW_STALE", 409);
-      }
+      // =====================================================
+      // 10. VERIFY SIGNED PREVIEW TOKEN
+      // =====================================================
+
+      // Validates:
+      // - HMAC signature
+      // - Token expiry
+      // - User and appointment identity
+      // - Current policy snapshot
+      // - Current appointment status
+      // - Current refund calculation
+      // - Current entitlement outcome
+
+      verifyPolicyPreviewToken(input.previewToken, result.previewPayload);
+
+      // =====================================================
+      // 11. EXTRACT EVALUATION RESULT
+      // =====================================================
 
       const { appointment, snapshot, payment, calculation } = result;
 
       let request = null;
+
+      // =====================================================
+      // 12. CREATE REFUND REQUEST
+      // =====================================================
 
       if (payment && calculation.refundCents > 0) {
         request = await createRequest(
@@ -1105,37 +1252,58 @@ export async function cancelWithPolicy(
         );
       }
 
+      // =====================================================
+      // 13. GROUP PURCHASE FORFEITURE
+      // =====================================================
+
       if (
         appointment.groupPurchaseId &&
         calculation.entitlementOutcome === "FORFEITED"
       ) {
         await tx.groupPurchase.update({
-          where: { id: appointment.groupPurchaseId },
+          where: {
+            id: appointment.groupPurchaseId,
+          },
           data: {
-            forfeitedQuantity: { increment: 1 },
+            forfeitedQuantity: {
+              increment: 1,
+            },
           },
         });
       }
+
+      // =====================================================
+      // 14. GROUP PURCHASE ENTITLEMENT SUMMARY
+      // =====================================================
 
       let groupPurchase;
 
       if (appointment.groupPurchaseId) {
         const purchase = await tx.groupPurchase.findUniqueOrThrow({
-          where: { id: appointment.groupPurchaseId },
+          where: {
+            id: appointment.groupPurchaseId,
+          },
         });
 
         const allocations = await tx.appointment.count({
           where: {
             groupPurchaseId: purchase.id,
-            id: { not: id },
-            appointmentStatus: { not: "CANCELLED" },
+            id: {
+              not: id,
+            },
+            appointmentStatus: {
+              not: "CANCELLED",
+            },
           },
         });
 
         groupPurchase = {
           purchaseId: purchase.id,
+
           purchasedQuantity: purchase.quantity,
+
           redeemedQuantity: allocations,
+
           remainingQuantity: Math.max(
             0,
             purchase.quantity -
@@ -1146,32 +1314,56 @@ export async function cancelWithPolicy(
         };
       }
 
+      // =====================================================
+      // 15. BUILD IDEMPOTENT RESPONSE
+      // =====================================================
+
       const response = {
         appointmentId: id,
+
         appointmentStatus: "CANCELLED",
+
         refundStatus: request ? "PENDING_APPROVAL" : "NOT_REQUIRED",
+
         refundRequestId: request?.id ?? null,
+
         refundAmount: request ? Number(request.amount) : 0,
+
         entitlementOutcome: calculation.entitlementOutcome,
-        ...(groupPurchase && { groupPurchase }),
+
+        ...(groupPurchase && {
+          groupPurchase,
+        }),
       };
 
-      // Atomic protection: checked-in appointments cannot be cancelled.
+      // =====================================================
+      // 16. ATOMIC APPOINTMENT CANCELLATION
+      // =====================================================
+
       const changed = await tx.appointment.updateMany({
         where: {
           id,
+
           appointmentStatus: {
             in: ["RESERVED", "CONFIRMED"],
           },
+
           qrVerifiedAt: null,
         },
+
         data: {
           appointmentStatus: "CANCELLED",
+
           cancelledAt: new Date(),
+
           cancellationReason: input.reason,
+
           qrToken: null,
+
           cancellationIdempotencyKey: key,
+
           cancellationResult: json(response),
+
           ...(calculation.entitlementOutcome && {
             entitlementCancellationOutcome: calculation.entitlementOutcome,
           }),
@@ -1182,29 +1374,47 @@ export async function cancelWithPolicy(
         throw new AppError("CANCELLATION_CONFLICT", 409);
       }
 
+      // =====================================================
+      // 17. AUDIT LOG
+      // =====================================================
+
       await auditLogService.createAuditLog(
         {
           userId,
+
           action: "POLICY_APPOINTMENT_CANCELLED",
+
           entityType: "APPOINTMENT",
+
           entityId: id,
+
           metadata: {
             refundRequestId: request?.id ?? null,
+
             entitlementOutcome: calculation.entitlementOutcome,
           },
         },
         tx,
       );
 
+      // =====================================================
+      // 18. CUSTOMER NOTIFICATION
+      // =====================================================
+
       await notificationService.createNotification(
         {
           userId: appointment.customerId,
+
           appointmentId: id,
+
           type: "BOOKING_CANCELLED",
+
           title: "Appointment cancelled",
+
           message: request
             ? "Your appointment was cancelled. Your refund is awaiting merchant approval."
             : "Your appointment has been cancelled.",
+
           translations: notificationTemplates.POLICY_BOOKING_CANCELLED(
             Boolean(request),
           ),
@@ -1212,10 +1422,15 @@ export async function cancelWithPolicy(
         tx,
       );
 
+      // =====================================================
+      // 19. RETURN RESPONSE
+      // =====================================================
+
       return response;
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+
       timeout: 15000,
     },
   );
@@ -1226,58 +1441,134 @@ export async function requestGroupRefund(
   userId: string,
   body: Confirmation,
 ) {
-  const input = confirmationBody.parse(body),
-    key = `group:${userId}:${input.idempotencyKey}`;
+  // =====================================================
+  // 1. VALIDATE CONFIRMATION INPUT
+  // =====================================================
+
+  const input = confirmationBody.parse(body);
+
+  const key = `group:${userId}:${input.idempotencyKey}`;
+
   return prisma.$transaction(
     async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id"=${id} FOR UPDATE`;
+      // =====================================================
+      // 2. LOCK GROUP PURCHASE
+      // =====================================================
+
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "GroupPurchase"
+        WHERE "id" = ${id}
+        FOR UPDATE
+      `;
+
+      // =====================================================
+      // 3. IDEMPOTENCY CHECK
+      // =====================================================
+
       const existing = await tx.refundRequest.findUnique({
-        where: { idempotencyKey: key },
+        where: {
+          idempotencyKey: key,
+        },
       });
+
       if (existing) {
         const saved = executionSnapshot(existing.policySnapshot);
+
         if (
           existing.customerId !== userId ||
           saved?.resourceId !== id ||
           existing.reason !== input.reason
-        )
+        ) {
           throw new AppError("IDEMPOTENCY_KEY_CONFLICT", 409);
+        }
+
+        // Return original request even when the
+        // preview token has subsequently expired.
+
         return existing;
       }
+
+      // =====================================================
+      // 4. RE-EVALUATE GROUP REFUND POLICY
+      // =====================================================
+
       const result = await groupEvaluation(tx, id, userId);
-      if (!result.view.canRequestRefund || !result.payment)
+
+      // =====================================================
+      // 5. VALIDATE REFUND ELIGIBILITY
+      // =====================================================
+
+      if (!result.view.canRequestRefund || !result.payment) {
         throw new AppError(result.view.reason ?? "NO_REFUNDABLE_BALANCE", 409);
-      if (input.previewToken !== result.view.previewToken)
-        throw new AppError("POLICY_PREVIEW_STALE", 409);
-      return createRequest(tx, userId, result.payment.id, input.reason, key, {
-        engine: "MERCHANT_V1",
-        resourceType: "GROUP_REFUND",
-        resourceId: id,
-        policy: result.snapshot,
-        evaluatedAt: result.evaluatedAt.toISOString(),
-        refundableQuantity: result.remainingQuantity,
-        ...(result.funds.length > 1
+      }
+
+      // =====================================================
+      // 6. VERIFY SIGNED PREVIEW TOKEN
+      // =====================================================
+
+      // Validates:
+      // - HMAC signature
+      // - Token expiry
+      // - Customer and purchase identity
+      // - Latest policy snapshot
+      // - Remaining refundable quantity
+      // - Current refund amount
+      // - Current funding state represented in preview
+
+      verifyPolicyPreviewToken(input.previewToken, result.previewPayload);
+
+      // =====================================================
+      // 7. PREPARE REFUND FUNDING ALLOCATION
+      // =====================================================
+
+      const funding =
+        result.funds.length > 1
           ? {
               funding: allocateRefund(
                 result.funds,
                 result.calculation.refundCents,
-              ).map((a) => ({
-                ...a,
+              ).map((allocation) => ({
+                ...allocation,
+
                 paidCents: result.funds.find(
-                  (f) => f.paymentId === a.paymentId,
+                  (fund) => fund.paymentId === allocation.paymentId,
                 )!.paidCents,
               })),
             }
-          : {}),
+          : {};
+
+      // =====================================================
+      // 8. CREATE GROUP REFUND REQUEST
+      // =====================================================
+
+      return createRequest(tx, userId, result.payment.id, input.reason, key, {
+        engine: "MERCHANT_V1",
+
+        resourceType: "GROUP_REFUND",
+
+        resourceId: id,
+
+        policy: result.snapshot,
+
+        evaluatedAt: result.evaluatedAt.toISOString(),
+
+        refundableQuantity: result.remainingQuantity,
+
+        ...funding,
+
         calculation: {
           eligibleCents: result.eligible,
+
           deductionCents: result.calculation.deductionCents,
+
           refundCents: result.calculation.refundCents,
         },
       });
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+
       timeout: 15000,
     },
   );

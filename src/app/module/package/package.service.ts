@@ -6,6 +6,7 @@ import {
   Prisma,
   Role,
   ServiceStatus,
+  StaffStatus,
 } from "../../../../generated/prisma/client.js";
 
 import { prisma } from "../../lib/prisma.js";
@@ -188,8 +189,15 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   });
 
   // =====================================================
-  // 3. DUPLICATE PACKAGE NAME
+  // 3. VALIDATE PACKAGE NAME
   // =====================================================
+
+  if (packageName.length < 2 || packageName.length > 120) {
+    throw new AppError(
+      "Package name must contain between 2 and 120 characters",
+      400,
+    );
+  }
 
   const existingPackage = await prisma.package.findFirst({
     where: {
@@ -205,7 +213,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 4. UNIQUE SERVICE IDS
+  // 4. VALIDATE UNIQUE SERVICE IDS
   // =====================================================
 
   const uniqueServiceIds = [...new Set(payload.serviceIds)];
@@ -214,8 +222,12 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     throw new AppError("Duplicate service IDs are not allowed", 400);
   }
 
+  if (uniqueServiceIds.length === 0) {
+    throw new AppError("At least one service is required", 400);
+  }
+
   // =====================================================
-  // 5. UNIQUE BRANCH IDS
+  // 5. VALIDATE UNIQUE BRANCH IDS
   // =====================================================
 
   const uniqueBranchIds = [...new Set(payload.branchIds)];
@@ -224,19 +236,31 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     throw new AppError("Duplicate branch IDs are not allowed", 400);
   }
 
+  if (uniqueBranchIds.length === 0) {
+    throw new AppError("At least one branch is required", 400);
+  }
+
   // =====================================================
-  // 6. VALIDATE OPTIONAL IMAGE OBJECT KEYS
+  // 6. VALIDATE OPTIONAL STAFF IDS
   // =====================================================
 
-  // Images are optional.
-  // Missing imageObjectKeys will be treated as [].
+  const requestedStaffIds = payload.staffIds ?? [];
+  const uniqueStaffIds = [...new Set(requestedStaffIds)];
+
+  if (uniqueStaffIds.length !== requestedStaffIds.length) {
+    throw new AppError("Duplicate staff IDs are not allowed", 400);
+  }
+
+  // =====================================================
+  // 7. VALIDATE OPTIONAL IMAGE OBJECT KEYS
+  // =====================================================
 
   const imageObjectKeys = (payload.imageObjectKeys ?? []).map((key) =>
     key.trim(),
   );
 
   if (imageObjectKeys.some((key) => !key)) {
-    throw new AppError("Invalid image object key", 400);
+    throw new AppError("Invalid package image object key", 400);
   }
 
   const uniqueImageObjectKeys = [...new Set(imageObjectKeys)];
@@ -245,8 +269,18 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     throw new AppError("Duplicate package images are not allowed", 400);
   }
 
+  // Verify that referenced objects exist in R2.
+  // Upload authorization and key ownership must also be
+  // enforced by the upload endpoint.
+
+  await Promise.all(
+    uniqueImageObjectKeys.map((objectKey) =>
+      uploadService.verifyImageExists(objectKey),
+    ),
+  );
+
   // =====================================================
-  // 7. CHECK SERVICES
+  // 8. CHECK SERVICES
   // =====================================================
 
   const services = await prisma.service.findMany({
@@ -255,11 +289,9 @@ const createPackage = async (payload: ICreatePackagePayload) => {
         in: uniqueServiceIds,
       },
     },
-
     select: {
       id: true,
       status: true,
-
       branches: {
         select: {
           branchId: true,
@@ -284,7 +316,7 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 8. CHECK BRANCHES
+  // 9. CHECK BRANCHES
   // =====================================================
 
   const branches = await prisma.branch.findMany({
@@ -293,7 +325,6 @@ const createPackage = async (payload: ICreatePackagePayload) => {
         in: uniqueBranchIds,
       },
     },
-
     select: {
       id: true,
       status: true,
@@ -313,12 +344,12 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 9. SERVICES MUST EXIST IN EVERY PACKAGE BRANCH
+  // 10. VALIDATE SERVICE AVAILABILITY PER BRANCH
   // =====================================================
 
   for (const service of services) {
     const serviceBranchIds = new Set(
-      service.branches.map((serviceBranch) => serviceBranch.branchId),
+      service.branches.map((item) => item.branchId),
     );
 
     const unavailableBranch = uniqueBranchIds.find(
@@ -334,8 +365,92 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   }
 
   // =====================================================
-  // 10. PRICE VALIDATION
+  // 11. VALIDATE OPTIONAL STAFF ASSIGNMENTS
   // =====================================================
+
+  if (uniqueStaffIds.length > 0) {
+    const staffMembers = await prisma.staff.findMany({
+      where: {
+        id: {
+          in: uniqueStaffIds,
+        },
+      },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        branches: {
+          select: {
+            branchId: true,
+          },
+        },
+        services: {
+          select: {
+            serviceId: true,
+          },
+        },
+      },
+    });
+
+    if (staffMembers.length !== uniqueStaffIds.length) {
+      throw new AppError("One or more staff members do not exist", 404);
+    }
+
+    const packageBranchIds = new Set(uniqueBranchIds);
+
+    for (const staff of staffMembers) {
+      // Staff must be active.
+
+      if (staff.status !== StaffStatus.ACTIVE) {
+        throw new AppError(
+          `Inactive staff cannot be assigned to package: ${staff.name}`,
+          400,
+        );
+      }
+
+      // Staff must belong to at least one package branch.
+
+      const hasMatchingBranch = staff.branches.some((item) =>
+        packageBranchIds.has(item.branchId),
+      );
+
+      if (!hasMatchingBranch) {
+        throw new AppError(
+          `Staff "${staff.name}" is not assigned to any selected package branch`,
+          400,
+        );
+      }
+
+      // Staff must support every included service.
+
+      const staffServiceIds = new Set(
+        staff.services.map((item) => item.serviceId),
+      );
+
+      const missingServiceId = uniqueServiceIds.find(
+        (serviceId) => !staffServiceIds.has(serviceId),
+      );
+
+      if (missingServiceId) {
+        throw new AppError(
+          `Staff "${staff.name}" must be eligible for all services included in package "${packageName}"`,
+          400,
+        );
+      }
+    }
+  }
+
+  // =====================================================
+  // 12. VALIDATE PRICING AND DURATION
+  // =====================================================
+
+  if (!Number.isFinite(payload.regularPrice) || payload.regularPrice <= 0) {
+    throw new AppError("Regular price must be greater than 0", 400);
+  }
+
+  if (!Number.isFinite(payload.packagePrice) || payload.packagePrice <= 0) {
+    throw new AppError("Package price must be greater than 0", 400);
+  }
 
   if (payload.packagePrice > payload.regularPrice) {
     throw new AppError(
@@ -344,108 +459,98 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     );
   }
 
-  // =====================================================
-  // 11. GROUP PURCHASE VALIDATION
-  // =====================================================
-
-  if (payload.type === PackageType.GROUP_PURCHASE_PACKAGE) {
-    if (
-      !payload.capacity ||
-      !payload.purchaseLimitPerCustomer ||
-      !payload.salesStartAt ||
-      !payload.salesEndAt
-    ) {
-      throw new AppError(
-        "Group purchase package configuration is incomplete",
-        400,
-      );
-    }
-
-    if (new Date(payload.salesStartAt) >= new Date(payload.salesEndAt)) {
-      throw new AppError(
-        "Sales end time must be later than sales start time",
-        400,
-      );
-    }
-
-    if (payload.purchaseLimitPerCustomer > payload.capacity) {
-      throw new AppError(
-        "Purchase limit per customer cannot exceed package capacity",
-        400,
-      );
-    }
+  if (
+    !Number.isInteger(payload.durationMinutes) ||
+    payload.durationMinutes <= 0
+  ) {
+    throw new AppError("Duration must be a positive integer", 400);
   }
 
   // =====================================================
-  // 12. CREATE PACKAGE + RELATIONS + OPTIONAL IMAGES
+  // 13. VALIDATE GROUP PURCHASE CONFIGURATION
+  // =====================================================
+
+  if (
+    !Number.isInteger(payload.capacity) ||
+    payload.capacity <= 0 ||
+    !Number.isInteger(payload.purchaseLimitPerCustomer) ||
+    payload.purchaseLimitPerCustomer <= 0
+  ) {
+    throw new AppError(
+      "Group purchase capacity or purchase limit is invalid",
+      400,
+    );
+  }
+
+  if (payload.purchaseLimitPerCustomer > payload.capacity) {
+    throw new AppError(
+      "Purchase limit per customer cannot exceed package capacity",
+      400,
+    );
+  }
+
+  if (!payload.salesStartAt || !payload.salesEndAt) {
+    throw new AppError("Sales start and end times are required", 400);
+  }
+
+  const salesStartAt = new Date(payload.salesStartAt);
+  const salesEndAt = new Date(payload.salesEndAt);
+
+  if (
+    Number.isNaN(salesStartAt.getTime()) ||
+    Number.isNaN(salesEndAt.getTime())
+  ) {
+    throw new AppError("Invalid sales date", 400);
+  }
+
+  if (salesStartAt >= salesEndAt) {
+    throw new AppError(
+      "Sales end time must be later than sales start time",
+      400,
+    );
+  }
+
+  // =====================================================
+  // 14. CREATE PACKAGE + RELATIONS ATOMICALLY
   // =====================================================
 
   const createdPackage = await prisma.$transaction(async (tx) => {
-    // =================================================
-    // CREATE PACKAGE
-    // =================================================
-
     const packageData = await tx.package.create({
       data: {
-        type: payload.type,
+        // Fixed package type.
+        type: PackageType.GROUP_PURCHASE_PACKAGE,
 
         name: packageName,
         description: packageDescription,
-
         translations,
 
-        // =============================================
-        // PACKAGE DISPLAY FIELDS
-        // =============================================
-
+        // Display fields
         validDays,
         applicableFor,
         purchaseNotice,
         howToUse,
 
-        // =============================================
-        // PRICING
-        // =============================================
-
+        // Pricing
         regularPrice: payload.regularPrice,
         packagePrice: payload.packagePrice,
         durationMinutes: payload.durationMinutes,
 
+        // Listing
         listingStatus: payload.listingStatus,
 
-        // =============================================
-        // GROUP PURCHASE SETTINGS
-        // =============================================
-
-        capacity:
-          payload.type === PackageType.GROUP_PURCHASE_PACKAGE
-            ? payload.capacity
-            : null,
-
+        // Group purchase settings
+        capacity: payload.capacity,
         soldQuantity: 0,
-
-        purchaseLimitPerCustomer:
-          payload.type === PackageType.GROUP_PURCHASE_PACKAGE
-            ? payload.purchaseLimitPerCustomer
-            : null,
-
-        salesStartAt:
-          payload.type === PackageType.GROUP_PURCHASE_PACKAGE &&
-          payload.salesStartAt
-            ? new Date(payload.salesStartAt)
-            : null,
-
-        salesEndAt:
-          payload.type === PackageType.GROUP_PURCHASE_PACKAGE &&
-          payload.salesEndAt
-            ? new Date(payload.salesEndAt)
-            : null,
+        reservedQuantity: 0,
+        purchaseLimitPerCustomer: payload.purchaseLimitPerCustomer,
+        salesStartAt,
+        salesEndAt,
       },
     });
 
-    // =================================================
+    // ================================================
     // ASSIGN SERVICES
-    // =================================================
+    // ================================================
 
     await tx.packageService.createMany({
       data: uniqueServiceIds.map((serviceId) => ({
@@ -454,9 +559,9 @@ const createPackage = async (payload: ICreatePackagePayload) => {
       })),
     });
 
-    // =================================================
+    // ================================================
     // ASSIGN BRANCHES
-    // =================================================
+    // ================================================
 
     await tx.packageBranch.createMany({
       data: uniqueBranchIds.map((branchId) => ({
@@ -465,11 +570,22 @@ const createPackage = async (payload: ICreatePackagePayload) => {
       })),
     });
 
-    // =================================================
-    // SAVE PACKAGE IMAGES (OPTIONAL)
-    // =================================================
+    // ================================================
+    // ASSIGN OPTIONAL STAFF
+    // ================================================
 
-    // Only create image records when images are provided.
+    if (uniqueStaffIds.length > 0) {
+      await tx.staffPackage.createMany({
+        data: uniqueStaffIds.map((staffId) => ({
+          staffId,
+          packageId: packageData.id,
+        })),
+      });
+    }
+
+    // ================================================
+    // SAVE OPTIONAL IMAGES
+    // ================================================
 
     if (uniqueImageObjectKeys.length > 0) {
       await tx.packageImage.createMany({
@@ -482,15 +598,14 @@ const createPackage = async (payload: ICreatePackagePayload) => {
       });
     }
 
-    // =================================================
+    // ================================================
     // FETCH SAVED IMAGES
-    // =================================================
+    // ================================================
 
     const images = await tx.packageImage.findMany({
       where: {
         packageId: packageData.id,
       },
-
       orderBy: {
         sortOrder: "asc",
       },
@@ -503,10 +618,8 @@ const createPackage = async (payload: ICreatePackagePayload) => {
   });
 
   // =====================================================
-  // 13. FORMAT IMAGE RESPONSE
+  // 15. FORMAT RESPONSE
   // =====================================================
-
-  // Returns [] when the package has no images.
 
   const images = createdPackage.images.map((image) => ({
     id: image.id,
@@ -514,38 +627,6 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     isPrimary: image.isPrimary,
     sortOrder: image.sortOrder,
   }));
-
-  // =====================================================
-  // 14. STANDARD PACKAGE RESPONSE
-  // =====================================================
-
-  if (createdPackage.type === PackageType.STANDARD_SERVICE_PACKAGE) {
-    return {
-      id: createdPackage.id,
-      type: createdPackage.type,
-
-      name: createdPackage.name,
-      description: createdPackage.description,
-
-      validDays: createdPackage.validDays,
-      applicableFor: createdPackage.applicableFor,
-      purchaseNotice: createdPackage.purchaseNotice,
-      howToUse: createdPackage.howToUse,
-
-      regularPrice: Number(createdPackage.regularPrice),
-      packagePrice: Number(createdPackage.packagePrice),
-      durationMinutes: createdPackage.durationMinutes,
-
-      status: createdPackage.status,
-      listingStatus: createdPackage.listingStatus,
-
-      images,
-    };
-  }
-
-  // =====================================================
-  // 15. GROUP PURCHASE RESPONSE
-  // =====================================================
 
   const capacity = createdPackage.capacity ?? 0;
 
@@ -567,14 +648,24 @@ const createPackage = async (payload: ICreatePackagePayload) => {
     packagePrice: Number(createdPackage.packagePrice),
     durationMinutes: createdPackage.durationMinutes,
 
-    capacity,
-    soldQuantity: createdPackage.soldQuantity,
-    remainingQuantity,
-
     status: createdPackage.status,
     listingStatus: createdPackage.listingStatus,
 
+    capacity,
+    soldQuantity: createdPackage.soldQuantity,
+    reservedQuantity: createdPackage.reservedQuantity,
+    remainingQuantity,
+
+    purchaseLimitPerCustomer: createdPackage.purchaseLimitPerCustomer,
+
+    salesStartAt: createdPackage.salesStartAt,
+    salesEndAt: createdPackage.salesEndAt,
+
     soldOut: remainingQuantity <= 0,
+
+    serviceIds: uniqueServiceIds,
+    branchIds: uniqueBranchIds,
+    staffIds: uniqueStaffIds,
 
     images,
   };
@@ -588,41 +679,52 @@ const getPackages = async (
   // 1. PAGINATION
   // =====================================================
 
-  const limit = query.limit ? Number(query.limit) : 20;
-  const page = query.page ? Number(query.page) : 1;
+  const limit = query.limit !== undefined ? Number(query.limit) : 20;
+
+  const page = query.page !== undefined ? Number(query.page) : 1;
+
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new AppError("Limit must be an integer between 1 and 100", 400);
+  }
+
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new AppError("Page must be a positive integer", 400);
+  }
+
   const skip = (page - 1) * limit;
 
+  if (!Number.isSafeInteger(skip)) {
+    throw new AppError("Pagination offset is too large", 400);
+  }
+
   // =====================================================
-  // 2. FILTERS
+  // 2. GROUP PURCHASE ONLY + OPTIONAL FILTERS
   // =====================================================
 
-  const type = query.type as PackageType | undefined;
   const status = query.status as PackageStatus | undefined;
+
   const listingStatus = query.listingStatus as ListingStatus | undefined;
 
-  const andConditions: Prisma.PackageWhereInput[] = [];
+  const where: Prisma.PackageWhereInput = {
+    // Fixed package type: legacy standard packages excluded.
+    type: PackageType.GROUP_PURCHASE_PACKAGE,
 
-  if (type) {
-    andConditions.push({ type });
-  }
+    ...(status && {
+      status,
+    }),
 
-  if (status) {
-    andConditions.push({ status });
-  }
-
-  if (listingStatus) {
-    andConditions.push({ listingStatus });
-  }
+    ...(listingStatus && {
+      listingStatus,
+    }),
+  };
 
   // =====================================================
-  // 3. FETCH PACKAGES
+  // 3. FETCH GROUP PURCHASE PACKAGES
   // =====================================================
 
   const [packages, totalPackageCount] = await Promise.all([
     prisma.package.findMany({
-      where: {
-        AND: andConditions,
-      },
+      where,
 
       take: limit,
       skip,
@@ -683,9 +785,7 @@ const getPackages = async (
     }),
 
     prisma.package.count({
-      where: {
-        AND: andConditions,
-      },
+      where,
     }),
   ]);
 
@@ -702,13 +802,15 @@ const getPackages = async (
       const localized = localizePackage(item, language);
 
       // ===============================================
-      // CAPACITY + REMAINING QUANTITY
+      // GROUP PURCHASE INVENTORY
       // ===============================================
 
-      const capacity = item.capacity ?? null;
+      const capacity = item.capacity;
 
       const remainingQuantity =
-        capacity !== null ? capacity - item.soldQuantity : null;
+        capacity !== null ? Math.max(capacity - item.soldQuantity, 0) : null;
+
+      const soldOut = capacity !== null && item.soldQuantity >= capacity;
 
       // ===============================================
       // PRIMARY IMAGE SIGNED URL
@@ -727,6 +829,7 @@ const getPackages = async (
       return {
         id: item.id,
 
+        // Fixed GROUP_PURCHASE_PACKAGE type.
         type: item.type,
 
         // =============================================
@@ -738,7 +841,7 @@ const getPackages = async (
         description: localized.description,
 
         // =============================================
-        // NEW PACKAGE DISPLAY FIELDS
+        // PACKAGE DISPLAY FIELDS
         // =============================================
 
         validDays: item.validDays,
@@ -777,10 +880,13 @@ const getPackages = async (
 
         remainingQuantity,
 
-        soldOut:
-          item.type === PackageType.GROUP_PURCHASE_PACKAGE
-            ? remainingQuantity !== null && remainingQuantity <= 0
-            : false,
+        purchaseLimitPerCustomer: item.purchaseLimitPerCustomer,
+
+        salesStartAt: item.salesStartAt,
+
+        salesEndAt: item.salesEndAt,
+
+        soldOut,
 
         // =============================================
         // PRIMARY IMAGE
@@ -843,12 +949,13 @@ const getPackageById = async (
   language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
-  // 1. FETCH PACKAGE DETAILS
+  // 1. FETCH GROUP PURCHASE PACKAGE DETAILS
   // =====================================================
 
-  const packageData = await prisma.package.findUnique({
+  const packageData = await prisma.package.findFirst({
     where: {
       id: packageId,
+      type: PackageType.GROUP_PURCHASE_PACKAGE,
     },
 
     include: {
@@ -880,7 +987,6 @@ const getPackageById = async (
               id: true,
               name: true,
               translations: true,
-
               price: true,
               durationMinutes: true,
               status: true,
@@ -900,7 +1006,6 @@ const getPackageById = async (
               id: true,
               name: true,
               translations: true,
-
               status: true,
             },
           },
@@ -910,7 +1015,7 @@ const getPackageById = async (
   });
 
   // =====================================================
-  // 2. CHECK PACKAGE
+  // 2. CHECK GROUP PURCHASE PACKAGE
   // =====================================================
 
   if (!packageData) {
@@ -927,10 +1032,12 @@ const getPackageById = async (
   // 4. GROUP PURCHASE CAPACITY
   // =====================================================
 
-  const capacity = packageData.capacity ?? null;
+  const capacity = packageData.capacity;
 
   const remainingQuantity =
-    capacity !== null ? capacity - packageData.soldQuantity : null;
+    capacity !== null ? Math.max(capacity - packageData.soldQuantity, 0) : null;
+
+  const soldOut = capacity !== null && packageData.soldQuantity >= capacity;
 
   // =====================================================
   // 5. GENERATE SIGNED IMAGE URLS
@@ -951,16 +1058,17 @@ const getPackageById = async (
   );
 
   // =====================================================
-  // 6. PACKAGE DETAILS RESPONSE
+  // 6. GROUP PURCHASE PACKAGE DETAILS RESPONSE
   // =====================================================
 
   return {
     id: packageData.id,
 
+    // Fixed group purchase package type.
     type: packageData.type,
-    ...(packageData.type === PackageType.GROUP_PURCHASE_PACKAGE && {
-      groupPurchaseOptions: groupPurchaseOptions(),
-    }),
+
+    // Both supported purchase flows.
+    groupPurchaseOptions: groupPurchaseOptions(),
 
     // ===============================================
     // MULTILINGUAL PACKAGE INFORMATION
@@ -971,7 +1079,7 @@ const getPackageById = async (
     description: localized.description,
 
     // ===============================================
-    // NEW PACKAGE DISPLAY FIELDS
+    // PACKAGE DISPLAY FIELDS
     // ===============================================
 
     validDays: packageData.validDays,
@@ -1016,10 +1124,7 @@ const getPackageById = async (
 
     salesEndAt: packageData.salesEndAt,
 
-    soldOut:
-      packageData.type === PackageType.GROUP_PURCHASE_PACKAGE
-        ? remainingQuantity !== null && remainingQuantity <= 0
-        : false,
+    soldOut,
 
     // ===============================================
     // PACKAGE IMAGES
@@ -1063,14 +1168,14 @@ const updatePackage = async (
   language: Language = DEFAULT_LANGUAGE,
 ) => {
   // =====================================================
-  // 1. FIND PACKAGE
+  // 1. FIND GROUP PURCHASE PACKAGE
   // =====================================================
 
-  const packageData = await prisma.package.findUnique({
+  const packageData = await prisma.package.findFirst({
     where: {
       id: packageId,
+      type: PackageType.GROUP_PURCHASE_PACKAGE,
     },
-
     include: {
       images: true,
     },
@@ -1098,7 +1203,7 @@ const updatePackage = async (
         : packageData.description;
 
   // =====================================================
-  // 3. RESOLVE NEW PACKAGE DISPLAY FIELDS
+  // 3. RESOLVE PACKAGE DISPLAY FIELDS
   // =====================================================
 
   const nextValidDays =
@@ -1142,26 +1247,26 @@ const updatePackage = async (
   );
 
   // =====================================================
-  // 5. DUPLICATE NAME
+  // 5. DUPLICATE PACKAGE NAME
   // =====================================================
 
-  if (nextName !== packageData.name) {
-    const existingPackage = await prisma.package.findFirst({
-      where: {
-        name: {
-          equals: nextName,
-          mode: "insensitive",
-        },
-
-        NOT: {
-          id: packageId,
-        },
+  const existingPackage = await prisma.package.findFirst({
+    where: {
+      name: {
+        equals: nextName,
+        mode: "insensitive",
       },
-    });
+      NOT: {
+        id: packageId,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
 
-    if (existingPackage) {
-      throw new AppError("Package already exists", 409);
-    }
+  if (existingPackage) {
+    throw new AppError("Package already exists", 409);
   }
 
   // =====================================================
@@ -1171,6 +1276,18 @@ const updatePackage = async (
   const regularPrice = payload.regularPrice ?? Number(packageData.regularPrice);
 
   const packagePrice = payload.packagePrice ?? Number(packageData.packagePrice);
+
+  if (
+    !Number.isFinite(regularPrice) ||
+    regularPrice <= 0 ||
+    !Number.isFinite(packagePrice) ||
+    packagePrice <= 0
+  ) {
+    throw new AppError(
+      "Regular price and package price must be greater than 0",
+      400,
+    );
+  }
 
   if (packagePrice > regularPrice) {
     throw new AppError(
@@ -1191,89 +1308,120 @@ const updatePackage = async (
   }
 
   // =====================================================
-  // 8. STANDARD PACKAGE VALIDATION
+  // 8. GROUP PURCHASE SETTINGS
+  // =====================================================
+
+  const capacity = payload.capacity ?? packageData.capacity;
+
+  const purchaseLimit =
+    payload.purchaseLimitPerCustomer ?? packageData.purchaseLimitPerCustomer;
+
+  const salesStartAt =
+    payload.salesStartAt !== undefined
+      ? new Date(payload.salesStartAt)
+      : packageData.salesStartAt;
+
+  const salesEndAt =
+    payload.salesEndAt !== undefined
+      ? new Date(payload.salesEndAt)
+      : packageData.salesEndAt;
+
+  // =====================================================
+  // 9. CAPACITY VALIDATION
+  // =====================================================
+
+  if (capacity === null || !Number.isInteger(capacity) || capacity <= 0) {
+    throw new AppError(
+      "Group purchase capacity must be a positive integer",
+      400,
+    );
+  }
+
+  if (capacity < packageData.soldQuantity) {
+    throw new AppError("Capacity cannot be lower than sold quantity", 400);
+  }
+
+  // =====================================================
+  // 10. PURCHASE LIMIT VALIDATION
   // =====================================================
 
   if (
-    packageData.type === PackageType.STANDARD_SERVICE_PACKAGE &&
-    (payload.capacity !== undefined ||
-      payload.purchaseLimitPerCustomer !== undefined ||
-      payload.salesStartAt !== undefined ||
-      payload.salesEndAt !== undefined)
+    purchaseLimit === null ||
+    !Number.isInteger(purchaseLimit) ||
+    purchaseLimit <= 0
   ) {
     throw new AppError(
-      "Group purchase fields are not allowed for standard packages",
+      "Purchase limit per customer must be a positive integer",
+      400,
+    );
+  }
+
+  if (purchaseLimit > capacity) {
+    throw new AppError(
+      "Purchase limit per customer cannot exceed package capacity",
       400,
     );
   }
 
   // =====================================================
-  // 9. GROUP PURCHASE VALIDATION
+  // 11. SALES DATE VALIDATION
   // =====================================================
 
-  if (packageData.type === PackageType.GROUP_PURCHASE_PACKAGE) {
-    const capacity = payload.capacity ?? packageData.capacity;
+  if (
+    !salesStartAt ||
+    !salesEndAt ||
+    Number.isNaN(salesStartAt.getTime()) ||
+    Number.isNaN(salesEndAt.getTime())
+  ) {
+    throw new AppError("Valid sales start and end times are required", 400);
+  }
 
-    const purchaseLimit =
-      payload.purchaseLimitPerCustomer ?? packageData.purchaseLimitPerCustomer;
-
-    const salesStartAt =
-      payload.salesStartAt !== undefined
-        ? new Date(payload.salesStartAt)
-        : packageData.salesStartAt;
-
-    const salesEndAt =
-      payload.salesEndAt !== undefined
-        ? new Date(payload.salesEndAt)
-        : packageData.salesEndAt;
-
-    if (capacity !== null && capacity < packageData.soldQuantity) {
-      throw new AppError("Capacity cannot be lower than sold quantity", 400);
-    }
-
-    if (
-      capacity !== null &&
-      purchaseLimit !== null &&
-      purchaseLimit > capacity
-    ) {
-      throw new AppError(
-        "Purchase limit per customer cannot exceed package capacity",
-        400,
-      );
-    }
-
-    if (salesStartAt && salesEndAt && salesStartAt >= salesEndAt) {
-      throw new AppError(
-        "Sales end time must be later than sales start time",
-        400,
-      );
-    }
+  if (salesStartAt >= salesEndAt) {
+    throw new AppError(
+      "Sales end time must be later than sales start time",
+      400,
+    );
   }
 
   // =====================================================
-  // 10. IMAGE VALIDATION
+  // 12. IMAGE VALIDATION
   // =====================================================
 
   let uniqueImageObjectKeys: string[] | undefined;
 
   if (payload.imageObjectKeys !== undefined) {
-    uniqueImageObjectKeys = [...new Set(payload.imageObjectKeys)];
+    const normalizedImageObjectKeys = payload.imageObjectKeys.map((key) =>
+      key.trim(),
+    );
 
-    if (uniqueImageObjectKeys.length !== payload.imageObjectKeys.length) {
+    if (normalizedImageObjectKeys.some((key) => !key)) {
+      throw new AppError("Invalid package image object key", 400);
+    }
+
+    uniqueImageObjectKeys = [...new Set(normalizedImageObjectKeys)];
+
+    if (uniqueImageObjectKeys.length !== normalizedImageObjectKeys.length) {
       throw new AppError("Duplicate package images are not allowed", 400);
     }
+
+    // Existing images can be retained.
+    // New images must follow the package-specific path.
+
+    const existingImageKeys = new Set(
+      packageData.images.map((image) => image.objectKey),
+    );
 
     const expectedPrefix = `packages/${packageId}/`;
 
     const invalidImage = uniqueImageObjectKeys.find(
-      (objectKey) => !objectKey.startsWith(expectedPrefix),
+      (objectKey) =>
+        !existingImageKeys.has(objectKey) &&
+        !objectKey.startsWith(expectedPrefix),
     );
 
     if (invalidImage) {
       throw new AppError("Invalid package image object key", 400);
     }
-
-    // VERIFY R2 OBJECTS EXIST
 
     await Promise.all(
       uniqueImageObjectKeys.map((objectKey) =>
@@ -1283,45 +1431,33 @@ const updatePackage = async (
   }
 
   // =====================================================
-  // 11. UPDATE PACKAGE + IMAGES
+  // 13. UPDATE PACKAGE + IMAGES
   // =====================================================
 
   const updatedPackage = await prisma.$transaction(async (tx) => {
     await tx.package.update({
       where: {
         id: packageId,
+        type: PackageType.GROUP_PURCHASE_PACKAGE,
       },
-
       data: {
-        // ===========================================
         // ENGLISH BASE
-        // ===========================================
 
         name: nextName,
-
         description: nextDescription,
 
-        // ===========================================
         // MULTILINGUAL
-        // ===========================================
 
         translations: nextTranslations,
 
-        // ===========================================
-        // NEW PACKAGE DISPLAY FIELDS
-        // ===========================================
+        // DISPLAY FIELDS
 
         validDays: nextValidDays,
-
         applicableFor: nextApplicableFor,
-
         purchaseNotice: nextPurchaseNotice,
-
         howToUse: nextHowToUse,
 
-        // ===========================================
         // PRICING
-        // ===========================================
 
         ...(payload.regularPrice !== undefined && {
           regularPrice: payload.regularPrice,
@@ -1335,26 +1471,22 @@ const updatePackage = async (
           durationMinutes: payload.durationMinutes,
         }),
 
-        // ===========================================
         // GROUP PURCHASE
-        // ===========================================
 
-        ...(packageData.type === PackageType.GROUP_PURCHASE_PACKAGE && {
-          ...(payload.capacity !== undefined && {
-            capacity: payload.capacity,
-          }),
+        ...(payload.capacity !== undefined && {
+          capacity: payload.capacity,
+        }),
 
-          ...(payload.purchaseLimitPerCustomer !== undefined && {
-            purchaseLimitPerCustomer: payload.purchaseLimitPerCustomer,
-          }),
+        ...(payload.purchaseLimitPerCustomer !== undefined && {
+          purchaseLimitPerCustomer: payload.purchaseLimitPerCustomer,
+        }),
 
-          ...(payload.salesStartAt !== undefined && {
-            salesStartAt: new Date(payload.salesStartAt),
-          }),
+        ...(payload.salesStartAt !== undefined && {
+          salesStartAt,
+        }),
 
-          ...(payload.salesEndAt !== undefined && {
-            salesEndAt: new Date(payload.salesEndAt),
-          }),
+        ...(payload.salesEndAt !== undefined && {
+          salesEndAt,
         }),
       },
     });
@@ -1382,11 +1514,14 @@ const updatePackage = async (
       }
     }
 
-    return await tx.package.findUnique({
+    // ================================================
+    // FETCH UPDATED PACKAGE
+    // ================================================
+
+    return tx.package.findUnique({
       where: {
         id: packageId,
       },
-
       include: {
         images: {
           orderBy: {
@@ -1402,57 +1537,48 @@ const updatePackage = async (
   }
 
   // =====================================================
-  // 12. LOCALIZED RESPONSE
+  // 14. LOCALIZED RESPONSE
   // =====================================================
 
   const localized = localizePackage(updatedPackage, language);
 
+  const updatedCapacity = updatedPackage.capacity ?? 0;
+
+  const remainingQuantity = updatedCapacity - updatedPackage.soldQuantity;
+
   return {
     id: updatedPackage.id,
-
     type: updatedPackage.type,
 
     name: localized.name,
-
     description: localized.description,
 
-    // NEW DISPLAY FIELDS
-
     validDays: updatedPackage.validDays,
-
     applicableFor: localized.applicableFor,
-
     purchaseNotice: localized.purchaseNotice,
-
     howToUse: localized.howToUse,
 
-    // PRICING
-
     regularPrice: Number(updatedPackage.regularPrice),
-
     packagePrice: Number(updatedPackage.packagePrice),
-
     durationMinutes: updatedPackage.durationMinutes,
 
     status: updatedPackage.status,
-
     listingStatus: updatedPackage.listingStatus,
 
-    // GROUP PURCHASE
-
     capacity: updatedPackage.capacity,
-
     soldQuantity: updatedPackage.soldQuantity,
+    reservedQuantity: updatedPackage.reservedQuantity,
+    remainingQuantity,
 
     purchaseLimitPerCustomer: updatedPackage.purchaseLimitPerCustomer,
 
     salesStartAt: updatedPackage.salesStartAt,
-
     salesEndAt: updatedPackage.salesEndAt,
 
-    // IMAGES
+    soldOut: remainingQuantity <= 0,
 
     images: updatedPackage.images.map((image) => ({
+      id: image.id,
       objectKey: image.objectKey,
       isPrimary: image.isPrimary,
       sortOrder: image.sortOrder,
@@ -1469,9 +1595,14 @@ const updatePackageStatus = async (
   payload: IUpdatePackageStatusPayload,
   userId: string,
 ) => {
-  const packageData = await prisma.package.findUnique({
+  // =====================================================
+  // 1. FIND GROUP PURCHASE PACKAGE
+  // =====================================================
+
+  const packageData = await prisma.package.findFirst({
     where: {
       id: packageId,
+      type: PackageType.GROUP_PURCHASE_PACKAGE,
     },
   });
 
@@ -1480,7 +1611,7 @@ const updatePackageStatus = async (
   }
 
   // =====================================================
-  // SAME STATUS — NO UPDATE / NO AUDIT
+  // 2. SAME STATUS — NO UPDATE / NO AUDIT
   // =====================================================
 
   if (packageData.status === payload.status) {
@@ -1491,13 +1622,14 @@ const updatePackageStatus = async (
   }
 
   // =====================================================
-  // UPDATE + AUDIT
+  // 3. UPDATE STATUS + AUDIT LOG
   // =====================================================
 
   const updatedPackage = await prisma.$transaction(async (tx) => {
     const result = await tx.package.update({
       where: {
         id: packageId,
+        type: PackageType.GROUP_PURCHASE_PACKAGE,
       },
 
       data: {
@@ -1520,12 +1652,15 @@ const updatePackageStatus = async (
           newStatus: result.status,
         },
       },
-
       tx,
     );
 
     return result;
   });
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
 
   return {
     id: updatedPackage.id,
@@ -1538,9 +1673,14 @@ const updatePackageListing = async (
   payload: IUpdatePackageListingPayload,
   userId: string,
 ) => {
-  const packageData = await prisma.package.findUnique({
+  // =====================================================
+  // 1. FIND GROUP PURCHASE PACKAGE
+  // =====================================================
+
+  const packageData = await prisma.package.findFirst({
     where: {
       id: packageId,
+      type: PackageType.GROUP_PURCHASE_PACKAGE,
     },
   });
 
@@ -1549,7 +1689,7 @@ const updatePackageListing = async (
   }
 
   // =====================================================
-  // SAME LISTING STATUS — NO UPDATE / NO AUDIT
+  // 2. SAME LISTING STATUS — NO UPDATE / NO AUDIT
   // =====================================================
 
   if (packageData.listingStatus === payload.listingStatus) {
@@ -1560,13 +1700,14 @@ const updatePackageListing = async (
   }
 
   // =====================================================
-  // UPDATE + AUDIT
+  // 3. UPDATE LISTING STATUS + AUDIT LOG
   // =====================================================
 
   const updatedPackage = await prisma.$transaction(async (tx) => {
     const result = await tx.package.update({
       where: {
         id: packageId,
+        type: PackageType.GROUP_PURCHASE_PACKAGE,
       },
 
       data: {
@@ -1586,6 +1727,7 @@ const updatePackageListing = async (
 
         metadata: {
           previousListingStatus: packageData.listingStatus,
+
           newListingStatus: result.listingStatus,
         },
       },
@@ -1594,6 +1736,10 @@ const updatePackageListing = async (
 
     return result;
   });
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
 
   return {
     id: updatedPackage.id,
@@ -1605,17 +1751,28 @@ const assignPackageToBranches = async (
   packageId: string,
   payload: IAssignPackageBranchesPayload,
 ) => {
-  const packageData = await prisma.package.findUnique({
+  // =====================================================
+  // 1. FIND GROUP PURCHASE PACKAGE
+  // =====================================================
+
+  const packageData = await prisma.package.findFirst({
     where: {
       id: packageId,
+      type: PackageType.GROUP_PURCHASE_PACKAGE,
     },
+
     include: {
+      // ===============================================
+      // PACKAGE SERVICES
+      // ===============================================
+
       services: {
         select: {
           service: {
             select: {
               id: true,
               status: true,
+
               branches: {
                 select: {
                   branchId: true,
@@ -1632,11 +1789,23 @@ const assignPackageToBranches = async (
     throw new AppError("Package not found", 404);
   }
 
+  // =====================================================
+  // 2. VALIDATE BRANCH IDS
+  // =====================================================
+
   const uniqueBranchIds = [...new Set(payload.branchIds)];
 
   if (uniqueBranchIds.length !== payload.branchIds.length) {
     throw new AppError("Duplicate branch IDs are not allowed", 400);
   }
+
+  if (uniqueBranchIds.length === 0) {
+    throw new AppError("At least one branch is required", 400);
+  }
+
+  // =====================================================
+  // 3. CHECK BRANCHES
+  // =====================================================
 
   const branches = await prisma.branch.findMany({
     where: {
@@ -1644,6 +1813,7 @@ const assignPackageToBranches = async (
         in: uniqueBranchIds,
       },
     },
+
     select: {
       id: true,
       status: true,
@@ -1654,16 +1824,26 @@ const assignPackageToBranches = async (
     throw new AppError("One or more branches do not exist", 404);
   }
 
-  const inactiveBranch = branches.find((branch) => branch.status !== "ACTIVE");
+  const inactiveBranch = branches.find(
+    (branch) => branch.status !== BranchStatus.ACTIVE,
+  );
 
   if (inactiveBranch) {
     throw new AppError("Package cannot be assigned to an inactive branch", 400);
   }
 
+  // =====================================================
+  // 4. VALIDATE PACKAGE SERVICES
+  // =====================================================
+
+  if (packageData.services.length === 0) {
+    throw new AppError("Package must contain at least one service", 400);
+  }
+
   for (const packageService of packageData.services) {
     const service = packageService.service;
 
-    if (service.status !== "ACTIVE") {
+    if (service.status !== ServiceStatus.ACTIVE) {
       throw new AppError(
         "Inactive services cannot be included in an active package assignment",
         400,
@@ -1686,7 +1866,107 @@ const assignPackageToBranches = async (
     }
   }
 
+  // =====================================================
+  // 5. VALIDATE EXISTING PACKAGE STAFF
+  // =====================================================
+
+  const assignedStaff = await prisma.staffPackage.findMany({
+    where: {
+      packageId,
+    },
+
+    select: {
+      staff: {
+        select: {
+          id: true,
+          name: true,
+          status: true,
+
+          branches: {
+            select: {
+              branchId: true,
+            },
+          },
+
+          services: {
+            select: {
+              serviceId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const selectedBranchIds = new Set(uniqueBranchIds);
+
+  const packageServiceIds = packageData.services.map((item) => item.service.id);
+
+  for (const assignment of assignedStaff) {
+    const staff = assignment.staff;
+
+    // Staff must remain active.
+
+    if (staff.status !== StaffStatus.ACTIVE) {
+      throw new AppError(
+        `Inactive staff cannot remain assigned to package: ${staff.name}`,
+        400,
+      );
+    }
+
+    // Staff must belong to at least one selected branch.
+
+    const hasMatchingBranch = staff.branches.some((branch) =>
+      selectedBranchIds.has(branch.branchId),
+    );
+
+    if (!hasMatchingBranch) {
+      throw new AppError(
+        `Staff "${staff.name}" is not assigned to any selected package branch`,
+        400,
+      );
+    }
+
+    // Staff must support all package services.
+
+    const staffServiceIds = new Set(
+      staff.services.map((service) => service.serviceId),
+    );
+
+    const missingService = packageServiceIds.find(
+      (serviceId) => !staffServiceIds.has(serviceId),
+    );
+
+    if (missingService) {
+      throw new AppError(
+        `Staff "${staff.name}" must support all services included in this package`,
+        400,
+      );
+    }
+  }
+
+  // =====================================================
+  // 6. REPLACE PACKAGE BRANCH ASSIGNMENTS
+  // =====================================================
+
   await prisma.$transaction(async (tx) => {
+    // Recheck package type inside transaction.
+
+    const currentPackage = await tx.package.findFirst({
+      where: {
+        id: packageId,
+        type: PackageType.GROUP_PURCHASE_PACKAGE,
+      },
+
+      select: {
+        id: true,
+      },
+    });
+
+    if (!currentPackage) {
+      throw new AppError("Package not found", 404);
+    }
+
     await tx.packageBranch.deleteMany({
       where: {
         packageId,
@@ -1700,6 +1980,10 @@ const assignPackageToBranches = async (
       })),
     });
   });
+
+  // =====================================================
+  // 7. RESPONSE
+  // =====================================================
 
   return {
     packageId,
@@ -1716,11 +2000,23 @@ const getBranchPackages = async (
   // 1. PAGINATION
   // =====================================================
 
-  const limit = query.limit ? Number(query.limit) : 20;
-  const page = query.page ? Number(query.page) : 1;
+  const limit = query.limit !== undefined ? Number(query.limit) : 20;
+
+  const page = query.page !== undefined ? Number(query.page) : 1;
+
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new AppError("Limit must be an integer between 1 and 100", 400);
+  }
+
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new AppError("Page must be a positive integer", 400);
+  }
+
   const skip = (page - 1) * limit;
 
-  const type = query.type as PackageType | undefined;
+  if (!Number.isSafeInteger(skip)) {
+    throw new AppError("Pagination offset is too large", 400);
+  }
 
   // =====================================================
   // 2. CHECK BRANCH
@@ -1746,40 +2042,34 @@ const getBranchPackages = async (
   }
 
   // =====================================================
-  // 3. BUILD PACKAGE FILTER
+  // 3. BUILD GROUP PURCHASE PACKAGE FILTER
   // =====================================================
 
-  const andConditions: Prisma.PackageWhereInput[] = [
-    {
-      status: PackageStatus.ACTIVE,
-    },
-    {
-      listingStatus: ListingStatus.LISTED,
-    },
-    {
-      branches: {
-        some: {
-          branchId,
-        },
+  const where: Prisma.PackageWhereInput = {
+    // Only Group Purchase Packages.
+    type: PackageType.GROUP_PURCHASE_PACKAGE,
+
+    // Only active packages.
+    status: PackageStatus.ACTIVE,
+
+    // Only publicly listed packages.
+    listingStatus: ListingStatus.LISTED,
+
+    // Only packages assigned to this branch.
+    branches: {
+      some: {
+        branchId,
       },
     },
-  ];
-
-  if (type) {
-    andConditions.push({
-      type,
-    });
-  }
+  };
 
   // =====================================================
-  // 4. FETCH BRANCH PACKAGES
+  // 4. FETCH BRANCH GROUP PURCHASE PACKAGES
   // =====================================================
 
   const [packages, totalPackageCount] = await Promise.all([
     prisma.package.findMany({
-      where: {
-        AND: andConditions,
-      },
+      where,
 
       take: limit,
       skip,
@@ -1824,9 +2114,7 @@ const getBranchPackages = async (
     }),
 
     prisma.package.count({
-      where: {
-        AND: andConditions,
-      },
+      where,
     }),
   ]);
 
@@ -1845,31 +2133,26 @@ const getBranchPackages = async (
       const localized = localizePackage(item, language);
 
       // ===============================================
-      // GROUP PURCHASE CAPACITY
+      // GROUP PURCHASE INVENTORY
       // ===============================================
 
-      const capacity = item.capacity ?? null;
+      const capacity = item.capacity;
 
       const remainingQuantity =
         capacity !== null ? Math.max(capacity - item.soldQuantity, 0) : null;
 
-      const soldOut =
-        item.type === PackageType.GROUP_PURCHASE_PACKAGE && capacity !== null
-          ? item.soldQuantity >= capacity
-          : false;
+      const soldOut = capacity !== null && item.soldQuantity >= capacity;
 
       // ===============================================
       // GROUP PURCHASE AVAILABILITY
       // ===============================================
 
-      const groupPurchaseAvailable =
-        item.type === PackageType.GROUP_PURCHASE_PACKAGE
-          ? !soldOut &&
-            item.salesStartAt !== null &&
-            item.salesEndAt !== null &&
-            now >= item.salesStartAt &&
-            now <= item.salesEndAt
-          : null;
+      const purchaseAvailable =
+        !soldOut &&
+        item.salesStartAt !== null &&
+        item.salesEndAt !== null &&
+        now >= item.salesStartAt &&
+        now <= item.salesEndAt;
 
       // ===============================================
       // PRIMARY IMAGE SIGNED URL
@@ -1888,6 +2171,7 @@ const getBranchPackages = async (
       return {
         id: item.id,
 
+        // Fixed Group Purchase Package type.
         type: item.type,
 
         // =============================================
@@ -1899,7 +2183,7 @@ const getBranchPackages = async (
         description: localized.description,
 
         // =============================================
-        // NEW PACKAGE DISPLAY FIELDS
+        // PACKAGE DISPLAY FIELDS
         // =============================================
 
         validDays: item.validDays,
@@ -1929,7 +2213,7 @@ const getBranchPackages = async (
         primaryImageUrl,
 
         // =============================================
-        // LOCALIZED SERVICES
+        // LOCALIZED INCLUDED SERVICES
         // =============================================
 
         services: item.services.map((serviceItem) => ({
@@ -1942,29 +2226,27 @@ const getBranchPackages = async (
         // GROUP PURCHASE INFORMATION
         // =============================================
 
-        ...(item.type === PackageType.GROUP_PURCHASE_PACKAGE && {
-          capacity: item.capacity,
+        capacity,
 
-          soldQuantity: item.soldQuantity,
+        soldQuantity: item.soldQuantity,
 
-          remainingQuantity,
+        remainingQuantity,
 
-          purchaseLimitPerCustomer: item.purchaseLimitPerCustomer,
+        purchaseLimitPerCustomer: item.purchaseLimitPerCustomer,
 
-          salesStartAt: item.salesStartAt,
+        salesStartAt: item.salesStartAt,
 
-          salesEndAt: item.salesEndAt,
+        salesEndAt: item.salesEndAt,
 
-          soldOut,
+        soldOut,
 
-          purchaseAvailable: groupPurchaseAvailable,
-        }),
+        purchaseAvailable,
       };
     }),
   );
 
   // =====================================================
-  // 6. PAGINATION
+  // 6. PAGINATION RESPONSE
   // =====================================================
 
   const totalPages = Math.ceil(totalPackageCount / limit);
@@ -1974,14 +2256,20 @@ const getBranchPackages = async (
 
     pagination: {
       page,
+
       limit,
+
       total: totalPackageCount,
+
       totalPages,
+
       hasNextPage: page < totalPages,
+
       hasPreviousPage: page > 1,
     },
   };
 };
+
 // =====================================================
 // UPDATE GROUP PURCHASE CANCELLATION POLICY
 // =====================================================

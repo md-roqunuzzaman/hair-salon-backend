@@ -37,6 +37,7 @@ export interface ICreateServicePayload extends IServiceDisplayFields {
   price: number;
   durationMinutes: number;
   branchIds: string[];
+  staffIds?: string[];
   imageObjectKeys?: string[];
 
   translations?: IServiceTranslations;

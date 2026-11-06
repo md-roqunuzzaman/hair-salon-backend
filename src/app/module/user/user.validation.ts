@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isWithinBcryptPasswordLimit } from "../../utils/password-security.js";
+import parsePhoneNumberFromString from "libphonenumber-js";
 
 const updateProfileValidationSchema = z.object({
   body: z
@@ -11,11 +12,31 @@ const updateProfileValidationSchema = z.object({
         .max(50, "Name must not exceed 50 characters")
         .optional(),
 
+      // =====================================================
+      // INTERNATIONAL PHONE NUMBER VALIDATION
+      // =====================================================
+
       phone: z
         .string()
         .trim()
-        .min(8, "Phone number must be at least 8 characters")
-        .max(20, "Phone number must not exceed 20 characters")
+        .refine(
+          (value) => {
+            if (!value.startsWith("+")) return false;
+
+            const parsedPhone = parsePhoneNumberFromString(value);
+
+            return parsedPhone?.isValid() === true;
+          },
+          {
+            message:
+              "Invalid international phone number. Include country code (e.g. +85291234567)",
+          },
+        )
+        .transform((value) => {
+          const parsedPhone = parsePhoneNumberFromString(value);
+
+          return parsedPhone!.number;
+        })
         .optional(),
 
       avatarObjectKey: z

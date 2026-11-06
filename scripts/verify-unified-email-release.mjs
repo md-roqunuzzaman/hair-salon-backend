@@ -7,6 +7,8 @@ import migrations from '../cloudflare/.build/migrations.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const packageLock = await readFile('package-lock.json');
+const phonePackage = JSON.parse(await readFile('node_modules/libphonenumber-js/package.json','utf8'));
+assert.equal(JSON.parse(packageLock).packages['node_modules/libphonenumber-js'].version,phonePackage.version,'Phone package must match the lockfile');
 const toolPackages = await Promise.all(['wrangler','miniflare','esbuild','prisma'].map(async name =>
   [name, JSON.parse(await readFile(`node_modules/${name}/package.json`,'utf8'))]));
 const tooling = Object.fromEntries(toolPackages);
@@ -75,6 +77,9 @@ assert.ok(!bundle.includes('INTERNATIONAL_TEST_TENCENT_STUB'),'International tes
 assert.ok(!bundle.includes('__login-rate-test'),'Login test control leaked into production Worker');
 assert.ok(!bundle.includes('__auth-session-test'),'Session test control leaked into production Worker');
 const map = JSON.parse(await readFile(`${config.main}.map`,'utf8'));
+assert.ok(map.sources.some(source=>source.includes('libphonenumber-js/')&&source.endsWith('metadata.min.json.js')),'International phone metadata missing from production Worker');
+for(const required of ['module/auth/auth.service.ts','module/auth/auth.validation.ts','module/user/user.service.ts','module/user/user.validation.ts'])assert.ok(map.sources.some(source=>source.endsWith(required)),`Phone runtime source missing: ${required}`);
+assert.ok(!map.sources.some(source=>source.includes('libphonenumber-js/examples')),'Synthetic phone example data leaked into production Worker');
 assert.ok(map.sources.some(source=>source.endsWith('src/app/lib/tencent-moderation.ts')), 'Worker-compatible Tencent transport missing');
 for (const excluded of ['tencentcloud-sdk-nodejs','runtime/security-fixture.mjs','test-support/tencent-responses.mjs']) assert.ok(!map.sources.some(source=>source.includes(excluded)),`Unsupported moderation production source: ${excluded}`);
 assert.ok(!map.sources.some(source=>source.endsWith('runtime/international-provider-stub.mjs')), 'International test provider source leaked into production Worker');
@@ -97,6 +102,7 @@ const report = {
   stagingBusinessDelivery:config.env.staging.vars.EMAIL_OUTBOX_ENABLED==='true',productionBusinessDelivery:false,
   merchantOnlyRoutingIncluded:true,nativeSmtpAndTestFixturesExcluded:true,
   registrationVerificationIncluded:true,groupPurchaseValiditySnapshotIncluded:true,loginRateLimitingIncluded:true,
+  internationalPhoneIncluded:true,phoneNumberVersion:phonePackage.version,
 };
 await writeFile('cloudflare/.build/unified-merchant-email-release-manifest.json',JSON.stringify(report,null,2)+'\n');
 console.log(JSON.stringify({scope:report.scope,migrationVersion:report.migrationVersion,historicalMigrationFilesUnchanged:immutable.length,workerBytes:bundle.length,stagingBusinessDelivery:report.stagingBusinessDelivery,productionBusinessDelivery:false,bundleIsolation:true}));

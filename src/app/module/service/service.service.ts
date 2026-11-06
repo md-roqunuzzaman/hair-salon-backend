@@ -2,6 +2,7 @@ import {
   BranchStatus,
   Prisma,
   ServiceStatus,
+  StaffStatus,
 } from "../../../../generated/prisma/client.js";
 
 import { prisma } from "../../lib/prisma.js";
@@ -95,7 +96,91 @@ const createService = async (payload: ICreateServicePayload) => {
   }
 
   // =====================================================
-  // 6. PREPARE MULTILINGUAL TRANSLATIONS
+  // 6. VALIDATE STAFF ASSIGNMENTS
+  // =====================================================
+
+  const requestedStaffIds = payload.staffIds ?? [];
+
+  const uniqueStaffIds = [...new Set(requestedStaffIds)];
+
+  // =====================================================
+  // 6.1 CHECK DUPLICATE STAFF IDS
+  // =====================================================
+
+  if (uniqueStaffIds.length !== requestedStaffIds.length) {
+    throw new AppError("Duplicate staff IDs are not allowed", 400);
+  }
+
+  // =====================================================
+  // 6.2 VALIDATE SELECTED STAFF
+  // =====================================================
+
+  if (uniqueStaffIds.length > 0) {
+    const staffMembers = await prisma.staff.findMany({
+      where: {
+        id: {
+          in: uniqueStaffIds,
+        },
+      },
+
+      select: {
+        id: true,
+        name: true,
+        status: true,
+
+        branches: {
+          select: {
+            branchId: true,
+          },
+        },
+      },
+    });
+
+    // ===================================================
+    // VERIFY ALL STAFF MEMBERS EXIST
+    // ===================================================
+
+    if (staffMembers.length !== uniqueStaffIds.length) {
+      throw new AppError("One or more staff members do not exist", 404);
+    }
+
+    const serviceBranchIds = new Set(uniqueBranchIds);
+
+    // ===================================================
+    // VALIDATE EACH STAFF MEMBER
+    // ===================================================
+
+    for (const staff of staffMembers) {
+      // ===============================================
+      // STAFF MUST BE ACTIVE
+      // ===============================================
+
+      if (staff.status !== StaffStatus.ACTIVE) {
+        throw new AppError(
+          `Inactive staff cannot be assigned: ${staff.name}`,
+          400,
+        );
+      }
+
+      // ===============================================
+      // STAFF MUST BELONG TO AT LEAST ONE SELECTED BRANCH
+      // ===============================================
+
+      const hasCommonBranch = staff.branches.some((item) =>
+        serviceBranchIds.has(item.branchId),
+      );
+
+      if (!hasCommonBranch) {
+        throw new AppError(
+          `Staff "${staff.name}" is not assigned to any selected service branch`,
+          400,
+        );
+      }
+    }
+  }
+
+  // =====================================================
+  // 7. PREPARE MULTILINGUAL TRANSLATIONS
   // =====================================================
 
   const translations: Prisma.InputJsonObject = {
@@ -163,7 +248,7 @@ const createService = async (payload: ICreateServicePayload) => {
   };
 
   // =====================================================
-  // 7. CREATE SERVICE + BRANCH ASSIGNMENTS
+  // 8. CREATE SERVICE + BRANCH + STAFF ASSIGNMENTS
   // =====================================================
 
   const service = await prisma.$transaction(async (tx) => {
@@ -210,11 +295,24 @@ const createService = async (payload: ICreateServicePayload) => {
       })),
     });
 
+    // ===================================================
+    // ASSIGN STAFF TO SERVICE
+    // ===================================================
+
+    if (uniqueStaffIds.length > 0) {
+      await tx.staffService.createMany({
+        data: uniqueStaffIds.map((staffId) => ({
+          staffId,
+          serviceId: createdService.id,
+        })),
+      });
+    }
+
     return createdService;
   });
 
   // =====================================================
-  // 8. FINAL RESPONSE
+  // 9. FINAL RESPONSE
   // =====================================================
 
   return {
@@ -251,6 +349,12 @@ const createService = async (payload: ICreateServicePayload) => {
     // ===================================================
 
     translations: service.translations,
+
+    // ===================================================
+    // STAFF ASSIGNMENTS
+    // ===================================================
+
+    staffIds: uniqueStaffIds,
   };
 };
 

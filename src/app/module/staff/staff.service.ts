@@ -4415,31 +4415,13 @@ const getMyAppointments = async (
   }
 
   // =====================================================
-  // 4. HONG KONG CURRENT DATE AND TIME — H01 FIX
+  // 4. BRAND TIMEZONE — LEGACY FALLBACK
   // =====================================================
 
+  const brandSettings = await getBrandInternationalSettings();
+
+  const fallbackTimezone = brandSettings.timezone;
   const now = new Date();
-
-  const hkParts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: (await getBrandInternationalSettings()).timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
-
-  const getPart = (type: string): string =>
-    hkParts.find((part) => part.type === type)?.value ?? "";
-
-  const hkToday = [getPart("year"), getPart("month"), getPart("day")].join("-");
-
-  const hkTime = `${getPart("hour")}:${getPart("minute")}`;
-
-  // Appointment.date is assumed to be stored as
-  // a calendar date normalized to UTC midnight.
-  const todayDate = new Date(`${hkToday}T00:00:00.000Z`);
 
   // =====================================================
   // 5. APPOINTMENT STATUS GROUPS
@@ -4459,7 +4441,7 @@ const getMyAppointments = async (
   ];
 
   // =====================================================
-  // 6. BUILD FILTERS
+  // 6. BASE FILTERS
   // =====================================================
 
   const filters: Prisma.AppointmentWhereInput[] = [
@@ -4468,7 +4450,10 @@ const getMyAppointments = async (
     },
   ];
 
-  // Preserve existing date filter.
+  // =====================================================
+  // 6.1 PRESERVE DATE FILTER
+  // =====================================================
+
   if (query.date) {
     const date = new Date(`${query.date}T00:00:00.000Z`);
 
@@ -4485,7 +4470,10 @@ const getMyAppointments = async (
     });
   }
 
-  // Preserve existing appointment status filter.
+  // =====================================================
+  // 6.2 PRESERVE STATUS FILTER
+  // =====================================================
+
   if (query.status) {
     if (
       !Object.values(AppointmentStatus).includes(
@@ -4501,78 +4489,177 @@ const getMyAppointments = async (
   }
 
   // =====================================================
-  // 7. UPCOMING / HISTORY FILTER — H01 FIX
+  // 7. TIMEZONE-AWARE UPCOMING / HISTORY
   // =====================================================
 
-  if (appointmentType === "UPCOMING") {
-    filters.push({
-      AND: [
-        {
-          appointmentStatus: {
-            in: activeStatuses,
-          },
-        },
-        {
-          OR: [
-            {
-              date: {
-                gt: todayDate,
-              },
-            },
-            {
-              date: todayDate,
-              endTime: {
-                gt: hkTime,
-              },
-            },
-          ],
-        },
-      ],
-    });
-  }
+  if (appointmentType === "UPCOMING" || appointmentType === "HISTORY") {
+    // Read only distinct saved timezones.
+    // This query is scoped to the logged-in staff.
 
-  if (appointmentType === "HISTORY") {
-    filters.push({
-      OR: [
-        {
-          appointmentStatus: {
-            in: historyStatuses,
+    const timezoneRows = await prisma.appointment.findMany({
+      where: {
+        staffId: staff.id,
+      },
+      select: {
+        timezone: true,
+      },
+      distinct: ["timezone"],
+    });
+
+    // -------------------------------------------------
+    // GET CURRENT LOCAL DATE/TIME IN A TIMEZONE
+    // -------------------------------------------------
+
+    const getCurrentLocalTime = (timezone: string) => {
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(now);
+
+      const getPart = (type: string): string =>
+        parts.find((part) => part.type === type)?.value ?? "";
+
+      const localDate = [
+        getPart("year"),
+        getPart("month"),
+        getPart("day"),
+      ].join("-");
+
+      const localTime = `${getPart("hour")}:${getPart("minute")}`;
+
+      // Date-only key, normalized to UTC midnight.
+
+      const todayDate = new Date(`${localDate}T00:00:00.000Z`);
+
+      return {
+        todayDate,
+        localTime,
+      };
+    };
+
+    // -------------------------------------------------
+    // BUILD TIMEZONE-SPECIFIC CONDITIONS
+    // -------------------------------------------------
+
+    const timezoneFilters: Prisma.AppointmentWhereInput[] = [];
+
+    for (const row of timezoneRows) {
+      const savedTimezone = row.timezone;
+
+      // Keep the persisted timezone when present.
+      // Legacy null records use brand fallback.
+
+      const effectiveTimezone = savedTimezone ?? fallbackTimezone;
+
+      const { todayDate, localTime } = getCurrentLocalTime(effectiveTimezone);
+
+      const timezoneCondition: Prisma.AppointmentWhereInput = {
+        timezone: savedTimezone,
+      };
+
+      const upcomingDateCondition: Prisma.AppointmentWhereInput = {
+        OR: [
+          {
+            date: {
+              gt: todayDate,
+            },
           },
-        },
-        {
+          {
+            date: todayDate,
+            endTime: {
+              gt: localTime,
+            },
+          },
+        ],
+      };
+
+      const historyDateCondition: Prisma.AppointmentWhereInput = {
+        OR: [
+          {
+            date: {
+              lt: todayDate,
+            },
+          },
+          {
+            date: todayDate,
+            endTime: {
+              lte: localTime,
+            },
+          },
+        ],
+      };
+
+      if (appointmentType === "UPCOMING") {
+        timezoneFilters.push({
           AND: [
+            timezoneCondition,
             {
               appointmentStatus: {
                 in: activeStatuses,
               },
             },
+            upcomingDateCondition,
+          ],
+        });
+      } else {
+        timezoneFilters.push({
+          AND: [
+            timezoneCondition,
             {
               OR: [
                 {
-                  date: {
-                    lt: todayDate,
+                  appointmentStatus: {
+                    in: historyStatuses,
                   },
                 },
                 {
-                  date: todayDate,
-                  endTime: {
-                    lte: hkTime,
-                  },
+                  AND: [
+                    {
+                      appointmentStatus: {
+                        in: activeStatuses,
+                      },
+                    },
+                    historyDateCondition,
+                  ],
                 },
               ],
             },
           ],
+        });
+      }
+    }
+
+    // Empty timezone list must produce no results,
+    // not accidentally remove the type filter.
+
+    if (timezoneFilters.length === 0) {
+      filters.push({
+        id: {
+          in: [],
         },
-      ],
-    });
+      });
+    } else {
+      filters.push({
+        OR: timezoneFilters,
+      });
+    }
   }
+
+  // =====================================================
+  // 8. FINAL DATABASE FILTER
+  // =====================================================
 
   const where: Prisma.AppointmentWhereInput = {
     AND: filters,
   };
 
   // =====================================================
-  // 8. FETCH APPOINTMENTS
+  // 9. FETCH APPOINTMENTS
   // =====================================================
 
   const [appointments, total] = await prisma.$transaction([
@@ -4596,6 +4683,8 @@ const getMyAppointments = async (
         date: true,
         startTime: true,
         endTime: true,
+
+        timezone: true,
 
         itemName: true,
         durationMinutes: true,
@@ -4627,7 +4716,7 @@ const getMyAppointments = async (
   ]);
 
   // =====================================================
-  // 9. FETCH RELATED SERVICE/PACKAGE TRANSLATIONS
+  // 10. FETCH SERVICE/PACKAGE TRANSLATIONS
   // =====================================================
 
   const serviceIds = [
@@ -4679,7 +4768,7 @@ const getMyAppointments = async (
   ]);
 
   // =====================================================
-  // 10. BUILD LOCALIZED NAME MAPS
+  // 11. BUILD LOCALIZED NAME MAPS
   // =====================================================
 
   const serviceNameMap = new Map<string, string>();
@@ -4711,7 +4800,7 @@ const getMyAppointments = async (
   }
 
   // =====================================================
-  // 11. BUILD LOCALIZED RESPONSE
+  // 12. BUILD LOCALIZED RESPONSE
   // =====================================================
 
   const items = appointments.map((appointment) => {
@@ -4768,21 +4857,25 @@ const getMyAppointments = async (
       date: appointment.date.toISOString().slice(0, 10),
 
       startTime: appointment.startTime,
-
       endTime: appointment.endTime,
+
+      // Booking-time timezone snapshot.
+      // Legacy records may return null.
+
+      timezone: appointment.timezone,
 
       durationMinutes: appointment.durationMinutes,
     };
   });
 
   // =====================================================
-  // 12. PAGINATION
+  // 13. PAGINATION
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   // =====================================================
-  // 13. FINAL RESPONSE
+  // 14. FINAL RESPONSE
   // =====================================================
 
   return {

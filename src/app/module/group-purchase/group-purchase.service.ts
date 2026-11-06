@@ -1,6 +1,3 @@
-import { getBrandInternationalSettings } from "../../utils/brand-international-settings.utils.js";
-import { assertCurrencyAmount, getPurchaseCurrency, getPurchaseCurrencies } from "../../utils/transaction-currency.utils.js";
-import { assertTimezoneDuration } from "../../utils/brand-timezone.utils.js";
 import {
   capturePolicy,
   snapshotData,
@@ -45,6 +42,10 @@ import { notificationTemplates } from "../notification/notification.templates.js
 import { presentGroupPurchase } from "./group-purchase.presentation.js";
 import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
 import { getPaymentDisplayStatus } from "../../utils/getPaymentDisplayStatus.js";
+import {
+  assertTimezoneDuration,
+  createDateTimeInTimezone,
+} from "../../utils/brand-timezone.utils.js";
 
 const initialAppointmentSelect = {
   id: true,
@@ -174,7 +175,24 @@ const createGroupPurchase = async (
       return await prisma.$transaction(
         async (tx) => {
           const now = new Date();
-          const international = await getBrandInternationalSettings(tx);
+
+          // =================================================
+          // 3.1 DYNAMIC BRAND INTERNATIONAL SETTINGS
+          // =================================================
+
+          const brand = await tx.brand.findFirst({
+            select: {
+              currency: true,
+              timezone: true,
+            },
+          });
+
+          if (!brand) {
+            throw new AppError("Brand not found", 404);
+          }
+
+          const bookingCurrency = brand.currency;
+          const bookingTimezone = brand.timezone;
 
           // =================================================
           // 4. LOAD PACKAGE
@@ -225,8 +243,6 @@ const createGroupPurchase = async (
             );
           }
 
-          // Capture the configured validity at purchase time.
-          // This is independent of the refund policy snapshot.
           const validDaysSnapshot = packageData.validDays;
 
           // =================================================
@@ -327,21 +343,70 @@ const createGroupPurchase = async (
               }
             }
 
+            // =============================================
+            // 5.1 LOCAL BOOKING TIME RANGE
+            // =============================================
+
             const requestedStart = timeToMinutes(payload.startTime!);
             const requestedEnd = requestedStart + packageData.durationMinutes;
 
-            if (requestedStart < 0 || requestedEnd > 24 * 60) {
+            if (
+              !Number.isFinite(requestedStart) ||
+              !Number.isFinite(requestedEnd) ||
+              requestedStart < 0 ||
+              requestedStart >= requestedEnd ||
+              requestedEnd > 1440
+            ) {
               throw new AppError("Invalid appointment time", 400);
             }
 
             appointmentEndTime = minutesToTime(requestedEnd);
-            assertTimezoneDuration(payload.date!, payload.startTime!, appointmentEndTime, packageData.durationMinutes, international.timezone);
 
+            // =============================================
+            // 5.2 TIMEZONE + DST VALIDATION
+            // =============================================
+
+            assertTimezoneDuration(
+              payload.date!,
+              payload.startTime!,
+              appointmentEndTime,
+              packageData.durationMinutes,
+              bookingTimezone,
+            );
+
+            const appointmentStartUTC = createDateTimeInTimezone(
+              payload.date!,
+              payload.startTime!,
+              bookingTimezone,
+            );
+
+            // =============================================
+            // 5.3 MINIMUM BOOKING NOTICE
+            // =============================================
+
+            const minimumNoticeMs =
+              policy.minimumBookingNoticeMinutes * 60 * 1000;
+
+            if (
+              appointmentStartUTC.getTime() <
+              now.getTime() + minimumNoticeMs
+            ) {
+              throw new AppError(
+                "The selected booking time does not meet the minimum booking notice",
+                409,
+              );
+            }
+
+            // Date-only key, not local midnight UTC instant.
             appointmentDate = new Date(`${payload.date}T00:00:00.000Z`);
 
             if (Number.isNaN(appointmentDate.getTime())) {
               throw new AppError("Invalid appointment date", 400);
             }
+
+            // =============================================
+            // 5.4 RESOLVE STAFF
+            // =============================================
 
             const resolvedStaff = await resolveAvailableStaff({
               tx,
@@ -356,6 +421,10 @@ const createGroupPurchase = async (
             });
 
             selectedStaffId = resolvedStaff;
+
+            // =============================================
+            // 5.5 FINAL BRANCH CAPACITY CHECK
+            // =============================================
 
             await assertBranchHourlyCapacityAvailable(
               tx,
@@ -615,10 +684,8 @@ const createGroupPurchase = async (
             purchaseSnapshot = snapshot as unknown as Prisma.InputJsonObject;
           }
 
-          assertCurrencyAmount(unitPrice, international.currency);
           const groupPurchase = await tx.groupPurchase.create({
             data: {
-              currency: international.currency,
               purchaseBranchId,
 
               ...(purchaseSnapshot && {
@@ -629,7 +696,6 @@ const createGroupPurchase = async (
               customerId,
               packageId: packageData.id,
 
-              // NEW: Immutable validity captured at purchase.
               validDaysSnapshot,
 
               purchaseFlow,
@@ -638,13 +704,13 @@ const createGroupPurchase = async (
                 : null,
 
               quantity: payload.quantity,
-              unitPrice: assertCurrencyAmount(unitPrice, international.currency),
-              amount: assertCurrencyAmount(amount, international.currency),
+              unitPrice,
+              amount,
               paymentStatus: purchasePaymentStatus,
               reservationExpiresAt,
               depositPercentage,
-              depositAmount: depositAmount === null ? null : assertCurrencyAmount(depositAmount, international.currency),
-              remainingAmount: remainingAmount === null ? null : assertCurrencyAmount(remainingAmount, international.currency),
+              depositAmount,
+              remainingAmount,
             },
           });
 
@@ -693,9 +759,14 @@ const createGroupPurchase = async (
                 itemName: packageData.name,
                 itemNameTranslations:
                   packageData.translations ?? Prisma.JsonNull,
+
+                // Initial appointment is covered by the purchase.
                 price: new Prisma.Decimal(0),
-                currency: international.currency,
-                timezone: international.timezone,
+
+                // Immutable international settings snapshot.
+                currency: bookingCurrency,
+                timezone: bookingTimezone,
+
                 holdExpiresAt: reservationExpiresAt,
                 qrToken,
                 depositPercentage,
@@ -1128,7 +1199,6 @@ const getMyGroupPurchases = async (
   // 8. BUILD MULTILINGUAL RESPONSE
   // =====================================================
 
-  const purchaseCurrencies = await getPurchaseCurrencies(prisma, purchaseIds);
   const items = purchases.map((purchase) => {
     // ---------------------------------------------------
     // 8.1 LOCALIZED PACKAGE NAME
@@ -1223,7 +1293,7 @@ const getMyGroupPurchases = async (
 
     return {
       ...presentGroupPurchase(
-        { ...purchase, currency: purchaseCurrencies.get(purchase.id)! },
+        purchase,
         purchase.appointments.some(
           (item) =>
             item.bookingMethod === purchase.bookingMethod &&
@@ -1513,7 +1583,7 @@ const getGroupPurchaseById = async (
 
   return {
     ...presentGroupPurchase(
-      { ...purchase, currency: await getPurchaseCurrency(prisma, purchase.id) },
+      purchase,
       purchase.appointments.some(
         (item) =>
           item.bookingMethod === purchase.bookingMethod &&
@@ -1713,6 +1783,10 @@ const createGroupPurchaseAppointment = async (
 
   const dateOnly = new Date(`${date}T00:00:00.000Z`);
 
+  if (Number.isNaN(dateOnly.getTime())) {
+    throw new AppError("Invalid appointment date", 400);
+  }
+
   // =====================================================
   // 4. SERIALIZABLE TRANSACTION + RETRY
   // =====================================================
@@ -1789,12 +1863,6 @@ const createGroupPurchaseAppointment = async (
           // 4.4 VALIDATE VOUCHER EXPIRY
           // =============================================
 
-          // The purchase-time snapshot is the source
-          // of truth for new group purchases.
-          //
-          // Changes to Package.validDays must not
-          // retroactively change purchased vouchers.
-
           const validDaysSnapshot = currentPurchase.validDaysSnapshot;
 
           const validUntil =
@@ -1809,7 +1877,6 @@ const createGroupPurchaseAppointment = async (
               : null;
 
           const now = new Date();
-          const international = await getBrandInternationalSettings(tx);
 
           if (validUntil !== null && validUntil <= now) {
             throw new AppError("Group purchase voucher has expired", 422);
@@ -1818,12 +1885,6 @@ const createGroupPurchaseAppointment = async (
           // =============================================
           // 4.5 PRESERVE LEGACY EXPIRY POLICY
           // =============================================
-
-          // Keep existing legacy expiry handling for
-          // purchases without a validity snapshot.
-          //
-          // Avoid applying an older policy calculation
-          // to new snapshot-based purchases.
 
           if (validDaysSnapshot === null && purchaseExpired(currentPurchase)) {
             throw new AppError("Group purchase voucher has expired", 422);
@@ -1842,12 +1903,26 @@ const createGroupPurchaseAppointment = async (
           }
 
           // =============================================
-          // 5. CHECK REMAINING PURCHASED QUANTITY
+          // 4.7 LOAD BRAND SETTINGS
           // =============================================
 
-          // Includes initial DIRECT_BOOK appointment.
-          // CANCELLED appointments do not consume
-          // package quantity under the existing policy.
+          const brand = await tx.brand.findFirst({
+            select: {
+              currency: true,
+              timezone: true,
+            },
+          });
+
+          if (!brand) {
+            throw new AppError("Brand not found", 404);
+          }
+
+          const bookingCurrency = brand.currency;
+          const bookingTimezone = brand.timezone;
+
+          // =============================================
+          // 5. CHECK REMAINING PURCHASED QUANTITY
+          // =============================================
 
           const allocatedCount = await tx.appointment.count({
             where: {
@@ -1899,28 +1974,80 @@ const createGroupPurchaseAppointment = async (
           const durationMinutes = currentPurchase.package.durationMinutes;
 
           const requestedStart = timeToMinutes(startTime);
-
           const requestedEnd = requestedStart + durationMinutes;
 
+          if (
+            !Number.isFinite(requestedStart) ||
+            !Number.isFinite(requestedEnd) ||
+            requestedStart < 0 ||
+            requestedEnd <= requestedStart ||
+            requestedEnd > 1440
+          ) {
+            throw new AppError("Invalid appointment time", 400);
+          }
+
           const endTime = minutesToTime(requestedEnd);
-          assertTimezoneDuration(date, startTime, endTime, durationMinutes, international.timezone);
+
+          // =============================================
+          // 6.1 TIMEZONE + DST VALIDATION
+          // =============================================
+
+          assertTimezoneDuration(
+            date,
+            startTime,
+            endTime,
+            durationMinutes,
+            bookingTimezone,
+          );
+
+          const appointmentStartUTC = createDateTimeInTimezone(
+            date,
+            startTime,
+            bookingTimezone,
+          );
+
+          // =============================================
+          // 6.2 MINIMUM BOOKING NOTICE
+          // =============================================
+
+          const branchPolicy = await tx.branchBookingPolicy.findUnique({
+            where: {
+              branchId,
+            },
+            select: {
+              minimumBookingNoticeMinutes: true,
+            },
+          });
+
+          if (!branchPolicy) {
+            throw new AppError("Branch booking policy not found", 404);
+          }
+
+          const minimumNoticeMs =
+            branchPolicy.minimumBookingNoticeMinutes * 60 * 1000;
+
+          if (appointmentStartUTC.getTime() < now.getTime() + minimumNoticeMs) {
+            throw new AppError(
+              "The selected booking time does not meet the minimum booking notice",
+              409,
+            );
+          }
 
           // =============================================
           // 7. FINAL AVAILABILITY CHECKS
           // =============================================
 
-          const resolvedStaffId =
-            staffId ??
-            (await resolveAvailableStaff({
-              tx,
-              branchId,
-              packageId: currentPurchase.packageId,
-              date,
-              dateOnly,
-              requestedStart,
-              requestedEnd,
-              now,
-            }));
+          const resolvedStaffId = await resolveAvailableStaff({
+            tx,
+            branchId,
+            packageId: currentPurchase.packageId,
+            staffId: staffId ?? undefined,
+            date,
+            dateOnly,
+            requestedStart,
+            requestedEnd,
+            now,
+          });
 
           await assertStaffSlotAvailable(
             tx,
@@ -1953,9 +2080,6 @@ const createGroupPurchaseAppointment = async (
           // =============================================
           // 9. GENERATE UNIQUE APPOINTMENT QR
           // =============================================
-
-          // Each redemption appointment receives
-          // its own QR token.
 
           const qrToken = crypto.randomBytes(32).toString("hex");
 
@@ -1994,12 +2118,12 @@ const createGroupPurchaseAppointment = async (
 
               durationMinutes,
 
-              timezone: international.timezone,
               // Already paid through group purchase.
-              // No additional payment required.
-
               price: new Prisma.Decimal(0),
-              currency: await getPurchaseCurrency(tx, purchase.id),
+
+              // Persisted international settings snapshot.
+              currency: bookingCurrency,
+              timezone: bookingTimezone,
 
               holdExpiresAt: null,
 
@@ -2071,7 +2195,6 @@ const createGroupPurchaseAppointment = async (
         console.warn(
           "[GROUP_PURCHASE_APPOINTMENT] Order number collision. Retrying...",
         );
-
         continue;
       }
 
@@ -2133,7 +2256,6 @@ export const recordGroupPurchaseRemainingPayment = async (
       return await prisma.$transaction(
         async (tx) => {
           const now = new Date();
-          const international = await getBrandInternationalSettings(tx);
 
           // =============================================
           // 4. FIND GROUP PURCHASE
@@ -2475,8 +2597,8 @@ export const recordGroupPurchaseRemainingPayment = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.SALON,
               salonPaymentMethod: payload.paymentMethod,
-              amount: assertCurrencyAmount(remainingAmount, await getPurchaseCurrency(tx, purchase.id)),
-              currency: await getPurchaseCurrency(tx, purchase.id),
+              amount: remainingAmount,
+              currency: "HKD",
               status: PaymentStatus.PAID,
               paidAt: now,
             },

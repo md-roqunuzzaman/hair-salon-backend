@@ -12,6 +12,7 @@ import { uploadService } from "../upload/upload.service.js";
 import { logUnexpectedError } from "../../utils/normalize-error.js";
 import { UserStatus } from "../../../../generated/prisma/enums.js";
 import { assertBcryptPasswordLength } from "../../utils/password-security.js";
+import parsePhoneNumberFromString from "libphonenumber-js";
 
 const getMe = async (userId: string) => {
   // =====================================================
@@ -111,15 +112,36 @@ const updateMe = async (userId: string, payload: IUpdateProfilePayload) => {
   }
 
   // =====================================================
-  // 2. PHONE VALIDATION
+  // 2. INTERNATIONAL PHONE VALIDATION + NORMALIZATION
   // =====================================================
 
-  const phone = payload.phone?.trim();
+  let phone: string | undefined;
 
-  if (phone) {
+  if (payload.phone !== undefined) {
+    const rawPhone = payload.phone.trim();
+
+    if (!rawPhone.startsWith("+")) {
+      throw new AppError(
+        "Phone number must include country code (e.g. +85291234567)",
+        422,
+      );
+    }
+
+    const parsedPhone = parsePhoneNumberFromString(rawPhone);
+
+    if (!parsedPhone || !parsedPhone.isValid()) {
+      throw new AppError("Invalid international phone number", 422);
+    }
+
+    // Normalize to E.164 before duplicate checking
+    phone = parsedPhone.number;
+
     const existingPhone = await prisma.user.findUnique({
       where: {
         phone,
+      },
+      select: {
+        id: true,
       },
     });
 
