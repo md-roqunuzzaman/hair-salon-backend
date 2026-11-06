@@ -76,9 +76,46 @@ const updateBrandTheme = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+// =====================================================
+// GET BRAND INTERNATIONAL SETTINGS
+// =====================================================
+
+const getBrandInternationalSettings = catchAsync(
+  async (req: Request, res: Response) => {
+    const result = await brandService.getBrandInternationalSettings();
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Brand international settings fetched successfully",
+      data: result,
+    });
+  },
+);
+
+// =====================================================
+// UPDATE BRAND INTERNATIONAL SETTINGS
+// =====================================================
+
+const updateBrandInternationalSettings = catchAsync(
+  async (req: Request, res: Response) => {
+    const result = await brandService.updateBrandInternationalSettings(
+      req.body,
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Brand international settings updated successfully",
+      data: result,
+    });
+  },
+);
 export const brandController = {
   getBrand,
   updateBrand,
   getBrandTheme,
   updateBrandTheme,
+  getBrandInternationalSettings,
+  updateBrandInternationalSettings,
 };

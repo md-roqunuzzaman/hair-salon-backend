@@ -1,3 +1,4 @@
+import { stripeAmount, getPurchaseCurrency, currencyDigits, assertCurrencyAmount, assertSameCurrency } from "../../utils/transaction-currency.utils.js";
 import { reconcileUnappliedCapture } from "./unapplied-capture.js";
 import { reconcileApprovedStripeRefund } from "../refund-request/refund-request.processing.js";
 import { reconcileRefundAllocation } from "../refund-request/refund-allocation.processing.js";
@@ -297,7 +298,7 @@ const createStripeIntent = async (
   try {
     const paymentIntent = await stripe.paymentIntents.create(
       {
-        amount: Math.round(Number(paymentAmount) * 100),
+        amount: stripeAmount(paymentAmount, appointment.currency),
 
         currency: appointment.currency.toLowerCase(),
 
@@ -536,8 +537,8 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
     if (
       paymentIntent.status !== "succeeded" ||
       paymentIntent.currency.toLowerCase() !== payment.currency.toLowerCase() ||
-      paymentIntent.amount !== payment.amount.mul(100).toNumber() ||
-      paymentIntent.amount_received !== payment.amount.mul(100).toNumber()
+      paymentIntent.amount !== stripeAmount(payment.amount, payment.currency) ||
+      paymentIntent.amount_received !== stripeAmount(payment.amount, payment.currency)
     ) {
       throw new AppError("Stripe payment verification failed", 409);
     }
@@ -1133,6 +1134,10 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         }
 
         if (topup.status !== WalletTopupStatus.PAID) {
+          const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: topup.walletId } });
+          assertSameCurrency(wallet.currency, currentPayment.currency);
+          assertCurrencyAmount(topup.amount, currentPayment.currency);
+          assertCurrencyAmount(topup.potentialBonus, currentPayment.currency);
           // CREDIT PAID BALANCE + BONUS
 
           await tx.wallet.update({
@@ -1488,9 +1493,10 @@ const createGroupPurchaseStripeIntent = async (
     paymentAmount = purchase.depositAmount;
   }
 
-  const amountInCents = paymentAmount.mul(100).toNumber();
+  const currency = await getPurchaseCurrency(prisma, purchaseId);
+  const amountInCents = stripeAmount(paymentAmount, currency);
 
-  if (!Number.isSafeInteger(amountInCents) || amountInCents < 400) {
+  if (!Number.isSafeInteger(amountInCents) || amountInCents < (currency === "HKD" ? 400 : 1)) {
     throw new AppError("Invalid Stripe payment amount", 422);
   }
 
@@ -1541,7 +1547,7 @@ const createGroupPurchaseStripeIntent = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.STRIPE,
               amount: paymentAmount,
-              currency: "HKD",
+              currency,
               status: PaymentStatus.PENDING,
             },
           });
@@ -1576,7 +1582,7 @@ const createGroupPurchaseStripeIntent = async (
       paymentIntent = await stripe.paymentIntents.create(
         {
           amount: amountInCents,
-          currency: "hkd",
+          currency: currency.toLowerCase(),
           metadata: {
             paymentId: payment.id,
             groupPurchaseId: purchaseId,
@@ -1793,9 +1799,10 @@ const createGroupPurchaseRemainingStripeIntent = async (
 
   const remainingAmount = purchase.amount.minus(purchase.depositAmount);
 
-  const amountInCents = remainingAmount.mul(100).toNumber();
+  const currency = await getPurchaseCurrency(prisma, purchaseId);
+  const amountInCents = stripeAmount(remainingAmount, currency);
 
-  if (!Number.isSafeInteger(amountInCents) || amountInCents < 400) {
+  if (!Number.isSafeInteger(amountInCents) || amountInCents < (currency === "HKD" ? 400 : 1)) {
     throw new AppError(
       "Remaining amount is below the supported Stripe minimum",
       422,
@@ -1927,7 +1934,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
               pending.id === initialPayment.id ||
               pending.customerId !== customerId ||
               !pending.amount.equals(remainingAmount) ||
-              pending.currency !== "HKD"
+              pending.currency !== currency
             ) {
               throw new AppError(
                 "Existing group remaining payment attempt does not match",
@@ -1962,7 +1969,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.STRIPE,
               amount: remainingAmount,
-              currency: "HKD",
+              currency,
               status: PaymentStatus.PENDING,
             },
           });
@@ -2007,7 +2014,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
       paymentIntent = await stripe.paymentIntents.create(
         {
           amount: amountInCents,
-          currency: "hkd",
+          currency: currency.toLowerCase(),
           metadata: {
             paymentId: payment.id,
             groupPurchaseId: purchaseId,
@@ -2057,7 +2064,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
 
     if (
       paymentIntent.amount !== amountInCents ||
-      paymentIntent.currency.toLowerCase() !== "hkd" ||
+      paymentIntent.currency.toLowerCase() !== payment.currency.toLowerCase() ||
       paymentIntent.metadata?.paymentId !== payment.id ||
       paymentIntent.metadata?.groupPurchaseId !== purchaseId ||
       paymentIntent.metadata?.customerId !== customerId ||
@@ -2157,7 +2164,7 @@ async function handleGroupPurchaseStripeEvent(
     throw new AppError("Group purchase payment not found", 404);
   }
 
-  const expectedCents = payment.amount.mul(100).toNumber();
+  const expectedCents = stripeAmount(payment.amount, payment.currency);
 
   if (
     payment.provider !== PaymentProvider.STRIPE ||
@@ -2849,7 +2856,7 @@ const handleGroupPurchaseRemainingStripeEvent = async (
   // 2. VERIFY PAYMENT IDENTITY
   // =====================================================
 
-  const expectedCents = payment.amount.mul(100).toNumber();
+  const expectedCents = stripeAmount(payment.amount, payment.currency);
 
   if (
     paymentIntent.metadata?.paymentStage !== "REMAINING" ||
@@ -3720,6 +3727,8 @@ const refundWalletPayment = async (
           const paidRefund = new Prisma.Decimal(paidRefundCents).div(100);
 
           const bonusRefund = new Prisma.Decimal(bonusRefundCents).div(100);
+          assertCurrencyAmount(paidRefund, payment.currency);
+          assertCurrencyAmount(bonusRefund, payment.currency);
 
           // ==========================================
           // 9. CREATE REFUND RECORD
@@ -4016,13 +4025,11 @@ const createAppointmentRemainingStripeIntent = async (
     throw new AppError("Invalid remaining payment amount", 409);
   }
 
-  if (appointment.currency !== "HKD") {
-    throw new AppError("Unsupported payment currency", 409);
-  }
+  currencyDigits(appointment.currency);
 
-  const amountInCents = remainingAmount.mul(100).toNumber();
+  const amountInCents = stripeAmount(remainingAmount, appointment.currency);
 
-  if (!Number.isSafeInteger(amountInCents) || amountInCents < 400) {
+  if (!Number.isSafeInteger(amountInCents) || amountInCents < (appointment.currency === "HKD" ? 400 : 1)) {
     throw new AppError(
       "Remaining amount is below the supported Stripe minimum",
       422,

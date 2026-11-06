@@ -345,7 +345,22 @@ export class MigrationFixture {
     for(const [table,field,expected] of [['BranchBookingPolicy','cancellationCutoffMinutes',720],['BranchBookingPolicy','rescheduleCutoffMinutes',720],['BranchCancellationPolicy','minimumCancellationMinutes',120],['GroupPurchaseCancellationPolicy','minimumCancellationMinutes',120],['GroupPurchaseCancellationPolicy','restorationMinimumMinutes',1440]])if(Number(storage.sql.exec(`PRAGMA table_info("${table}")`).toArray().find(c=>c.name===field)?.dflt_value)!==expected)throw new Error('Minute default does not preserve original duration');
     if(storage.sql.exec("SELECT cancellationPolicySnapshot FROM GroupPurchase WHERE id='legacy-direct'").one().cancellationPolicySnapshot!==oldSnapshot)throw new Error('Historical booking snapshot was rewritten');
     const minuteState=JSON.stringify(['BranchBookingPolicy','BranchCancellationPolicy','GroupPurchaseCancellationPolicy','GroupPurchaseRefundPolicy'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()));
+    applyMigrations(storage,migrations.slice(0,35));
+    const beforeInternational=JSON.stringify(['Appointment','GroupPurchase','Payment','Wallet'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()));
+    let internationalRollback=false;
+    try { applyMigrations(storage,[...migrations.slice(0,35),{...migrations[35],sql:migrations[35].sql+'; SELECT * FROM deliberately_missing_international_table;'}]); } catch { internationalRollback=true; }
+    if(!internationalRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==35||JSON.stringify(['Appointment','GroupPurchase','Payment','Wallet'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()))!==beforeInternational)throw new Error('International snapshots migration failed atomic rollback');
     applyMigrations(storage,migrations);
+    if(storage.sql.exec('SELECT COUNT(*) AS n FROM Appointment WHERE timezone IS NOT NULL').one().n||storage.sql.exec('SELECT COUNT(*) AS n FROM GroupPurchase WHERE currency IS NOT NULL').one().n)throw new Error('International migration invented historical snapshots');
+    for(const [table,column]of [['Appointment','timezone'],['GroupPurchase','currency']]){const c=storage.sql.exec(`PRAGMA table_info("${table}")`).toArray().find(c=>c.name===column);if(!c||c.notnull||c.dflt_value!==null)throw new Error('Historical snapshots must remain nullable without defaults');}
+    // Explicit synthetic writes after migration must survive repeat startup.
+    storage.sql.exec("UPDATE Appointment SET timezone='Europe/London'");
+    storage.sql.exec("UPDATE GroupPurchase SET currency='GBP'");
+    const internationalState=JSON.stringify(['Appointment','GroupPurchase'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()));
+    applyMigrations(storage,migrations);
+    if(JSON.stringify(['Appointment','GroupPurchase'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()))!==internationalState)throw new Error('Repeat initialization overwrote international snapshots');
+    storage.sql.exec('UPDATE Appointment SET timezone=NULL');
+    storage.sql.exec('UPDATE GroupPurchase SET currency=NULL');
     if(JSON.stringify(['BranchBookingPolicy','BranchCancellationPolicy','GroupPurchaseCancellationPolicy','GroupPurchaseRefundPolicy'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()))!==minuteState)throw new Error('Minute migration multiplied thresholds twice');
     const legacyVerification=storage.sql.exec("SELECT emailVerified,emailVerifiedAt FROM User WHERE id='customer'").one();
     if(legacyVerification.emailVerified!==1||legacyVerification.emailVerifiedAt!==null)throw new Error('Existing customer lost access or received an invented verification timestamp');

@@ -1,3 +1,4 @@
+import { getBrandInternationalSettings } from "../../utils/brand-international-settings.utils.js";
 import { Prisma, Role } from '../../../../generated/prisma/client.js';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../utils/app-error.js';
@@ -21,7 +22,7 @@ export async function getPolicy(branchId: string, module: PolicyModule, userId?:
     if (userId)
         return policy;
     const { id, createdAt, updatedAt, ...terms } = policy;
-    return { ...terms, module, approvalRequired: true, currency: 'HKD' };
+    return { ...terms, module, approvalRequired: true, currency: (await getBrandInternationalSettings()).currency };
 }
 export async function savePolicy(branchId: string, module: PolicyModule, body: unknown, userId: string, role: string) {
     const schema = module === 'SERVICE' ? servicePolicyBody : module === 'GROUP_REFUND' ? groupRefundBody : groupCancellationBody;

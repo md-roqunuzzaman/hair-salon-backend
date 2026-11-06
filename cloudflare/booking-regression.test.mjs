@@ -40,11 +40,13 @@ function stubDelegate(t, model, method, implementation) {
 }
 
 function fixture(t) {
+  stubDelegate(t, 'brand', 'findFirst', async () => data.brandSettings);
   t.mock.method(redisClient, 'get', async key => key === 'auth:refresh:customer:booking-test-session' ? 'valid' : null);
   t.mock.method(console, 'log', () => {});
   t.mock.method(console, 'error', () => {});
   t.mock.method(console, 'warn', () => {});
   const data = {
+    brandSettings: { currency: 'HKD', timezone: 'Asia/Hong_Kong', countryCode: 'HK' },
     branch: { id: branchId, status: 'ACTIVE', bookingPolicy: {
       maximumAdvanceBookingDays: 30, minimumBookingNoticeMinutes: 0, slotIntervalMinutes: 30, cancellationCutoffMinutes: 720,
       allowedBookingMethods: ['PAY_NOW', 'DEPOSIT', 'RESERVE_NOW'], depositPercentage: 30,
@@ -79,6 +81,7 @@ function transactionFixture(t) {
   const create = t.mock.fn(async ({ data: row }) => ({ id: appointmentId, ...row }));
   const notification = t.mock.fn(async ({ data: row }) => row);
   const tx = {
+    brand: { findFirst: async () => data.brandSettings },
     $queryRaw: async () => [{ value: 1 }],
     branch: { findUnique: async () => data.branch },
     branchBookingPolicy: { findUnique: async () => data.branch.bookingPolicy },
@@ -482,7 +485,7 @@ async function reportedAutoBookingFixture(t) {
   data.branch.id = request.branchId;
   data.service.durationMinutes = 45;
   data.service.branches = [{ branchId: request.branchId }];
-  data.hours = { isClosed: false, openTime: '10:00', closeTime: '20:00' };
+  data.hours = { isClosed: false, openTime: '10:00', closeTime: '20:00', breaks: [] };
   data.capacity.maxBookingsPerHour = 4;
   data.eligible = [{ id: david }, { id: other }];
   data.schedules = data.eligible.map(({ id }) => ({ staffId: id, startTime: '10:00', endTime: '20:00' }));
@@ -575,4 +578,20 @@ test('multiple branch breaks apply equally to manual and AUTO staff selection', 
   const starts = slots => slots.map(slot => slot.startTime);
   assert.deepEqual(starts(auto.slots), ['10:00', '10:30', '12:00', '12:30', '13:00', '13:30', '15:00', '15:30']);
   assert.deepEqual(starts(manual.slots), starts(auto.slots));
+});
+
+for (const [day, clock, omitted] of [
+  ['2026-03-08', '2026-03-07T12:00:00Z', '02:'],
+  ['2026-11-01', '2026-10-31T12:00:00Z', '01:'],
+]) test(`New York availability excludes DST gap/fold slots on ${day}`, async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(clock) });
+  const { data } = fixture(t);
+  data.brandSettings = { currency: 'USD', timezone: 'America/New_York', countryCode: 'US' };
+  data.hours = { isClosed: false, openTime: '00:00', closeTime: '06:00', breaks: [] };
+  data.schedules = [{ staffId, startTime: '00:00', endTime: '06:00' }];
+  data.service.durationMinutes = 30;
+  const slots = (await AvailabilityService.getAvailableSlots({ ...query, date: day })).slots;
+  assert.ok(slots.some(slot => slot.startTime === '04:00' && slot.available));
+  assert.ok(slots.every(slot => !slot.startTime.startsWith(omitted)));
+  assert.ok(slots.every(slot => !slot.endTime.startsWith(omitted)));
 });

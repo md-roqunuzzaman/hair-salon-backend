@@ -1,4 +1,4 @@
-import * as tencentcloud from "tencentcloud-sdk-nodejs";
+import { tencentModerationRequest } from "../../lib/tencent-moderation.js";
 import config from "../../config/index.js";
 
 // =====================================================
@@ -16,44 +16,6 @@ export interface IModerationResult {
   // Backward-compatible addition.
   decision?: ModerationDecision;
 }
-
-// =====================================================
-// 2. TENCENT CLIENT CONFIGURATION
-// =====================================================
-
-const getTencentCredentials = () => {
-  const secretId = config.tencent.secretId?.trim();
-  const secretKey = config.tencent.secretKey?.trim();
-
-  if (!secretId || !secretKey) {
-    throw new Error("TENCENT_MODERATION_CREDENTIALS_MISSING");
-  }
-
-  return { secretId, secretKey };
-};
-
-const createTencentClientConfig = (endpoint: string) => ({
-  credential: getTencentCredentials(),
-  region: config.tencent.region || "ap-guangzhou",
-  profile: {
-    httpProfile: {
-      endpoint,
-      reqTimeout: 10,
-    },
-  },
-});
-
-const getTextClient = () => {
-  return new tencentcloud.tms.v20201229.Client(
-    createTencentClientConfig("tms.tencentcloudapi.com"),
-  );
-};
-
-const getImageClient = () => {
-  return new tencentcloud.ims.v20201229.Client(
-    createTencentClientConfig("ims.tencentcloudapi.com"),
-  );
-};
 
 // =====================================================
 // 3. SAFE EMPTY RESULT
@@ -82,12 +44,32 @@ const extractModerationResult = (response: unknown): IModerationResult => {
 
   const data = response as Record<string, unknown>;
 
-  if (
-    data.Suggestion !== "Pass" &&
-    data.Suggestion !== "Review" &&
-    data.Suggestion !== "Block"
-  ) {
-    throw new Error("MODERATION_RESPONSE_INVALID");
+  const invalid = () => new Error("MODERATION_RESPONSE_INVALID");
+  const rank = (value: unknown): number => value === "Pass" ? 0 : value === "Review" ? 1 : value === "Block" ? 2 : -1;
+  const label = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= 128;
+  const validate = (value: unknown, nullableSubLabel = false): Record<string, unknown> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
+    const row = value as Record<string, unknown>;
+    if ("Error" in row || rank(row.Suggestion) < 0 || !label(row.Label) ||
+        typeof row.Score !== "number" || !Number.isInteger(row.Score) || row.Score < 0 || row.Score > 100 ||
+        (row.SubLabel !== undefined && !(nullableSubLabel && row.SubLabel === null) &&
+          (typeof row.SubLabel !== "string" || row.SubLabel.length > 128))) throw invalid();
+    return row;
+  };
+  validate(data);
+  if (!label(data.RequestId)) throw invalid();
+  if (data.Keywords != null && (!Array.isArray(data.Keywords) || data.Keywords.some(item => typeof item !== "string"))) throw invalid();
+  // Tencent's detail arrays may legitimately be null/empty. When present,
+  // validate every classification and reject a less restrictive summary.
+  // Labels alone do not override Suggestion or invent score thresholds.
+  for (const field of ["DetailResults", "LabelResults", "ObjectResults", "OcrResults", "LibResults"]) {
+    const entries = data[field];
+    if (entries == null) continue;
+    if (!Array.isArray(entries)) throw invalid();
+    for (const entry of entries) {
+      const detail = validate(entry, field === "LibResults");
+      if (rank(detail.Suggestion) > rank(data.Suggestion)) throw invalid();
+    }
   }
 
   const decision: ModerationDecision =
@@ -212,7 +194,7 @@ const moderateText = async (
 
   // API errors must propagate to the caller.
   // Never treat an API failure as safe.
-  const response = await getTextClient().TextModeration(request);
+  const response = await tencentModerationRequest("TextModeration", request, config.tencent);
 
   return extractModerationResult(response);
 };
@@ -259,7 +241,7 @@ const moderateImage = async (imageUrl: string): Promise<IModerationResult> => {
       : {}),
   };
 
-  const response = await getImageClient().ImageModeration(request);
+  const response = await tencentModerationRequest("ImageModeration", request, config.tencent);
 
   // =====================================================
   // 7.3 VALIDATE AND RETURN RESULT

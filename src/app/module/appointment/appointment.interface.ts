@@ -89,9 +89,7 @@ export interface IMyAppointmentItem {
   paymentDisplayStatus: PaymentDisplayStatus;
 
   bookingMethod: BookingMethodType;
-
   appointmentStatus: AppointmentStatusType;
-
   paymentStatus: PaymentStatusType;
 
   branch: {
@@ -104,7 +102,6 @@ export interface IMyAppointmentItem {
     name: string;
   } | null;
 
-  // NEW: Package booking + multilingual name
   package: {
     id: string;
     name: string;
@@ -120,6 +117,9 @@ export interface IMyAppointmentItem {
   endTime: string;
 
   price: number;
+
+  // Dynamic currency saved with the appointment
+  currency: string;
 
   // Deposit/payment summary
   depositPercentage: number;

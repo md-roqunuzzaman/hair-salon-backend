@@ -1,4 +1,5 @@
 import type { INotificationTranslations } from "./notification.interface.js";
+import { currencyDigits } from "../../utils/transaction-currency.utils.js";
 import { notificationName } from './notification.names.js';
 
 export const notificationTemplates = {
@@ -8,9 +9,9 @@ export const notificationTemplates = {
     'zh-HK': { title: '預約已確認', message: '您的預約已成功確認。' },
   }),
   POLICY_REFUND_COMPLETED: (amount: number, currency: string, groupPurchase = false): INotificationTranslations => ({
-    en: { title: 'Refund completed', message: `Your ${groupPurchase ? 'group purchase refund' : 'refund'} of ${currency} ${amount.toFixed(2)} has been completed.` },
-    'zh-CN': { title: '退款已完成', message: `您的${groupPurchase ? '团购' : ''}退款 ${currency} ${amount.toFixed(2)} 已完成。` },
-    'zh-HK': { title: '退款已完成', message: `您的${groupPurchase ? '團購' : ''}退款 ${currency} ${amount.toFixed(2)} 已完成。` },
+    en: { title: 'Refund completed', message: `Your ${groupPurchase ? 'group purchase refund' : 'refund'} of ${currency} ${amount.toFixed(currencyDigits(currency))} has been completed.` },
+    'zh-CN': { title: '退款已完成', message: `您的${groupPurchase ? '团购' : ''}退款 ${currency} ${amount.toFixed(currencyDigits(currency))} 已完成。` },
+    'zh-HK': { title: '退款已完成', message: `您的${groupPurchase ? '團購' : ''}退款 ${currency} ${amount.toFixed(currencyDigits(currency))} 已完成。` },
   }),
   POLICY_BOOKING_CANCELLED: (awaitingApproval: boolean): INotificationTranslations => ({
     en: { title: 'Appointment cancelled', message: awaitingApproval ? 'Your appointment was cancelled. Your refund is awaiting merchant approval.' : 'Your appointment has been cancelled.' },
@@ -18,24 +19,24 @@ export const notificationTemplates = {
     'zh-HK': { title: '預約已取消', message: awaitingApproval ? '您的預約已取消，退款正在等候商家審批。' : '您的預約已取消。' },
   }),
   REFUND_REQUEST_APPROVED: (amount: number, currency: string): INotificationTranslations => ({
-    en: { title: 'Refund Request Approved', message: `Your refund request for ${currency} ${amount.toFixed(2)} has been approved. Your refund will be processed shortly.` },
-    'zh-CN': { title: '退款申请已批准', message: `您的 ${currency} ${amount.toFixed(2)} 退款申请已获批准，退款将于稍后处理。` },
-    'zh-HK': { title: '退款申請已獲批准', message: `您的 ${currency} ${amount.toFixed(2)} 退款申請已獲批准，退款將於稍後處理。` },
+    en: { title: 'Refund Request Approved', message: `Your refund request for ${currency} ${amount.toFixed(currencyDigits(currency))} has been approved. Your refund will be processed shortly.` },
+    'zh-CN': { title: '退款申请已批准', message: `您的 ${currency} ${amount.toFixed(currencyDigits(currency))} 退款申请已获批准，退款将于稍后处理。` },
+    'zh-HK': { title: '退款申請已獲批准', message: `您的 ${currency} ${amount.toFixed(currencyDigits(currency))} 退款申請已獲批准，退款將於稍後處理。` },
   }),
   REFUND_REQUEST_REJECTED: (amount: number, currency: string, note: string): INotificationTranslations => ({
-    en: { title: 'Refund Request Rejected', message: `Your refund request for ${currency} ${amount.toFixed(2)} was rejected. Reason: ${note}` },
-    'zh-CN': { title: '退款申请已被拒绝', message: `您的 ${currency} ${amount.toFixed(2)} 退款申请已被拒绝。商家备注：${note}` },
-    'zh-HK': { title: '退款申請已被拒絕', message: `您的 ${currency} ${amount.toFixed(2)} 退款申請已被拒絕。商家備註：${note}` },
+    en: { title: 'Refund Request Rejected', message: `Your refund request for ${currency} ${amount.toFixed(currencyDigits(currency))} was rejected. Reason: ${note}` },
+    'zh-CN': { title: '退款申请已被拒绝', message: `您的 ${currency} ${amount.toFixed(currencyDigits(currency))} 退款申请已被拒绝。商家备注：${note}` },
+    'zh-HK': { title: '退款申請已被拒絕', message: `您的 ${currency} ${amount.toFixed(currencyDigits(currency))} 退款申請已被拒絕。商家備註：${note}` },
   }),
   GROUP_PURCHASE_EXPIRED: (): INotificationTranslations => ({
     en: { title: 'Group purchase reservation expired', message: 'Your group purchase reservation expired because payment was not completed before the deadline.' },
     'zh-CN': { title: '团购预留已过期', message: '由于未能在截止时间前完成付款，您的团购预留已过期。' },
     'zh-HK': { title: '團購預留已到期', message: '由於未能在截止時間前完成付款，您的團購預留已到期。' },
   }),
-  APPOINTMENT_REMINDER: (date: string, startTime: string, name: string, names?: unknown): INotificationTranslations => ({
-    en: { title: 'Upcoming appointment', message: `Reminder: ${notificationName(names, 'en', name, 'service')} on ${date} at ${startTime} (Hong Kong time).` },
-    'zh-CN': { title: '预约提醒', message: `您的预约将于 ${date} ${startTime}（香港时间）开始。` },
-    'zh-HK': { title: '預約提醒', message: `您的預約將於 ${date} ${startTime}（香港時間）開始。` },
+  APPOINTMENT_REMINDER: (date: string, startTime: string, name: string, names?: unknown, timezone = "Asia/Hong_Kong"): INotificationTranslations => ({
+    en: { title: 'Upcoming appointment', message: `Reminder: ${notificationName(names, 'en', name, 'service')} on ${date} at ${startTime} (${timezone === "Asia/Hong_Kong" ? "Hong Kong time" : timezone}).` },
+    'zh-CN': { title: '预约提醒', message: `您的预约将于 ${date} ${startTime}（${timezone === "Asia/Hong_Kong" ? "香港时间" : timezone}）开始。` },
+    'zh-HK': { title: '預約提醒', message: `您的預約將於 ${date} ${startTime}（${timezone === "Asia/Hong_Kong" ? "香港時間" : timezone}）開始。` },
   }),
   BOOKING_CANCELLED: (): INotificationTranslations => ({
     en: {
@@ -139,17 +140,17 @@ export const notificationTemplates = {
   ): INotificationTranslations => ({
     en: {
       title: "Remaining payment received",
-      message: `We have received your remaining payment of ${currency} ${amount.toFixed(2)}. Your appointment is now fully paid.`,
+      message: `We have received your remaining payment of ${currency} ${amount.toFixed(currencyDigits(currency))}. Your appointment is now fully paid.`,
     },
 
     "zh-CN": {
       title: "已收到尾款",
-      message: `我们已收到您的尾款 ${currency} ${amount.toFixed(2)}。您的预约现已全额付清。`,
+      message: `我们已收到您的尾款 ${currency} ${amount.toFixed(currencyDigits(currency))}。您的预约现已全额付清。`,
     },
 
     "zh-HK": {
       title: "已收到尾款",
-      message: `我們已收到您的尾款 ${currency} ${amount.toFixed(2)}。您的預約現已全額付清。`,
+      message: `我們已收到您的尾款 ${currency} ${amount.toFixed(currencyDigits(currency))}。您的預約現已全額付清。`,
     },
   }),
   BOOKING_RESERVED: (
@@ -235,15 +236,15 @@ export const notificationTemplates = {
   ): INotificationTranslations => ({
     en: {
       title: "Deposit received",
-      message: `We received your deposit of ${currency} ${amount.toFixed(2)}. Your appointment is reserved. Please pay the remaining balance at the salon.`,
+      message: `We received your deposit of ${currency} ${amount.toFixed(currencyDigits(currency))}. Your appointment is reserved. Please pay the remaining balance at the salon.`,
     },
     "zh-CN": {
       title: "已收到定金",
-      message: `已收到您的定金 ${currency} ${amount.toFixed(2)}。预约已预留，请到店支付尾款。`,
+      message: `已收到您的定金 ${currency} ${amount.toFixed(currencyDigits(currency))}。预约已预留，请到店支付尾款。`,
     },
     "zh-HK": {
       title: "已收到訂金",
-      message: `已收到您的訂金 ${currency} ${amount.toFixed(2)}。預約已預留，請到店支付尾款。`,
+      message: `已收到您的訂金 ${currency} ${amount.toFixed(currencyDigits(currency))}。預約已預留，請到店支付尾款。`,
     },
   }),
 
@@ -269,15 +270,15 @@ export const notificationTemplates = {
   ): INotificationTranslations => ({
     en: {
       title: "Wallet top-up successful",
-      message: `Your wallet top-up of ${currency} ${amount.toFixed(2)} was successful.`,
+      message: `Your wallet top-up of ${currency} ${amount.toFixed(currencyDigits(currency))} was successful.`,
     },
     "zh-CN": {
       title: "钱包充值成功",
-      message: `您的钱包已成功充值 ${currency} ${amount.toFixed(2)}。`,
+      message: `您的钱包已成功充值 ${currency} ${amount.toFixed(currencyDigits(currency))}。`,
     },
     "zh-HK": {
       title: "錢包增值成功",
-      message: `您的錢包已成功增值 ${currency} ${amount.toFixed(2)}。`,
+      message: `您的錢包已成功增值 ${currency} ${amount.toFixed(currencyDigits(currency))}。`,
     },
   }),
 
@@ -287,15 +288,15 @@ export const notificationTemplates = {
   ): INotificationTranslations => ({
     en: {
       title: "Late payment refunded",
-      message: `Your payment of ${currency} ${amount.toFixed(2)} arrived after the booking hold expired and was refunded automatically. The appointment is not confirmed.`,
+      message: `Your payment of ${currency} ${amount.toFixed(currencyDigits(currency))} arrived after the booking hold expired and was refunded automatically. The appointment is not confirmed.`,
     },
     "zh-CN": {
       title: "逾期付款已退款",
-      message: `您的付款 ${currency} ${amount.toFixed(2)} 在预约保留期结束后到账，现已自动退款。预约未确认。`,
+      message: `您的付款 ${currency} ${amount.toFixed(currencyDigits(currency))} 在预约保留期结束后到账，现已自动退款。预约未确认。`,
     },
     "zh-HK": {
       title: "逾期付款已退款",
-      message: `您的付款 ${currency} ${amount.toFixed(2)} 在預約保留期結束後到帳，現已自動退款。預約未確認。`,
+      message: `您的付款 ${currency} ${amount.toFixed(currencyDigits(currency))} 在預約保留期結束後到帳，現已自動退款。預約未確認。`,
     },
   }),
 
@@ -305,15 +306,15 @@ export const notificationTemplates = {
   ): INotificationTranslations => ({
     en: {
       title: "Group purchase successful",
-      message: `Your group purchase payment of ${currency} ${amount.toFixed(2)} was successful. You can now book an appointment.`,
+      message: `Your group purchase payment of ${currency} ${amount.toFixed(currencyDigits(currency))} was successful. You can now book an appointment.`,
     },
     "zh-CN": {
       title: "团购购买成功",
-      message: `您的团购付款 ${currency} ${amount.toFixed(2)} 已成功，现在可以预约服务。`,
+      message: `您的团购付款 ${currency} ${amount.toFixed(currencyDigits(currency))} 已成功，现在可以预约服务。`,
     },
     "zh-HK": {
       title: "團購購買成功",
-      message: `您的團購付款 ${currency} ${amount.toFixed(2)} 已成功，現在可以預約服務。`,
+      message: `您的團購付款 ${currency} ${amount.toFixed(currencyDigits(currency))} 已成功，現在可以預約服務。`,
     },
   }),
 
@@ -323,15 +324,15 @@ export const notificationTemplates = {
   ): INotificationTranslations => ({
     en: {
       title: "Group purchase refunded",
-      message: `Your group purchase payment of ${currency} ${amount.toFixed(2)} arrived after the reservation expired and was refunded.`,
+      message: `Your group purchase payment of ${currency} ${amount.toFixed(currencyDigits(currency))} arrived after the reservation expired and was refunded.`,
     },
     "zh-CN": {
       title: "团购款项已退款",
-      message: `您的团购付款 ${currency} ${amount.toFixed(2)} 在预留期结束后到账，现已退款。`,
+      message: `您的团购付款 ${currency} ${amount.toFixed(currencyDigits(currency))} 在预留期结束后到账，现已退款。`,
     },
     "zh-HK": {
       title: "團購款項已退款",
-      message: `您的團購付款 ${currency} ${amount.toFixed(2)} 在預留期結束後到帳，現已退款。`,
+      message: `您的團購付款 ${currency} ${amount.toFixed(currencyDigits(currency))} 在預留期結束後到帳，現已退款。`,
     },
   }),
 
@@ -341,15 +342,15 @@ export const notificationTemplates = {
   ): INotificationTranslations => ({
     en: {
       title: "Refund completed",
-      message: `Your refund of ${currency} ${amount.toFixed(2)} has been processed successfully.`,
+      message: `Your refund of ${currency} ${amount.toFixed(currencyDigits(currency))} has been processed successfully.`,
     },
     "zh-CN": {
       title: "退款已完成",
-      message: `您的退款 ${currency} ${amount.toFixed(2)} 已成功处理。`,
+      message: `您的退款 ${currency} ${amount.toFixed(currencyDigits(currency))} 已成功处理。`,
     },
     "zh-HK": {
       title: "退款已完成",
-      message: `您的退款 ${currency} ${amount.toFixed(2)} 已成功處理。`,
+      message: `您的退款 ${currency} ${amount.toFixed(currencyDigits(currency))} 已成功處理。`,
     },
   }),
   REVIEW_PUBLISHED: (

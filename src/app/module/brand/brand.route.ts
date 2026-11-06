@@ -26,11 +26,34 @@ router.patch(
 );
 
 // =====================================================
+// BRAND INTERNATIONAL SETTINGS
+// =====================================================
+
+// BRAND_OWNER - Get international settings
+router.get(
+  "/international-settings",
+  auth(Role.BRAND_OWNER),
+  brandController.getBrandInternationalSettings,
+);
+
+// BRAND_OWNER - Update international settings
+router.patch(
+  "/international-settings",
+  auth(Role.BRAND_OWNER),
+  validateRequest(
+    brandValidation.updateBrandInternationalSettingsValidationSchema,
+  ),
+  brandController.updateBrandInternationalSettings,
+);
+
+// =====================================================
 // EXISTING BRAND APIs
 // =====================================================
 
+// Public - Get brand information
 router.get("/", brandController.getBrand);
 
+// BRAND_OWNER - Update brand information
 router.patch(
   "/",
   auth(Role.BRAND_OWNER),

@@ -1,3 +1,4 @@
+import { appointmentTimezone } from "../../utils/appointment-timezone.utils.js";
 import { prisma } from "../../lib/prisma.js";
 import type { Prisma } from "../../../../generated/prisma/client.js";
 import { getLocalizedContent } from "../../utils/localization.js";
@@ -137,6 +138,7 @@ export async function enqueueAppointmentEmail(
         new Date(schedule.date),
         schedule.startTime,
         schedule.endTime,
+        await appointmentTimezone(tx, id),
       ),
     ],
     [5, a.appointmentStatus],
@@ -159,7 +161,7 @@ export async function enqueueAppointmentEmail(
   if (previous)
     details.push([
       10,
-      emailAppointmentTime(previous.date, previous.startTime, previous.endTime),
+      emailAppointmentTime(previous.date, previous.startTime, previous.endTime, await appointmentTimezone(tx, id)),
     ]);
   return enqueue(
     tx,

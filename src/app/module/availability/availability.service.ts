@@ -8,8 +8,13 @@ import {
 } from "../../../../generated/prisma/enums.js";
 
 import { prisma } from "../../lib/prisma.js";
-
 import { AppError } from "../../utils/app-error.js";
+
+import {
+  createDateTimeInTimezone,
+  assertTimezoneDuration,
+  getDateInTimezone,
+} from "../../utils/brand-timezone.utils.js";
 
 import {
   IAvailabilityQuery,
@@ -17,21 +22,17 @@ import {
   IAvailabilitySlot,
 } from "./availability.interface.js";
 
-const HK_TIMEZONE = "Asia/Hong_Kong";
-
 // =====================================================
 // TIME HELPERS
 // =====================================================
 
-const parseTimeToMinutes = (time: string) => {
+const parseTimeToMinutes = (time: string): number => {
   const [hour, minute] = time.split(":").map(Number);
-
   return hour * 60 + minute;
 };
 
-const minutesToTime = (minutes: number) => {
+const minutesToTime = (minutes: number): string => {
   const hour = Math.floor(minutes / 60);
-
   const minute = minutes % 60;
 
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
@@ -42,7 +43,7 @@ const intervalsOverlap = (
   endA: number,
   startB: number,
   endB: number,
-) => {
+): boolean => {
   return startA < endB && endA > startB;
 };
 
@@ -64,22 +65,6 @@ const getDayOfWeek = (date: string): DayOfWeek => {
   ];
 
   return days[value.getUTCDay()];
-};
-
-const getHongKongDateString = () => {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: HK_TIMEZONE,
-
-    year: "numeric",
-
-    month: "2-digit",
-
-    day: "2-digit",
-  }).format(new Date());
-};
-
-const createHongKongDateTime = (date: string, time: string) => {
-  return new Date(`${date}T${time}:00+08:00`);
 };
 
 // =====================================================
@@ -132,12 +117,31 @@ const getAvailableSlots = async (
   const bookingPolicy = branch.bookingPolicy;
 
   // =====================================================
-  // 2. BOOKING DATE POLICY
+  // 2. BRAND TIMEZONE CONFIGURATION
   // =====================================================
 
-  const currentHKDate = getHongKongDateString();
+  // Current architecture: one Brand owns all branches.
+  // No direct Brand relation exists on Branch.
 
-  const currentDateOnly = new Date(`${currentHKDate}T00:00:00.000Z`);
+  const brand = await prisma.brand.findFirst({
+    select: {
+      timezone: true,
+    },
+  });
+
+  if (!brand) {
+    throw new AppError("Brand not found", 404);
+  }
+
+  const brandTimezone = brand.timezone;
+
+  // =====================================================
+  // 3. BOOKING DATE POLICY
+  // =====================================================
+
+  const currentBrandDate = getDateInTimezone(brandTimezone);
+
+  const currentDateOnly = new Date(`${currentBrandDate}T00:00:00.000Z`);
 
   const requestedDateOnly = new Date(`${date}T00:00:00.000Z`);
 
@@ -165,7 +169,7 @@ const getAvailableSlots = async (
   }
 
   // =====================================================
-  // 3. SERVICE / PACKAGE
+  // 4. SERVICE / PACKAGE
   // =====================================================
 
   let durationMinutes: number;
@@ -233,7 +237,7 @@ const getAvailableSlots = async (
   }
 
   // =====================================================
-  // 4. DAY + BRANCH BUSINESS HOURS + BREAKS (H05)
+  // 5. DAY + BRANCH BUSINESS HOURS + BREAKS
   // =====================================================
 
   const day = getDayOfWeek(date);
@@ -274,15 +278,15 @@ const getAvailableSlots = async (
 
   const branchCloseMinutes = parseTimeToMinutes(businessHour.closeTime);
 
-  // H05: Branch-wide break intervals.
-  // These apply to every staff member at the branch.
+  // Branch-wide breaks apply to all staff.
+
   const branchBreakIntervals = businessHour.breaks.map((businessBreak) => ({
     start: parseTimeToMinutes(businessBreak.startTime),
     end: parseTimeToMinutes(businessBreak.endTime),
   }));
 
   // =====================================================
-  // 5. HOURLY CAPACITY CONFIGURATION
+  // 6. HOURLY CAPACITY CONFIGURATION
   // =====================================================
 
   const hourlyCapacity = await prisma.branchHourlyCapacity.findUnique({
@@ -294,7 +298,6 @@ const getAvailableSlots = async (
     },
   });
 
-  // Fail closed when branch capacity is not configured.
   if (!hourlyCapacity) {
     return {
       date,
@@ -307,7 +310,7 @@ const getAvailableSlots = async (
   const maxBookingsPerHour = hourlyCapacity.maxBookingsPerHour;
 
   // =====================================================
-  // 6. RESOLVE ELIGIBLE STAFF
+  // 7. RESOLVE ELIGIBLE STAFF
   // =====================================================
 
   let staffIds: string[] = [];
@@ -384,7 +387,7 @@ const getAvailableSlots = async (
     staffIds = [staffMember.id];
   } else {
     // ---------------------------------------------------
-    // ANY STAFF / AUTO STAFF
+    // AUTO STAFF
     // ---------------------------------------------------
 
     const eligibleStaff = await prisma.staff.findMany({
@@ -436,7 +439,7 @@ const getAvailableSlots = async (
   }
 
   // =====================================================
-  // 7. STAFF SCHEDULES
+  // 8. STAFF SCHEDULES
   // =====================================================
 
   const schedules = await prisma.staffSchedule.findMany({
@@ -444,7 +447,6 @@ const getAvailableSlots = async (
       staffId: {
         in: staffIds,
       },
-
       branchId,
       day,
     },
@@ -469,8 +471,11 @@ const getAvailableSlots = async (
   }
 
   // =====================================================
-  // 8. STAFF UNAVAILABILITY
+  // 9. STAFF UNAVAILABILITY
   // =====================================================
+
+  // Preserve existing date-only storage convention.
+  // This is NOT a UTC timestamp for local midnight.
 
   const dateOnly = new Date(`${date}T00:00:00.000Z`);
 
@@ -484,7 +489,7 @@ const getAvailableSlots = async (
   });
 
   // =====================================================
-  // 9. STAFF-BLOCKING APPOINTMENTS
+  // 10. STAFF-BLOCKING APPOINTMENTS
   // =====================================================
 
   const now = new Date();
@@ -513,6 +518,7 @@ const getAvailableSlots = async (
         },
         {
           appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
           holdExpiresAt: {
             gt: now,
           },
@@ -528,7 +534,7 @@ const getAvailableSlots = async (
   });
 
   // =====================================================
-  // 10. BRANCH-WIDE BLOCKING APPOINTMENTS
+  // 11. BRANCH-WIDE BLOCKING APPOINTMENTS
   // =====================================================
 
   const branchBlockingAppointments = await prisma.appointment.findMany({
@@ -553,6 +559,7 @@ const getAvailableSlots = async (
         },
         {
           appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+
           holdExpiresAt: {
             gt: now,
           },
@@ -568,7 +575,7 @@ const getAvailableSlots = async (
   });
 
   // =====================================================
-  // 11. BRANCH CAPACITY HELPER
+  // 12. BRANCH CAPACITY HELPER
   // =====================================================
 
   const getCapacityUsageForSlot = (slotStart: number, slotEnd: number) => {
@@ -615,7 +622,7 @@ const getAvailableSlots = async (
   };
 
   // =====================================================
-  // 12. GENERATE STAFF-CANDIDATE SLOTS
+  // 13. GENERATE STAFF-CANDIDATE SLOTS
   // =====================================================
 
   const candidateSlots: IAvailabilitySlot[] = [];
@@ -645,10 +652,8 @@ const getAvailableSlots = async (
       const end = start + durationMinutes;
 
       // -------------------------------------------------
-      // H05: BRANCH-WIDE MIDDAY BREAK CHECK
+      // BRANCH-WIDE BREAK CHECK
       // -------------------------------------------------
-      // Reject a slot if ANY part of its duration
-      // overlaps ANY configured branch break.
 
       const hasBranchBreakConflict = branchBreakIntervals.some(
         (businessBreak) =>
@@ -663,10 +668,28 @@ const getAvailableSlots = async (
       const endTime = minutesToTime(end);
 
       // -------------------------------------------------
-      // MINIMUM BOOKING NOTICE
+      // MINIMUM BOOKING NOTICE - BRAND TIMEZONE
       // -------------------------------------------------
 
-      const slotDateTime = createHongKongDateTime(date, startTime);
+      let slotDateTime: Date;
+
+      try {
+        slotDateTime = createDateTimeInTimezone(date, startTime, brandTimezone);
+        assertTimezoneDuration(date, startTime, endTime, durationMinutes, brandTimezone);
+      } catch (error) {
+        // A nonexistent local time can occur during
+        // a daylight-saving transition.
+        // Skip only that invalid local-time slot.
+
+        if (
+          error instanceof AppError &&
+          ["Selected local time does not exist in this timezone", "Selected local time is ambiguous in this timezone", "Selected interval crosses a timezone transition"].includes(error.message)
+        ) {
+          continue;
+        }
+
+        throw error;
+      }
 
       if (slotDateTime < minimumAllowedTime) {
         continue;
@@ -748,7 +771,7 @@ const getAvailableSlots = async (
   }
 
   // =====================================================
-  // 13. AUTO / ANY STAFF MODE
+  // 14. AUTO / ANY STAFF MODE
   // =====================================================
 
   let slots: IAvailabilitySlot[];
@@ -770,7 +793,7 @@ const getAvailableSlots = async (
   }
 
   // =====================================================
-  // 14. SORT RESULT
+  // 15. SORT RESULT
   // =====================================================
 
   slots.sort((a, b) => {
@@ -784,7 +807,7 @@ const getAvailableSlots = async (
   });
 
   // =====================================================
-  // 15. RESPONSE
+  // 16. RESPONSE
   // =====================================================
 
   return {
@@ -801,6 +824,7 @@ const getAvailableSlots = async (
       : {}),
   };
 };
+
 export const AvailabilityService = {
   getAvailableSlots,
 };

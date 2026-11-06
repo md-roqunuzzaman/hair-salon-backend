@@ -1,3 +1,6 @@
+import { getBrandInternationalSettings } from "../../utils/brand-international-settings.utils.js";
+import { assertCurrencyAmount, getPurchaseCurrency, getPurchaseCurrencies } from "../../utils/transaction-currency.utils.js";
+import { assertTimezoneDuration } from "../../utils/brand-timezone.utils.js";
 import {
   capturePolicy,
   snapshotData,
@@ -171,6 +174,7 @@ const createGroupPurchase = async (
       return await prisma.$transaction(
         async (tx) => {
           const now = new Date();
+          const international = await getBrandInternationalSettings(tx);
 
           // =================================================
           // 4. LOAD PACKAGE
@@ -331,6 +335,7 @@ const createGroupPurchase = async (
             }
 
             appointmentEndTime = minutesToTime(requestedEnd);
+            assertTimezoneDuration(payload.date!, payload.startTime!, appointmentEndTime, packageData.durationMinutes, international.timezone);
 
             appointmentDate = new Date(`${payload.date}T00:00:00.000Z`);
 
@@ -610,8 +615,10 @@ const createGroupPurchase = async (
             purchaseSnapshot = snapshot as unknown as Prisma.InputJsonObject;
           }
 
+          assertCurrencyAmount(unitPrice, international.currency);
           const groupPurchase = await tx.groupPurchase.create({
             data: {
+              currency: international.currency,
               purchaseBranchId,
 
               ...(purchaseSnapshot && {
@@ -631,13 +638,13 @@ const createGroupPurchase = async (
                 : null,
 
               quantity: payload.quantity,
-              unitPrice,
-              amount,
+              unitPrice: assertCurrencyAmount(unitPrice, international.currency),
+              amount: assertCurrencyAmount(amount, international.currency),
               paymentStatus: purchasePaymentStatus,
               reservationExpiresAt,
               depositPercentage,
-              depositAmount,
-              remainingAmount,
+              depositAmount: depositAmount === null ? null : assertCurrencyAmount(depositAmount, international.currency),
+              remainingAmount: remainingAmount === null ? null : assertCurrencyAmount(remainingAmount, international.currency),
             },
           });
 
@@ -687,7 +694,8 @@ const createGroupPurchase = async (
                 itemNameTranslations:
                   packageData.translations ?? Prisma.JsonNull,
                 price: new Prisma.Decimal(0),
-                currency: "HKD",
+                currency: international.currency,
+                timezone: international.timezone,
                 holdExpiresAt: reservationExpiresAt,
                 qrToken,
                 depositPercentage,
@@ -1120,6 +1128,7 @@ const getMyGroupPurchases = async (
   // 8. BUILD MULTILINGUAL RESPONSE
   // =====================================================
 
+  const purchaseCurrencies = await getPurchaseCurrencies(prisma, purchaseIds);
   const items = purchases.map((purchase) => {
     // ---------------------------------------------------
     // 8.1 LOCALIZED PACKAGE NAME
@@ -1214,7 +1223,7 @@ const getMyGroupPurchases = async (
 
     return {
       ...presentGroupPurchase(
-        purchase,
+        { ...purchase, currency: purchaseCurrencies.get(purchase.id)! },
         purchase.appointments.some(
           (item) =>
             item.bookingMethod === purchase.bookingMethod &&
@@ -1504,7 +1513,7 @@ const getGroupPurchaseById = async (
 
   return {
     ...presentGroupPurchase(
-      purchase,
+      { ...purchase, currency: await getPurchaseCurrency(prisma, purchase.id) },
       purchase.appointments.some(
         (item) =>
           item.bookingMethod === purchase.bookingMethod &&
@@ -1800,6 +1809,7 @@ const createGroupPurchaseAppointment = async (
               : null;
 
           const now = new Date();
+          const international = await getBrandInternationalSettings(tx);
 
           if (validUntil !== null && validUntil <= now) {
             throw new AppError("Group purchase voucher has expired", 422);
@@ -1893,6 +1903,7 @@ const createGroupPurchaseAppointment = async (
           const requestedEnd = requestedStart + durationMinutes;
 
           const endTime = minutesToTime(requestedEnd);
+          assertTimezoneDuration(date, startTime, endTime, durationMinutes, international.timezone);
 
           // =============================================
           // 7. FINAL AVAILABILITY CHECKS
@@ -1983,11 +1994,12 @@ const createGroupPurchaseAppointment = async (
 
               durationMinutes,
 
+              timezone: international.timezone,
               // Already paid through group purchase.
               // No additional payment required.
 
               price: new Prisma.Decimal(0),
-              currency: "HKD",
+              currency: await getPurchaseCurrency(tx, purchase.id),
 
               holdExpiresAt: null,
 
@@ -2121,6 +2133,7 @@ export const recordGroupPurchaseRemainingPayment = async (
       return await prisma.$transaction(
         async (tx) => {
           const now = new Date();
+          const international = await getBrandInternationalSettings(tx);
 
           // =============================================
           // 4. FIND GROUP PURCHASE
@@ -2462,8 +2475,8 @@ export const recordGroupPurchaseRemainingPayment = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.SALON,
               salonPaymentMethod: payload.paymentMethod,
-              amount: remainingAmount,
-              currency: "HKD",
+              amount: assertCurrencyAmount(remainingAmount, await getPurchaseCurrency(tx, purchase.id)),
+              currency: await getPurchaseCurrency(tx, purchase.id),
               status: PaymentStatus.PAID,
               paidAt: now,
             },

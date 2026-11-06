@@ -37,6 +37,8 @@ if (process.argv.includes('--audit')) {
   let approvedRetirements = 0;
   let loginLimitsChecked = 0;
   let passwordChangeExceptionsChecked = 0;
+  let ownerBookingPolicyChecked = 0;
+  let groupPolicyFormattingChecked = 0;
   for (const r of old) {
     const now = inventory.filter(n=>n.method===r.method&&n.path===r.path);
     // User approved retaining automatic completion and keeping this manual route
@@ -49,6 +51,29 @@ if (process.argv.includes('--audit')) {
     }
     if (now.length!==1) throw Error(`Missing or duplicate existing route ${r.method} ${r.path}`);
     let expected = r.middleware;
+    // Owner confirmed this existing policy restriction. Never regain manager
+    // write access just to match the immutable historical route baseline.
+    if (r.method==='PUT' && r.path==='/api/v1/branches/:branchId/booking-policy') {
+      const before=['auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)','validateRequest(branchValidation.updateBookingPolicyValidationSchema)'];
+      if(JSON.stringify(r.middleware)!==JSON.stringify(before))throw Error('Booking policy baseline changed unexpectedly');
+      expected=['auth(Role.BRAND_OWNER)','validateRequest(branchValidation.updateBookingPolicyValidationSchema)'];
+      ownerBookingPolicyChecked++;
+    }
+    // Two existing multiline wrappers have the same single validator argument.
+    // Normalize only these exact calls, retaining all role/order/name checks.
+    const groupPolicyValidators={
+      '/api/v1/branches/:branchId/group-purchase-refund-policy':'branchGroupPurchasePolicyValidation.updateGroupPurchaseRefundPolicyValidationSchema',
+      '/api/v1/branches/:branchId/group-purchase-cancellation-policy':'branchGroupPurchasePolicyValidation.updateGroupPurchaseCancellationPolicyValidationSchema',
+    };
+    if(r.method==='PUT' && groupPolicyValidators[r.path]){
+      const name=groupPolicyValidators[r.path];
+      if(JSON.stringify(r.middleware)!==JSON.stringify(['auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER)',`validateRequest(${name})`]))throw Error('Group policy baseline changed unexpectedly');
+      const parsed=ts.createSourceFile('validator.ts',now[0].middleware[1]??'',ts.ScriptTarget.Latest,true);
+      const expression=parsed.statements[0]?.expression;
+      if(parsed.statements.length!==1||!expression||!ts.isCallExpression(expression)||expression.questionDotToken||expression.expression.getText(parsed)!=='validateRequest'||expression.arguments.length!==1||expression.arguments[0].getText(parsed)!==name)throw Error('Group policy validator contract changed');
+      now[0]={...now[0],middleware:now[0].middleware.map((value,index)=>index===1?`validateRequest(${name})`:value)};
+      groupPolicyFormattingChecked++;
+    }
     // Registration verification now includes the user-supplied abuse limit.
     // Preserve the old baseline and allow only this exact middleware addition.
     if (r.method==='POST' && r.path==='/api/v1/auth/register') {
@@ -92,6 +117,7 @@ if (process.argv.includes('--audit')) {
   if (approvedRetirements!==1) throw Error('Approved manual completion retirement was not checked');
   if (loginLimitsChecked!==1) throw Error('Login rate-limit contract was not checked');
   if (passwordChangeExceptionsChecked!==2) throw Error('Required-password-change exceptions were not checked');
+  if (ownerBookingPolicyChecked!==1 || groupPolicyFormattingChecked!==2) throw Error('Owner booking policy or exact group validator contracts were not checked');
   const seen = new Set();
   for (const r of inventory) {
     const key = r.method+' '+r.path;

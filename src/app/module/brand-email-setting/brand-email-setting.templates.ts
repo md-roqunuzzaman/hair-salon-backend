@@ -8,9 +8,9 @@ const titles = {
   'zh-HK': ['預約已確認','預約已保留','訂金支付成功','團購成功','預約已取消','預約已改期','退款已完成'],
 };
 const labels = {
-  en: ['Reference','Branch','Service / package','Staff','Appointment (Hong Kong time)','Status','Total','Deposit paid','Remaining balance','Payment status','Previous appointment (Hong Kong time)','Quantity','Paid amount','Validity (days)','Refund amount','Refund reference'],
-  'zh-CN': ['编号','分店','服务 / 套餐','员工','预约时间（香港时间）','状态','总额','已付订金','待付余额','支付状态','原预约时间（香港时间）','数量','已付金额','有效期（天）','退款金额','退款编号'],
-  'zh-HK': ['編號','分店','服務 / 套餐','員工','預約時間（香港時間）','狀態','總額','已付訂金','待付餘額','付款狀態','原預約時間（香港時間）','數量','已付金額','有效期（天）','退款金額','退款編號'],
+  en: ['Reference','Branch','Service / package','Staff','Appointment','Status','Total','Deposit paid','Remaining balance','Payment status','Previous appointment','Quantity','Paid amount','Validity (days)','Refund amount','Refund reference'],
+  'zh-CN': ['编号','分店','服务 / 套餐','员工','预约时间','状态','总额','已付订金','待付余额','支付状态','原预约时间','数量','已付金额','有效期（天）','退款金额','退款编号'],
+  'zh-HK': ['編號','分店','服務 / 套餐','員工','預約時間','狀態','總額','已付訂金','待付餘額','付款狀態','原預約時間','數量','已付金額','有效期（天）','退款金額','退款編號'],
 };
 const states: Record<string, [string,string,string]> = {
   CONFIRMED: ['Confirmed','已确认','已確認'], RESERVED: ['Reserved','已保留','已保留'], CANCELLED: ['Cancelled','已取消','已取消'],
@@ -21,7 +21,7 @@ const states: Record<string, [string,string,string]> = {
 };
 export const escapeEmailHtml = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 export const emailMoney = (amount: unknown, currency: string, language: string) => new Intl.NumberFormat(isLanguage(language) ? language : DEFAULT_LANGUAGE, { style: 'currency', currency }).format(Number(amount));
-export const emailAppointmentTime = (date: Date, start: string, end: string) => `${date.toISOString().slice(0,10)} ${start}–${end} (Asia/Hong_Kong)`;
+export const emailAppointmentTime = (date: Date, start: string, end: string, timezone = "Asia/Hong_Kong") => `${date.toISOString().slice(0,10)} ${start}–${end} (${timezone})`;
 export type EmailDetail = [number, string];
 export function renderBusinessEmail(event: BusinessEmailEvent, language: string, customerName: string, details: EmailDetail[]) {
   const lang = isLanguage(language) ? language : DEFAULT_LANGUAGE;

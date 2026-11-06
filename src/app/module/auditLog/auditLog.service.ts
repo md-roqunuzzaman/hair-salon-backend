@@ -1,3 +1,5 @@
+import { localDateBoundary } from "../../utils/brand-timezone.utils.js";
+import { getBrandInternationalSettings } from "../../utils/brand-international-settings.utils.js";
 import { Prisma } from "../../../../generated/prisma/client.js";
 import { prisma } from "../../lib/prisma.js";
 
@@ -87,11 +89,11 @@ const getAuditLogs = async (query: IAuditLogQuery) => {
     where.createdAt = {};
 
     if (query.from) {
-      where.createdAt.gte = new Date(`${query.from}T00:00:00+08:00`);
+      where.createdAt.gte = localDateBoundary(query.from, (await getBrandInternationalSettings()).timezone);
     }
 
     if (query.to) {
-      where.createdAt.lte = new Date(`${query.to}T23:59:59.999+08:00`);
+      where.createdAt.lte = localDateBoundary(query.to, (await getBrandInternationalSettings()).timezone, true);
     }
   }
 

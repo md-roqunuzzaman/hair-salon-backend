@@ -1,3 +1,6 @@
+import { localDateBoundary } from "../../utils/brand-timezone.utils.js";
+import { getBrandInternationalSettings } from "../../utils/brand-international-settings.utils.js";
+import { assertCurrencyAmount, assertSameCurrency, stripeAmount, getPurchaseCurrency } from "../../utils/transaction-currency.utils.js";
 import {
   AppointmentStatus,
   BalanceType,
@@ -36,14 +39,14 @@ const getMyWallet = async (customerId: string): Promise<IWalletResponse> => {
   });
 
   if (!wallet) {
-    wallet = await prisma.wallet.create({
+    wallet = await prisma.$transaction(async tx => tx.wallet.create({
       data: {
         customerId,
         paidBalance: 0,
         bonusBalance: 0,
-        currency: "HKD",
+        currency: (await getBrandInternationalSettings(tx)).currency,
       },
-    });
+    }), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
   const paidBalance = Number(wallet.paidBalance);
@@ -111,11 +114,11 @@ const getMyTransactions = async (
     where.createdAt = {};
 
     if (query.from) {
-      where.createdAt.gte = new Date(`${query.from}T00:00:00+08:00`);
+      where.createdAt.gte = localDateBoundary(query.from, (await getBrandInternationalSettings()).timezone);
     }
 
     if (query.to) {
-      where.createdAt.lte = new Date(`${query.to}T23:59:59.999+08:00`);
+      where.createdAt.lte = localDateBoundary(query.to, (await getBrandInternationalSettings()).timezone, true);
     }
   }
 
@@ -246,7 +249,9 @@ const createTopup = async (
   // Convert HKD to Stripe's smallest currency unit.
   // Use Decimal arithmetic to avoid floating-point issues.
 
-  const amountInCents = topupAmount.mul(100);
+  const currency = (await getBrandInternationalSettings()).currency;
+  assertCurrencyAmount(bonusAmount, currency);
+  const amountInCents = new Prisma.Decimal(stripeAmount(topupAmount, currency));
 
   if (
     !amountInCents.isInteger() ||
@@ -263,7 +268,9 @@ const createTopup = async (
   // 3. FIND OR CREATE CUSTOMER WALLET
   // =====================================================
 
-  const wallet = await prisma.wallet.upsert({
+  const wallet = await prisma.$transaction(async tx => {
+    assertSameCurrency(currency, (await getBrandInternationalSettings(tx)).currency);
+    return tx.wallet.upsert({
     where: {
       customerId,
     },
@@ -274,13 +281,12 @@ const createTopup = async (
       customerId,
       paidBalance: 0,
       bonusBalance: 0,
-      currency: "HKD",
+      currency,
     },
-  });
+    });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-  if (wallet.currency !== "HKD") {
-    throw new AppError("UNSUPPORTED_WALLET_CURRENCY", 400);
-  }
+  assertSameCurrency(wallet.currency, currency);
 
   // =====================================================
   // 4. CREATE TOP-UP AND PAYMENT RECORDS
@@ -314,7 +320,7 @@ const createTopup = async (
 
         amount: topupAmount,
 
-        currency: "HKD",
+        currency,
 
         status: PaymentStatus.PENDING,
       },
@@ -335,7 +341,7 @@ const createTopup = async (
       {
         amount: amountInCents.toNumber(),
 
-        currency: "hkd",
+        currency: currency.toLowerCase(),
 
         metadata: {
           paymentId: payment.id,
@@ -458,15 +464,18 @@ const deductWalletBalance = async (
     throw new AppError("INSUFFICIENT_WALLET_BALANCE", 422);
   }
 
-  if (wallet.currency !== "HKD") {
-    throw new AppError("UNSUPPORTED_WALLET_CURRENCY", 400);
-  }
+  const payment = paymentId ? await tx.payment.findUnique({ where: { id: paymentId }, select: { currency: true } }) : null;
+  if (!payment) throw new AppError("Wallet payment currency is missing", 409);
+  assertSameCurrency(wallet.currency, payment.currency);
+  assertCurrencyAmount(amount, payment.currency);
 
   const bonusBalanceUsed = useBonus
     ? Prisma.Decimal.min(wallet.bonusBalance, amount)
     : new Prisma.Decimal(0);
 
   const paidBalanceUsed = amount.minus(bonusBalanceUsed);
+  assertCurrencyAmount(bonusBalanceUsed, payment.currency);
+  assertCurrencyAmount(paidBalanceUsed, payment.currency);
 
   if (wallet.paidBalance.lt(paidBalanceUsed)) {
     throw new AppError("INSUFFICIENT_WALLET_BALANCE", 422);
@@ -554,6 +563,7 @@ const payAppointmentWithWallet = async (
               appointmentStatus: true,
               paymentStatus: true,
               price: true,
+              currency: true,
               holdExpiresAt: true,
             },
           });
@@ -674,7 +684,7 @@ const payAppointmentWithWallet = async (
               purpose: PaymentPurpose.APPOINTMENT,
               provider: PaymentProvider.WALLET,
               amount: appointment.price,
-              currency: "HKD",
+              currency: appointment.currency,
               status: PaymentStatus.PAID,
               paidAt: now,
             },
@@ -978,7 +988,7 @@ const payGroupPurchaseWithWallet = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.WALLET,
               amount: paymentAmount,
-              currency: "HKD",
+              currency: await getPurchaseCurrency(tx, purchase.id),
               status: PaymentStatus.PAID,
               paidAt: now,
             },
@@ -1241,9 +1251,7 @@ const payAppointmentRemainingWithWallet = async (
             throw new AppError("INVALID_REMAINING_AMOUNT", 409);
           }
 
-          if (appointment.currency !== "HKD") {
-            throw new AppError("UNSUPPORTED_CURRENCY", 409);
-          }
+          assertCurrencyAmount(remainingAmount, appointment.currency);
 
           // =====================================================
           // 7. CHECK EXISTING REMAINING PAYMENTS
@@ -1608,7 +1616,7 @@ const payGroupPurchaseRemainingWithWallet = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.WALLET,
               amount: remainingAmount,
-              currency: "HKD",
+              currency: await getPurchaseCurrency(tx, purchase.id),
               status: PaymentStatus.PENDING,
             },
           });
@@ -1698,7 +1706,7 @@ const payGroupPurchaseRemainingWithWallet = async (
 
           const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
             Number(remainingAmount),
-            "HKD",
+            payment.currency,
           );
 
           await notificationService.createNotification(
@@ -1755,7 +1763,7 @@ const payGroupPurchaseRemainingWithWallet = async (
             depositAmount: Number(depositAmount),
             amountPaid: Number(remainingAmount),
 
-            currency: "HKD",
+            currency: await getPurchaseCurrency(tx, purchase.id),
 
             ...walletResult,
           };

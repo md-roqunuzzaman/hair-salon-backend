@@ -1,3 +1,6 @@
+import { appointmentTimezone } from "../../utils/appointment-timezone.utils.js";
+import { createDateTimeInTimezone } from "../../utils/brand-timezone.utils.js";
+import { assertCurrencyAmount, stripeAmount } from "../../utils/transaction-currency.utils.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { validateAllocationPlan, lockRefundResource } from './refund-allocation.plan.js';
 import { isSnapshot } from "../cancellation-refund/policy.calculation.js";
@@ -34,11 +37,7 @@ import type {
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationService } from "../notification/notification.service.js";
 
-const createHongKongDateTime = (date: Date, time: string): Date => {
-  const datePart = date.toISOString().slice(0, 10);
-
-  return new Date(`${datePart}T${time}:00+08:00`);
-};
+const createHongKongDateTime = (date: Date, time: string, timezone: string): Date => createDateTimeInTimezone(date.toISOString().slice(0, 10), time, timezone);
 
 const createRefundRequest = async (
   customerId: string,
@@ -192,10 +191,7 @@ const createRefundRequest = async (
       throw new AppError("BRANCH_BOOKING_POLICY_NOT_FOUND", 404);
     }
 
-    const appointmentDateTime = createHongKongDateTime(
-      appointment.date,
-      appointment.startTime,
-    );
+    const appointmentDateTime = createHongKongDateTime(appointment.date, appointment.startTime, await appointmentTimezone(prisma, appointment.id));
 
     validateAppointmentRefundPolicy({
       appointmentDateTime,
@@ -275,7 +271,7 @@ const createRefundRequest = async (
         data: {
           customerId,
           paymentId: payment.id,
-          amount: eligibility.refundableAmount,
+          amount: assertCurrencyAmount(eligibility.refundableAmount, payment.currency),
           reason,
           status: RefundRequestStatus.PENDING,
         },
@@ -697,10 +693,7 @@ const reviewRefundRequest = async (
           throw new AppError("APPOINTMENT_REFUND_NOT_ALLOWED", 409);
         }
 
-        const appointmentDateTime = createHongKongDateTime(
-          appointment.date,
-          appointment.startTime,
-        );
+        const appointmentDateTime = createHongKongDateTime(appointment.date, appointment.startTime, await appointmentTimezone(tx, appointment.id));
 
         const cutoffMinutes = policy.cancellationCutoffMinutes;
 

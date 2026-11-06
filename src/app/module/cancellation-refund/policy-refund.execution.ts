@@ -1,3 +1,5 @@
+import { appointmentTimezone } from "../../utils/appointment-timezone.utils.js";
+import { assertCurrencyAmount } from "../../utils/transaction-currency.utils.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { aggregateGroupRefundStatus } from '../refund-request/refund-allocation.plan.js';
 import { Prisma } from '../../../../generated/prisma/client.js';
@@ -32,8 +34,9 @@ export async function validatePolicyRefund(tx: Prisma.TransactionClient, request
     if (!saved)
         return false;
     const payment = await tx.payment.findUnique({ where: { id: request.paymentId }, include: { refunds: true } });
-    if (!payment || !['STRIPE', 'WALLET'].includes(payment.provider) || payment.currency !== 'HKD' || !request.policyEvaluatedAt)
+    if (!payment || !['STRIPE', 'WALLET'].includes(payment.provider) || !request.policyEvaluatedAt)
         throw new AppError('POLICY_REFUND_PAYMENT_MISMATCH', 409);
+    assertCurrencyAmount(request.amount, payment.currency);
     const already = payment.refunds.filter(r => r.status === 'SUCCEEDED').reduce((s, r) => s + cents(r.amount), 0);
     if (payment.refunds.some(r => r.status === 'PENDING' && r.id !== request.refundId) || cents(request.amount) > cents(payment.amount) - already || cents(request.amount) !== saved.calculation.refundCents)
         throw new AppError('POLICY_REFUND_AMOUNT_CHANGED', 409);
@@ -42,7 +45,7 @@ export async function validatePolicyRefund(tx: Prisma.TransactionClient, request
         const appointment = await tx.appointment.findUnique({ where: { id: saved.resourceId } });
         if (!appointment || payment.appointmentId !== appointment.id || appointment.groupPurchaseId || appointment.appointmentStatus !== 'CANCELLED' || !appointment.cancellationResult || saved.policy.branchId !== appointment.branchId)
             throw new AppError('POLICY_REFUND_APPOINTMENT_CHANGED', 409);
-        elapsedMs = appointmentTime(appointment.date, appointment.startTime).getTime() - request.policyEvaluatedAt.getTime();
+        elapsedMs = appointmentTime(appointment.date, appointment.startTime, await appointmentTimezone(tx, appointment.id)).getTime() - request.policyEvaluatedAt.getTime();
         if (saved.calculation.eligibleCents > cents(payment.amount) - already)
             throw new AppError('POLICY_REFUND_AMOUNT_CHANGED', 409);
     }

@@ -1,3 +1,6 @@
+import { appointmentTimezone } from "../../utils/appointment-timezone.utils.js";
+import { createDateTimeInTimezone } from "../../utils/brand-timezone.utils.js";
+import { assertCurrencyAmount, stripeAmount } from "../../utils/transaction-currency.utils.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { processAllocatedRefund } from './refund-allocation.processing.js';
 import { aggregateGroupRefundStatus, lockRefundResource } from './refund-allocation.plan.js';
@@ -29,16 +32,13 @@ import { AppError } from "../../utils/app-error.js";
 import { stripe } from "../../lib/stripe.js";
 import { cents } from '../cancellation-refund/policy.calculation.js';
 
-const createHongKongDateTime = (date: Date, time: string) => {
-  const datePart = date.toISOString().slice(0, 10);
-  return new Date(`${datePart}T${time}:00+08:00`);
-};
+const createHongKongDateTime = (date: Date, time: string, timezone: string) => createDateTimeInTimezone(date.toISOString().slice(0, 10), time, timezone);
 
 const toCents = cents;
 
 const verifyApprovedStripeRefund = (requestId:string,refundId:string,payment:{id:string;providerPaymentId:string|null;currency:string},amount:Prisma.Decimal|number,provider:Stripe.Refund) => {
   const intent=typeof provider.payment_intent==='string'?provider.payment_intent:provider.payment_intent?.id;
-  if(!provider.id||intent!==payment.providerPaymentId||provider.amount!==toCents(amount)||provider.currency?.toUpperCase()!==payment.currency||provider.metadata?.refundRequestId!==requestId||provider.metadata?.refundId!==refundId||provider.metadata?.paymentId!==payment.id)throw new AppError('REFUND_RECONCILIATION_MISMATCH',409);
+  if(!provider.id||intent!==payment.providerPaymentId||provider.amount!==stripeAmount(amount,payment.currency)||provider.currency?.toUpperCase()!==payment.currency||provider.metadata?.refundRequestId!==requestId||provider.metadata?.refundId!==refundId||provider.metadata?.paymentId!==payment.id)throw new AppError('REFUND_RECONCILIATION_MISMATCH',409);
 };
 
 const processApprovedRefund = async (requestId: string, reviewerId: string) => {
@@ -167,6 +167,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
 
       const remainingCents = toCents(payment.amount) - alreadyRefunded;
 
+      assertCurrencyAmount(request.amount, payment.currency);
       const requestedCents = toCents(request.amount);
 
       if (requestedCents <= 0 || requestedCents > remainingCents) {
@@ -210,10 +211,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
           throw new AppError("BOOKING_POLICY_NOT_FOUND", 404);
         }
 
-        const appointmentAt = createHongKongDateTime(
-          appointment.date,
-          appointment.startTime,
-        );
+        const appointmentAt = createHongKongDateTime(appointment.date, appointment.startTime, await appointmentTimezone(tx, appointment.id));
 
         const cutoffAt = new Date(
           appointmentAt.getTime() -
@@ -320,7 +318,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
     stripeRefund = await stripe.refunds.create(
       {
         payment_intent: claimed.providerPaymentId,
-        amount: claimed.amountCents,
+        amount: stripeAmount(new Prisma.Decimal(claimed.amountCents).div(100), claimed.currency),
         metadata: {
           refundRequestId: claimed.requestId,
           refundId: claimed.refundId,
@@ -343,7 +341,7 @@ const processApprovedRefund = async (requestId: string, reviewerId: string) => {
 
   const refundedIntentId = typeof stripeRefund.payment_intent === "string" ? stripeRefund.payment_intent : stripeRefund.payment_intent?.id;
   verifyApprovedStripeRefund(requestId,claimed.refundId,{id:claimed.paymentId,providerPaymentId:claimed.providerPaymentId,currency:claimed.currency},new Prisma.Decimal(claimed.amountCents).div(100),stripeRefund);
-  if (refundedIntentId !== claimed.providerPaymentId || stripeRefund.amount !== claimed.amountCents || stripeRefund.currency.toLowerCase() !== claimed.currency.toLowerCase()) {
+  if (refundedIntentId !== claimed.providerPaymentId || stripeRefund.amount !== stripeAmount(new Prisma.Decimal(claimed.amountCents).div(100), claimed.currency) || stripeRefund.currency.toLowerCase() !== claimed.currency.toLowerCase()) {
     throw new AppError("STRIPE_REFUND_RECONCILIATION_REQUIRED", 502);
   }
 
@@ -595,7 +593,7 @@ export const reconcileApprovedStripeRefund = async (requestId: string) => {
   }
   const intentId = typeof provider.payment_intent === "string" ? provider.payment_intent : provider.payment_intent?.id;
   verifyApprovedStripeRefund(requestId,request.refund.id,request.payment,request.amount,provider);
-  if ((request.refund.providerRefundId && provider.id !== request.refund.providerRefundId) || intentId !== request.payment.providerPaymentId || provider.amount !== toCents(request.amount) || provider.currency.toLowerCase() !== request.payment.currency.toLowerCase()) throw new AppError("REFUND_RECONCILIATION_MISMATCH", 409);
+  if ((request.refund.providerRefundId && provider.id !== request.refund.providerRefundId) || intentId !== request.payment.providerPaymentId || provider.amount !== stripeAmount(request.amount, request.payment.currency) || provider.currency.toLowerCase() !== request.payment.currency.toLowerCase()) throw new AppError("REFUND_RECONCILIATION_MISMATCH", 409);
   await prisma.refund.updateMany({ where: { id: request.refund.id, status: RefundStatus.PENDING }, data: { providerRefundId: provider.id } });
   if (provider.status === "succeeded") return finalizeApprovedStripeRefund(requestId, provider);
   if (provider.status === "failed" || provider.status === "canceled") {
@@ -772,10 +770,7 @@ const processApprovedWalletRefund = async (
               throw new AppError("BOOKING_POLICY_NOT_FOUND", 404);
             }
 
-            const appointmentAt = createHongKongDateTime(
-              appointment.date,
-              appointment.startTime,
-            );
+            const appointmentAt = createHongKongDateTime(appointment.date, appointment.startTime, await appointmentTimezone(tx, appointment.id));
 
             const cutoffMinutes = policy.cancellationCutoffMinutes;
 
@@ -917,6 +912,8 @@ const processApprovedWalletRefund = async (
           const paidRefund = new Prisma.Decimal(paidRefundCents).div(100);
 
           const bonusRefund = new Prisma.Decimal(bonusRefundCents).div(100);
+          assertCurrencyAmount(paidRefund, payment.currency);
+          assertCurrencyAmount(bonusRefund, payment.currency);
 
           // 7. Create refund record.
           const refundedAt = new Date();

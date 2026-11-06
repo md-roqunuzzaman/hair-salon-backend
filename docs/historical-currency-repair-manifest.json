@@ -1,0 +1,640 @@
+{
+  "status": "AWAITING_EXPLICIT_EXECUTION_APPROVAL",
+  "scope": "Exactly these 38 existing staging GroupPurchase IDs; only currency changes",
+  "historicalPolicy": "Owner confirms all pre-international purchases, including FAILED and UNPAID, were denominated in HKD. This is a business-policy assertion, not independent transaction evidence.",
+  "sourceCheckpoint": {
+    "commit": "d45b2c967be86eedda74360367458da106c9815a",
+    "at": "2026-11-05T02:34:06Z",
+    "note": "Conservative pre-integration source checkpoint, not a claim of the exact first rollout instant."
+  },
+  "beforeStateSha256": "b67be381f1d1cfa0ef920311e8092683d7d5a3a28966595613f625c872bcaa50",
+  "repairSqlSha256": "401b51f3b6277656300ea1a3f1ebf73b45b295f58bd51b5484dc20019c3de98f",
+  "recoverySqlSha256": "6c7bdb6c4e4d98d0663d69b384a3295ba6a537448a254382ea1e94eafaec4c0f",
+  "records": [
+    {
+      "id": "6bf83fc1-26d4-4085-b3dc-0f37504cf28c",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-18T01:23:15.688+00:00",
+      "expectedUpdatedAt": "2026-10-18T01:26:56.181+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "029350f4-882b-4919-b82c-05606c176c9a"
+      ],
+      "evidenceAppointmentIds": [
+        "b902d862-bca2-4247-a753-092c6ab376c6",
+        "bd2a56f6-ecd0-478c-be88-96733e997f92",
+        "e0d4e578-91ae-4969-b8a3-01fe1880aa3b"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "764c1bab-59e8-4ad5-a7c1-61dd61bd94d1",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-18T01:48:05.064+00:00",
+      "expectedUpdatedAt": "2026-10-18T01:49:18.440+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "10064b02-fe27-4b6d-9995-e2c817570036"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "4d81f84b-37ff-4a36-8918-9ef9194a5030",
+      "paymentStatus": "REFUNDED",
+      "createdAt": "2026-10-19T02:44:00.152+00:00",
+      "expectedUpdatedAt": "2026-10-19T02:53:47.222+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "f22d74ce-7388-4bdb-83e9-af27c7924857"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "3fec171f-4738-41fe-b4dd-b8b3de51feed",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-21T10:27:24.417+00:00",
+      "expectedUpdatedAt": "2026-10-21T10:28:40.990+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "741d927d-fa1f-4364-a98e-6ccd4b863e39"
+      ],
+      "evidenceAppointmentIds": [
+        "c79aff1c-7ace-4e7f-8871-de323113843b"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "058c08ca-5971-4f7a-beb8-e1442c326075",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-21T13:37:41.285+00:00",
+      "expectedUpdatedAt": "2026-10-21T13:51:50.454+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "1d469ddf-d93a-44b7-bdcf-2e21aee8aca9",
+        "65504961-362b-4b10-bda7-8356fedd97bf"
+      ],
+      "evidenceAppointmentIds": [
+        "093f1d7d-ccfd-4d31-9638-6aa8dad99efd",
+        "5c1cf602-4434-464b-8419-4baa1f6a9cba"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "7ccca35d-6f87-4179-a910-e646aed0ca07",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-22T01:00:52.888+00:00",
+      "expectedUpdatedAt": "2026-10-22T01:00:53.332+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "1daed8be-c731-4ff2-a4f7-c4434c6672e5"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "d9f6c30e-27d3-4b86-bcf8-09f5cf425ae5",
+      "paymentStatus": "FAILED",
+      "createdAt": "2026-10-22T02:25:45.468+00:00",
+      "expectedUpdatedAt": "2026-10-22T02:31:27.783+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "OWNER_HKD_ONLY_POLICY_ATTESTATION",
+      "linkedEvidenceCurrency": null,
+      "evidencePaymentIds": [],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "26b78193-48b4-4575-a4e1-6d53731030b6",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-22T03:17:10.536+00:00",
+      "expectedUpdatedAt": "2026-10-22T03:22:09.511+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "84fa6092-957b-4c17-a51b-ac0638095058"
+      ],
+      "evidenceAppointmentIds": [
+        "1f6751fa-2a7b-4d3a-ab6d-3ac7e54d7ff4",
+        "f34c693a-acb1-44eb-88c7-e671c4af2f2d"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "71e5ec4d-2c85-443a-aff9-c06ba492b1ad",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-22T03:27:07.815+00:00",
+      "expectedUpdatedAt": "2026-10-22T03:28:08.999+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "8507a34c-fc1e-49c5-8c3e-06ebe8acd89a"
+      ],
+      "evidenceAppointmentIds": [
+        "1e5e0b5b-1bf2-49eb-8ae3-fc95197f7154"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "91422ac4-c42e-4c48-bf6d-8b0e81317758",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-22T03:36:40.186+00:00",
+      "expectedUpdatedAt": "2026-10-22T03:43:13.217+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "11d779ac-1603-43ed-80dc-dc24813f5caa",
+        "53864500-ad9a-4f2a-87c7-58eda91d9314"
+      ],
+      "evidenceAppointmentIds": [
+        "290a1a3d-919b-40c0-89c1-8eb95870ec26",
+        "c97be888-521a-427f-9d9f-1db6f4ce21e6"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "c5344eaf-6250-4bb8-b967-c54bed86a50e",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-22T03:48:57.479+00:00",
+      "expectedUpdatedAt": "2026-10-22T03:51:58.378+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "55065fb1-13fa-4813-ae9c-b95b3a4a7218"
+      ],
+      "evidenceAppointmentIds": [
+        "03492649-834a-4779-8e98-e0c1428ef37a",
+        "798cc7e4-1e98-4ac4-bb6e-1ca98e6a9a6b"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "a63e6f39-e710-4211-8e92-a5885277ce1d",
+      "paymentStatus": "REFUNDED",
+      "createdAt": "2026-10-23T01:12:36.346+00:00",
+      "expectedUpdatedAt": "2026-10-23T01:22:09.427+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "c6277095-20ba-4b93-81c0-8592ee881e4a"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "03a8b09d-278c-4955-8278-7900258d6ada",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-23T01:31:27.462+00:00",
+      "expectedUpdatedAt": "2026-10-23T01:33:27.843+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "9d90127a-7bbf-4151-a057-612b2be4c1bf"
+      ],
+      "evidenceAppointmentIds": [
+        "6fbb4ab6-839f-4360-8d68-d07ac026e90f",
+        "8898e06c-6a29-4b65-87ca-41a3ec519e54",
+        "ab8001a9-23ab-4215-9001-bb61a8be3b62"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "1f54bec8-66dd-45fe-be4b-d039b17b14df",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-23T03:07:05.199+00:00",
+      "expectedUpdatedAt": "2026-10-23T03:09:56.396+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "de8a5554-fe4f-4e61-a004-aa76564429ac"
+      ],
+      "evidenceAppointmentIds": [
+        "58f1373d-7df9-4602-872c-999c8c96ae93",
+        "6316e81c-22ac-46c5-960a-33e7637cb3a2",
+        "afab3a7e-46df-4e09-a85f-88f7f56666dc"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "d7bb3f20-ad57-43ba-9be6-c1cec96aa7c8",
+      "paymentStatus": "REFUNDED",
+      "createdAt": "2026-10-23T03:28:50.390+00:00",
+      "expectedUpdatedAt": "2026-10-23T03:41:26.074+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "e3a3a3df-42ca-425c-be05-7992bdc56fd2"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "82b871ff-0a3e-4aa2-971a-5ea45adad7e6",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-23T03:48:44.648+00:00",
+      "expectedUpdatedAt": "2026-10-23T03:50:27.236+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "d578eb2d-7718-423b-8d71-c01dcdd9f43d"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "720a6df5-de17-4f42-a8d3-8c59837973b8",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-23T05:10:51.127+00:00",
+      "expectedUpdatedAt": "2026-10-23T05:12:50.591+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "2118710f-a04c-4735-a187-1c4f1cdc56e2"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "e565af0d-0eba-45b1-91d6-7e0d5efad7cf",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-23T09:00:57.476+00:00",
+      "expectedUpdatedAt": "2026-10-23T09:00:57.976+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "de75c658-108f-4ce0-8d9e-0325595a6e23"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "0f742cf8-19b1-4506-bdb7-cf9442d9f3bb",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-23T09:05:43.632+00:00",
+      "expectedUpdatedAt": "2026-10-23T09:05:44.150+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "2dacee31-b0f7-4e7f-8e09-2cc2efdf63ef"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "3d913fc7-0a01-4faa-960f-b4dfbe3af8d9",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-27T07:54:38.484+00:00",
+      "expectedUpdatedAt": "2026-10-27T07:56:39.286+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "e2723125-c47e-4bd3-b777-6a993823e184"
+      ],
+      "evidenceAppointmentIds": [
+        "96e5cbce-760f-4ddc-ac21-eafda2b678ee",
+        "a28a9550-d7b7-4a5e-8089-882356e6b86c"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "a453540c-bdb7-4881-998c-bf14a4ef81b7",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-27T08:10:45.721+00:00",
+      "expectedUpdatedAt": "2026-10-27T08:13:06.659+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "5a1d82be-fb19-408c-b80d-6b3021b07183"
+      ],
+      "evidenceAppointmentIds": [
+        "7fdaf9a2-065f-4cd4-871e-9e0a009132b5"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "18547917-d900-4aa4-8d5a-7a0a1bf21c6c",
+      "paymentStatus": "FAILED",
+      "createdAt": "2026-10-27T08:33:26.410+00:00",
+      "expectedUpdatedAt": "2026-10-27T08:39:21.487+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "APPOINTMENT_SNAPSHOT_ONLY",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [],
+      "evidenceAppointmentIds": [
+        "0b1d40d3-386b-4ade-acba-5644c75f9460"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "bea9472b-5e33-43f4-88c2-6a1f3859214c",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-27T08:35:31.724+00:00",
+      "expectedUpdatedAt": "2026-10-27T08:37:03.514+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "0b9a2955-7cc7-4c33-9afe-11a6a5557116"
+      ],
+      "evidenceAppointmentIds": [
+        "5aa82689-ed88-451a-8838-5238f9129241"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "7dbf6454-952c-4ea6-8222-e21a7d6fdc03",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-27T08:57:06.810+00:00",
+      "expectedUpdatedAt": "2026-10-27T08:57:06.810+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "APPOINTMENT_SNAPSHOT_ONLY",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [],
+      "evidenceAppointmentIds": [
+        "1a75ad41-dbaa-4c52-ad8f-1dff08596d49"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "8970754b-e250-4c03-b0d9-b934fcf1b3db",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-27T08:59:10.931+00:00",
+      "expectedUpdatedAt": "2026-10-27T10:47:31.540+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "811f61aa-47d3-4b54-a472-c0f0bec4189a",
+        "d46fed33-e05f-4ee7-812b-72ae83d56fe5"
+      ],
+      "evidenceAppointmentIds": [
+        "0a3cac69-4c63-4ab4-96f6-369c630300dc"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "fc9b03e7-6f01-47b1-9d1e-110e8718a41d",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-28T01:20:00.227+00:00",
+      "expectedUpdatedAt": "2026-10-28T01:26:02.705+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "aafc9bf8-c7b0-44c6-a4e7-bb5b2cb10d70",
+        "c6d4d5d7-f6b4-46b6-8932-9689f1bae8f1"
+      ],
+      "evidenceAppointmentIds": [
+        "01d73237-fa0e-4afb-ac19-b839cda5d03b"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "f6960877-7ba5-4e6a-bb11-fa4c15d2035a",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-28T01:37:02.228+00:00",
+      "expectedUpdatedAt": "2026-10-28T01:44:17.865+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "6dc9d620-36e7-44b1-8ab9-771d8414ef11",
+        "74f14d94-ab4a-452c-a46f-5fe36993f7e3"
+      ],
+      "evidenceAppointmentIds": [
+        "44f5482b-7736-4508-9e86-7192b981c694"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "147d72b4-2987-4ea6-9b97-6f61d74c20e5",
+      "paymentStatus": "REFUNDED",
+      "createdAt": "2026-10-29T07:14:27.136+00:00",
+      "expectedUpdatedAt": "2026-10-29T07:17:41.077+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "c76ec42d-22c2-4a25-8b0a-dac4c4d874e6"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "2b2228d8-8d26-42f8-b9e5-ff7b0d0bd8fa",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-29T07:21:27.960+00:00",
+      "expectedUpdatedAt": "2026-10-29T07:21:28.390+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "b0b62d06-3f92-49e9-904f-f55a2da4a733"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "00941e18-e6c6-4949-ab62-68e271cd8d00",
+      "paymentStatus": "FAILED",
+      "createdAt": "2026-10-30T01:36:36.611+00:00",
+      "expectedUpdatedAt": "2026-10-30T01:41:42.029+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "PENDING_PAYMENT_ONLY",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "bfb40ec2-d858-43de-92aa-ca6cbabec854"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "b5fca63e-562a-42aa-b4d7-93328db225bc",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-30T01:36:58.980+00:00",
+      "expectedUpdatedAt": "2026-10-30T01:36:59.332+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "25e3cf6a-5098-406c-8199-f05aa3044b11"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "b60477f4-77ea-4397-b380-ee1765fe8345",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-30T02:25:21.588+00:00",
+      "expectedUpdatedAt": "2026-10-30T02:25:21.942+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "3fb29a9b-32b4-4869-8f26-9f5035e2f058"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "0bb04854-621b-41a2-9e51-0c780096a822",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-30T02:25:46.964+00:00",
+      "expectedUpdatedAt": "2026-10-30T02:25:47.327+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "774e1b5c-6674-4807-b25d-3adfd039e467"
+      ],
+      "evidenceAppointmentIds": [
+        "35c2a8eb-d414-4851-b27e-4ff171528e6c"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "d34fe09f-22b3-4bde-ae3a-5b276e44439c",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-10-30T02:25:55.260+00:00",
+      "expectedUpdatedAt": "2026-10-30T02:25:55.633+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "75223cc7-993b-4109-99ad-a707a4103f2a"
+      ],
+      "evidenceAppointmentIds": [
+        "4d3941fa-9b8d-4bca-a011-8f754d7081d8"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "68af976f-f711-451d-9d62-f719723880e2",
+      "paymentStatus": "PARTIALLY_PAID",
+      "createdAt": "2026-10-30T08:26:03.515+00:00",
+      "expectedUpdatedAt": "2026-10-30T08:26:41.749+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "96fb4db6-83ba-4f80-a5a3-b4c89b23a9e1"
+      ],
+      "evidenceAppointmentIds": [
+        "ee9ab8ab-268b-44bd-8c06-7e254562a915"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "6b5610f1-e3d1-4313-8800-cacd9c2f6c7e",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-11-03T03:32:10.989+00:00",
+      "expectedUpdatedAt": "2026-11-03T03:33:32.127+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "df6b3a39-f3a1-4de4-81d7-ac3c25dbcddc"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "7ee82f34-eb82-4ebd-92b9-b0cd06751903",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-11-03T09:39:01.946+00:00",
+      "expectedUpdatedAt": "2026-11-03T09:59:49.470+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "233dd774-4e4a-4f41-8e37-f7b6a2650709"
+      ],
+      "evidenceAppointmentIds": [
+        "0cf0eddb-7a23-4c33-a05c-465ee95fa44e",
+        "a8ef12a0-b50b-4f1d-ba52-9d2c36d03a7e",
+        "b390f6e3-5ec2-4664-b92f-46f9cfbc2898",
+        "d695bd8b-2471-40b8-8a95-9046cd63f431"
+      ],
+      "ownerHistoricalPolicyApplies": true
+    },
+    {
+      "id": "80a316c8-8d6c-400f-9216-3c094caa56a3",
+      "paymentStatus": "PAID",
+      "createdAt": "2026-11-03T09:50:42.413+00:00",
+      "expectedUpdatedAt": "2026-11-03T09:50:42.768+00:00",
+      "expectedCurrency": null,
+      "proposedCurrency": "HKD",
+      "classification": "SETTLED_PAYMENT_EVIDENCE",
+      "linkedEvidenceCurrency": "HKD",
+      "evidencePaymentIds": [
+        "5c8ac47c-3adc-4f55-95cc-e538f7ba6e68"
+      ],
+      "evidenceAppointmentIds": [],
+      "ownerHistoricalPolicyApplies": true
+    }
+  ]
+}

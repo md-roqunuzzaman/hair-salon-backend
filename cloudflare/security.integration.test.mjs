@@ -5,8 +5,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setup } from './test-support/public-worker.mjs';
 
-const safe = { flagged: false, categories: { harassment: false } };
-const flagged = { flagged: true, categories: { harassment: true } };
+import { safeResult as safe, flaggedResult as flagged, reviewResult, valid } from './test-support/tencent-responses.mjs';
 const control = (ctx, body = {}) => ctx.direct('/__security-test-control', body);
 function redacted(value, markers) {
   const text = JSON.stringify(value);
@@ -20,7 +19,7 @@ function securityHeaders(response) {
   })) assert.equal(response.headers.get(name), value, name);
   for (const name of ['x-powered-by', 'content-security-policy', 'cross-origin-resource-policy']) assert.equal(response.headers.get(name), null, name);
 }
-async function completedReview(ctx, moderationResponse = { results: [safe] }) {
+async function completedReview(ctx, moderationResponse = valid(safe)) {
   const { appointmentId } = await control(ctx, { seedAppointment: ctx.fixture, moderationResponse, providerFailure: false });
   return (await ctx.api(`/api/v1/appointments/${appointmentId}/reviews`, { body: { rating: 5, comment: 'Synthetic customer feedback' }, status: 201 })).data;
 }
@@ -49,13 +48,15 @@ test('Worker S5 enforces the 72 UTF-8 byte boundary for registration/change/rese
 test('Worker S6 real SQLite create/update fail closed for malformed results and preserve safe/flagged behavior', async t => {
   const ctx = await setup(t);
   const cases = [
-    [{ results: [safe] }, 'VISIBLE'], [{ results: [flagged] }, 'HIDDEN'],
-    [{ results: { 0: safe } }, 'PENDING'], [{ results: [] }, 'PENDING'],
-    [{ results: [{ flagged: false, categories: {} }] }, 'PENDING'],
-    [{ results: [{ flagged: false, categories: { harassment: 'false' } }] }, 'PENDING'],
-    [{ results: [{ flagged: false, categories: { harassment: true } }] }, 'PENDING'],
-    [{ results: [safe, { flagged: false }] }, 'PENDING'],
-    [{ results: [safe, flagged] }, 'HIDDEN'],
+    [valid(safe), 'VISIBLE'], [valid(flagged), 'HIDDEN'],
+    [valid({ ...safe, Suggestion: false }), 'PENDING'],
+    [valid({}), 'PENDING'], [valid({ ...safe, Label: null }), 'PENDING'],
+    [valid({ ...safe, Score: '0' }), 'PENDING'],
+    [valid({ ...safe, DetailResults: [safe, flagged] }), 'PENDING'],
+    [valid({ ...safe, LabelResults: [safe, { ...safe, Suggestion: 0 }] }), 'PENDING'],
+    [valid({ ...flagged, LabelResults: [safe, flagged] }), 'HIDDEN'],
+    [valid({ ...safe, LibResults: [flagged] }), 'PENDING'],
+    [valid({ ...safe, LibResults: [{ ...safe, Score: false }] }), 'PENDING'],
   ];
   for (const [moderationResponse, expected] of cases) {
     const created = await completedReview(ctx, moderationResponse);
@@ -66,6 +67,11 @@ test('Worker S6 real SQLite create/update fail closed for malformed results and 
     assert.equal(saved.moderationStatus, expected);
     if (expected === 'PENDING') assert.equal(saved.moderationReason, 'Moderation service unavailable');
   }
+  const manual = await completedReview(ctx, valid(reviewResult));
+  assert.equal(manual.moderationStatus, 'PENDING');
+  assert.equal(manual.moderationReason, 'Abuse');
+  assert.equal((await completedReview(ctx, valid({ ...safe, DetailResults: null, LabelResults: [] }))).moderationStatus, 'VISIBLE');
+  assert.equal((await completedReview(ctx, valid({ ...safe, LibResults: [{ ...safe, SubLabel: null }] }))).moderationStatus, 'VISIBLE');
   const review = await completedReview(ctx);
   await control(ctx, { providerFailure: true });
   const result = await ctx.api(`/api/v1/reviews/${review.id}`, { method: 'PATCH', body: { comment: 'Network failure feedback' } });
@@ -81,7 +87,7 @@ test('Worker S6 owner/manager reply failures return safe 503 and never overwrite
   const before = await control(ctx, { reviewId: review.id });
   for (const roleToken of [ctx.ownerToken, ctx.managerToken]) {
     for (const providerFailure of [false, true]) {
-      await control(ctx, { moderationResponse: { results: { 0: safe } }, providerFailure });
+      await control(ctx, { moderationResponse: valid({ ...safe, Suggestion: false }), providerFailure });
       const failure = await ctx.api(`/api/v1/reviews/${review.id}/reply`, {
         method: 'PUT', roleToken, body: { reply: 'Unmoderated replacement' }, status: 503,
       });
@@ -92,9 +98,19 @@ test('Worker S6 owner/manager reply failures return safe 503 and never overwrite
       assert.equal(after.notificationCount, before.notificationCount);
     }
   }
-  await control(ctx, { moderationResponse: { results: [flagged] }, providerFailure: false });
+  await control(ctx, { moderationResponse: valid(flagged), providerFailure: false });
   await ctx.api(`/api/v1/reviews/${review.id}/reply`, { method: 'PUT', roleToken: ctx.ownerToken, body: { reply: 'Flagged replacement' }, status: 422 });
   assert.equal((await control(ctx, { reviewId: review.id })).review.replyText, 'Previously moderated reply');
+  await control(ctx, { moderationResponse: valid(reviewResult), providerFailure: false });
+  await ctx.api(`/api/v1/reviews/${review.id}/reply`, { method: 'PUT', roleToken: ctx.ownerToken, body: { reply: 'Manual review replacement' }, status: 422 });
+  assert.equal((await control(ctx, { reviewId: review.id })).review.replyText, 'Previously moderated reply');
+});
+
+test('Worker booking-policy PUT remains owner-only under the confirmed permission contract', async t => {
+  const ctx = await setup(t);
+  const before = await ctx.api(`/api/v1/branches/${ctx.fixture.branchId}/booking-policy`);
+  await ctx.api(`/api/v1/branches/${ctx.fixture.branchId}/booking-policy`, { method: 'PUT', body: {}, roleToken: ctx.managerToken, status: 403 });
+  assert.deepEqual(await ctx.api(`/api/v1/branches/${ctx.fixture.branchId}/booking-policy`), before);
 });
 
 test('Worker S7 actual request logs redact query/OAuth/header/cookie/body markers across real HTTP routes', async t => {

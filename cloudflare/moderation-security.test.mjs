@@ -2,7 +2,7 @@ import { assertRedacted, captureLogs, serve, stubDelegate } from './test-support
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { Moderations } from 'openai/resources/moderations';
+import { safeResult, flaggedResult, reviewResult, valid } from './test-support/tencent-responses.mjs';
 
 const { contentModerationService } = await import('../src/app/module/contentModeration/contentModeration.service.ts');
 const { reviewService } = await import('../src/app/module/review/review.service.ts');
@@ -12,18 +12,24 @@ const { jwtUtils } = await import('../src/app/utils/jwt.ts');
 const { notificationService } = await import('../src/app/module/notification/notification.service.ts');
 const { uploadService } = await import('../src/app/module/upload/upload.service.ts');
 const { default: app } = await import('../src/app.ts');
-const safeResult = { flagged: false, categories: { harassment: false, violence: false } };
-const flaggedResult = { flagged: true, categories: { harassment: true, violence: false } };
-const valid = result => ({ results: [result] });
 const now = new Date('2026-11-02T04:00:00.000Z');
 
 function fixture(t, response, failure) {
   if (arguments.length < 2) response = valid(safeResult);
   const logs = captureLogs(t);
-  // Mock the real SDK resource, not the application's moderation service.
-  const provider = t.mock.method(Moderations.prototype, 'create', async () => {
+  // Mock external HTTP only; the real TC3 signer, validator and callers run.
+  const provider = t.mock.fn(async () => {
     if (failure) throw failure;
     return response;
+  });
+  const originalFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', async (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input.url);
+    if (['tms.tencentcloudapi.com', 'ims.tencentcloudapi.com'].includes(url.hostname)) {
+      const result = await provider(input, init);
+      return new Response(result === undefined ? undefined : JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+    }
+    return originalFetch(input, init);
   });
   let row = { id: 'review', customerId: 'customer', branchId: 'branch', staffId: 'staff',
     appointmentId: 'appointment', rating: 5, comment: 'Original text', images: [],
@@ -31,7 +37,7 @@ function fixture(t, response, failure) {
   const writes = [];
   stubDelegate(t, prisma, 'appointment', 'findUnique', async () => ({ id: 'appointment', customerId: 'customer', branchId: 'branch', staffId: 'staff', appointmentStatus: 'COMPLETED' }));
   const findReview = stubDelegate(t, prisma, 'review', 'findUnique', async () => row);
-  stubDelegate(t, prisma, 'branchManagerBranch', 'findUnique', async () => ({ userId: 'manager', branchId: 'branch' }));
+  const managerScope = stubDelegate(t, prisma, 'branchManagerBranch', 'findUnique', async () => ({ userId: 'manager', branchId: 'branch' }));
   const persist = async ({ data }) => {
     writes.push(data);
     row = { ...row, ...data, images: data.images ? data.images.create : row.images,
@@ -47,7 +53,7 @@ function fixture(t, response, failure) {
   const notifications = t.mock.method(notificationService, 'createNotification', async () => ({ id: 'notification' }));
   t.mock.method(uploadService, 'verifyImageExists', async () => {});
   t.mock.method(uploadService, 'getImageUrl', async objectKey => `https://images.example.com/${objectKey}?synthetic-signature=redacted`);
-  return { logs, provider, writes, notifications, findReview, deleteImages, row: () => row,
+  return { logs, provider, managerScope, writes, notifications, findReview, deleteImages, row: () => row,
     create: payload => {
       findReview.mock.mockImplementation(async () => null);
       return reviewService.createReview('customer', 'appointment', payload);
@@ -57,7 +63,7 @@ function fixture(t, response, failure) {
 
 for (const [label, response, status, reason] of [
   ['safe', valid(safeResult), 'VISIBLE', null],
-  ['flagged', valid(flaggedResult), 'HIDDEN', 'harassment'],
+  ['flagged', valid(flaggedResult), 'HIDDEN', 'Abuse'],
 ]) {
   test(`S6 valid ${label} responses preserve text, image and review classification`, async t => {
     fixture(t, response);
@@ -71,23 +77,38 @@ for (const [label, response, status, reason] of [
   });
 }
 
+// Each obsolete OpenAI shape/type assertion is replaced by an actual Tencent
+// envelope/classification assertion; invalid input still must reject everywhere.
 const malformed = [
   ['null envelope', null], ['undefined envelope', undefined], ['array envelope', []],
-  ['missing results', {}], ['null results', { results: null }], ['empty results', { results: [] }],
-  ['object results', { results: { 0: safeResult } }],
-  ['null result', valid(null)], ['undefined result', valid(undefined)], ['array result', valid([])],
-  ['missing flagged', valid({ categories: { harassment: false } })],
-  ['string flagged', valid({ flagged: 'false', categories: { harassment: false } })],
-  ['numeric flagged', valid({ flagged: 0, categories: { harassment: false } })],
-  ['missing categories', valid({ flagged: false })], ['null categories', valid({ flagged: false, categories: null })],
-  ['array categories', valid({ flagged: false, categories: [] })], ['string categories', valid({ flagged: false, categories: 'safe' })],
-  ['empty categories', valid({ flagged: false, categories: {} })],
-  ['string category value', valid({ flagged: false, categories: { harassment: 'false' } })],
-  ['numeric category value', valid({ flagged: false, categories: { harassment: 0 } })],
-  ['null category value', valid({ flagged: false, categories: { harassment: null } })],
-  ['undefined category value', valid({ flagged: false, categories: { harassment: undefined } })],
-  ['contradictory flags', valid({ flagged: false, categories: { harassment: true } })],
-  ['later malformed result', { results: [safeResult, { flagged: false }] }],
+  ['missing Response', {}], ['null Response', valid(null)], ['empty Response', valid({})],
+  ['object indexed as array', valid({ 0: safeResult })], ['array Response', valid([])],
+  ['missing Suggestion', valid({ ...safeResult, Suggestion: undefined })],
+  ['boolean Suggestion', valid({ ...safeResult, Suggestion: false })],
+  ['numeric Suggestion', valid({ ...safeResult, Suggestion: 0 })],
+  ['unknown Suggestion', valid({ ...safeResult, Suggestion: 'Allow' })],
+  ['missing Label', valid({ ...safeResult, Label: undefined })],
+  ['null Label', valid({ ...safeResult, Label: null })],
+  ['array Label', valid({ ...safeResult, Label: [] })],
+  ['empty Label', valid({ ...safeResult, Label: '' })],
+  ['missing Score', valid({ ...safeResult, Score: undefined })],
+  ['string Score', valid({ ...safeResult, Score: '0' })],
+  ['null Score', valid({ ...safeResult, Score: null })],
+  ['out of range Score', valid({ ...safeResult, Score: 101 })],
+  ['numeric RequestId', valid({ ...safeResult, RequestId: 123 })],
+  ['missing RequestId', valid({ ...safeResult, RequestId: undefined })],
+  ['fractional Score', valid({ ...safeResult, Score: 0.5 })],
+  ['negative Score', valid({ ...safeResult, Score: -1 })],
+  ['invalid SubLabel', valid({ ...safeResult, SubLabel: [] })],
+  ['invalid category value', valid({ ...safeResult, LabelResults: [{ ...safeResult, Suggestion: 'false' }] })],
+  ['null category entry', valid({ ...safeResult, DetailResults: [null] })],
+  ['object category list', valid({ ...safeResult, LabelResults: { 0: safeResult } })],
+  ['later malformed category', valid({ ...safeResult, DetailResults: [safeResult, { ...safeResult, Score: false }] })],
+  ['contradictory safe summary', valid({ ...safeResult, DetailResults: [safeResult, flaggedResult] })],
+  ['object library category list', valid({ ...safeResult, LibResults: {} })],
+  ['later malformed library category', valid({ ...safeResult, LibResults: [safeResult, { ...safeResult, Score: false }] })],
+  ['contradictory library category', valid({ ...safeResult, LibResults: [flaggedResult] })],
+  ['provider Error despite valid fields', valid({ ...safeResult, Error: { Code: 'FailedOperation', Message: 'synthetic-provider-detail' } })],
 ];
 
 for (const [label, response] of malformed) {
@@ -103,12 +124,14 @@ for (const [label, response] of malformed) {
   });
 }
 
-test('S6 later flagged results cannot be ignored; rating-only reviews retain the existing bypass', async t => {
-  const f = fixture(t, { results: [safeResult, flaggedResult] });
+test('S6 later flagged inputs cannot be ignored; rating-only reviews retain the existing bypass', async t => {
+  const f = fixture(t);
+  let request = 0;
+  f.provider.mock.mockImplementation(async () => valid(++request === 1 ? safeResult : flaggedResult));
   const result = await contentModerationService.moderateReviewContent('Mixed input', ['https://images.example.com/review.jpg']);
   assert.equal(result.safe, false);
   assert.equal(result.flagged, true);
-  assert.deepEqual(result.categories, ['harassment']);
+  assert.deepEqual(result.categories, ['Abuse']);
   f.provider.mock.resetCalls();
   assert.equal((await contentModerationService.moderateText('  ')).safe, true);
   assert.equal((await contentModerationService.moderateReviewContent(null, [])).safe, true);
@@ -125,9 +148,42 @@ test('S6 network errors propagate to callers without being mistaken for a safe r
   }
 });
 
+test('S6 nullable/empty Tencent detail arrays retain valid summary decisions', async t => {
+  fixture(t, valid({ ...safeResult, DetailResults: null, LabelResults: [], Keywords: null }));
+  assert.equal((await contentModerationService.moderateText('Valid optional fields')).decision, 'PASS');
+});
+
+test('S6 image library results accept the documented nullable SubLabel without interpreting detail rows as decisions', async t => {
+  fixture(t, valid({ ...safeResult, LibResults: [{ ...safeResult, SubLabel: null, Details: [{ Id: 1, Label: 'Normal', Score: 0 }] }] }));
+  assert.equal((await contentModerationService.moderateImage('https://images.example.com/library.jpg')).decision, 'PASS');
+});
+
+test('S6 Suggestion remains authoritative; low-scoring scene labels do not invent a blocking threshold', async t => {
+  fixture(t, valid({ ...safeResult, Label: 'Porn', Score: 0 }));
+  const result = await contentModerationService.moderateImage('https://images.example.com/safe.jpg');
+  assert.equal(result.decision, 'PASS'); assert.equal(result.flagged, false);
+});
+
+test('S6 every image is assessed; a later invalid response cannot be hidden by an earlier classification', async t => {
+  const f = fixture(t); let count = 0;
+  f.provider.mock.mockImplementation(async () => valid(++count === 3 ? { ...safeResult, Score: false } : count === 2 ? flaggedResult : safeResult));
+  await assert.rejects(contentModerationService.moderateReviewContent('Text', ['https://images.example.com/one.jpg', 'https://images.example.com/two.jpg']));
+  assert.equal(f.provider.mock.callCount(), 3);
+});
+
+test('S6 manager scope and review visibility are enforced before provider I/O', async t => {
+  const f = fixture(t);
+  f.managerScope.mock.mockImplementation(async () => null);
+  await assert.rejects(reviewService.saveReviewReply('review', 'other-branch-manager', 'BRANCH_MANAGER', { reply: 'Denied' }), { statusCode: 403, message: 'FORBIDDEN_BRANCH_SCOPE' });
+  f.row().moderationStatus = 'PENDING';
+  await assert.rejects(reviewService.saveReviewReply('review', 'owner', 'BRAND_OWNER', { reply: 'Denied' }), { statusCode: 409, message: 'REVIEW_REPLY_NOT_ALLOWED' });
+  assert.equal(f.provider.mock.callCount(), 0); assert.equal(f.writes.length, 0);
+});
+
 for (const [label, response, status, failure] of [
   ['safe', valid(safeResult), 'VISIBLE'], ['flagged', valid(flaggedResult), 'HIDDEN'],
-  ['malformed', { results: { 0: safeResult } }, 'PENDING'],
+  ['review', valid(reviewResult), 'PENDING'],
+  ['malformed', valid({ ...safeResult, Suggestion: false }), 'PENDING'],
   ['network failure', undefined, 'PENDING', new Error('synthetic-provider-detail')],
 ]) {
   for (const operation of ['create', 'update']) {
@@ -140,7 +196,7 @@ for (const [label, response, status, failure] of [
       assert.equal(f.writes[0].moderationStatus, status);
       assert.equal(f.row().comment, payload.comment);
       assert.deepEqual(f.row().images, [{ objectKey: 'reviews/customer/photo.jpg', sortOrder: 0 }]);
-      assert.equal(result.moderationReason, status === 'PENDING' ? 'Moderation service unavailable' : status === 'HIDDEN' ? 'harassment' : null);
+      assert.equal(result.moderationReason, label === 'review' ? 'Abuse' : status === 'PENDING' ? 'Moderation service unavailable' : status === 'HIDDEN' ? 'Abuse' : null);
       assert.equal(f.notifications.mock.calls[0].arguments[0].type, status === 'PENDING' ? 'REVIEW_PENDING' : status === 'HIDDEN' ? 'REVIEW_NEEDS_CHANGES' : 'REVIEW_PUBLISHED');
       assertRedacted([result, f.logs], ['synthetic-provider-detail']);
     });
@@ -160,7 +216,7 @@ for (const role of ['BRAND_OWNER', 'BRANCH_MANAGER']) {
   for (const kind of ['malformed', 'network']) {
     test(`S6 ${role} ${kind} moderation returns safe HTTP 503 without persisting a reply`, async t => {
       const marker = randomUUID();
-      const f = fixture(t, { results: { 0: safeResult } }, kind === 'network' ? new Error(marker) : undefined);
+      const f = fixture(t, valid({ ...safeResult, Suggestion: false }), kind === 'network' ? new Error(marker) : undefined);
       stubDelegate(t, prisma, 'user', 'findUnique', async () => ({ id: 'actor', email: 'actor@example.com', name: 'Actor', role, status: 'ACTIVE', emailVerified: true, mustChangePassword: false }));
       t.mock.method(redisClient, 'get', async key => key === 'auth:refresh:actor:security-test' ? 'valid' : null);
       const token = jwtUtils.createToken({ userId: 'actor', sid: 'security-test' }, process.env.JWT_ACCESS_SECRET, '5m');
@@ -188,6 +244,9 @@ for (const role of ['BRAND_OWNER', 'BRANCH_MANAGER']) {
     await assert.rejects(reviewService.saveReviewReply('review', 'actor', role, { reply: 'Rejected reply' }), { statusCode: 422, message: 'REVIEW_REPLY_CONTENT_NOT_ALLOWED' });
     assert.equal(f.writes.length, 1);
     assert.equal(f.row().replyText, 'Safe reply');
+    f.provider.mock.mockImplementation(async () => valid(reviewResult));
+    await assert.rejects(reviewService.saveReviewReply('review', 'actor', role, { reply: 'Requires review' }), { statusCode: 422, message: 'REVIEW_REPLY_CONTENT_NOT_ALLOWED' });
+    assert.equal(f.writes.length, 1);
     f.provider.mock.mockImplementation(async () => { throw new Error('synthetic-provider-detail'); });
     await assert.rejects(reviewService.saveReviewReply('review', 'actor', role, { reply: 'Unmoderated edit' }), { statusCode: 503, message: 'REVIEW_REPLY_MODERATION_UNAVAILABLE' });
     assert.equal(f.writes.length, 1);

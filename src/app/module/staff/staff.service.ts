@@ -1,3 +1,4 @@
+import { getBrandInternationalSettings } from "../../utils/brand-international-settings.utils.js";
 import { logUnexpectedError } from "../../utils/normalize-error.js";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
@@ -4420,7 +4421,7 @@ const getMyAppointments = async (
   const now = new Date();
 
   const hkParts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Hong_Kong",
+    timeZone: (await getBrandInternationalSettings()).timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

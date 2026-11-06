@@ -1,3 +1,4 @@
+import { reportingCurrency, assertReportingCurrency } from "../../utils/report-currency.utils.js";
 import {
   AppointmentStatus,
   BalanceType,
@@ -35,6 +36,7 @@ const getBranchReport = async (
   query: IReportDateQuery,
   language: Language = DEFAULT_LANGUAGE,
 ) => {
+  const currency = await reportingCurrency();
   // =====================================================
   // 1. DATE FILTER
   // Preserve existing date filtering behavior.
@@ -81,6 +83,7 @@ const getBranchReport = async (
   // =====================================================
 
   if (branches.length === 0) {
+    await assertReportingCurrency(currency);
     return {
       period: {
         from: query.from ?? null,
@@ -353,7 +356,7 @@ const getBranchReport = async (
 
       completedServiceValue: Number(completedServiceValue),
 
-      currency: "HKD",
+      currency,
     };
   });
 
@@ -361,6 +364,7 @@ const getBranchReport = async (
   // 10. FINAL RESPONSE
   // =====================================================
 
+  await assertReportingCurrency(currency);
   return {
     period: {
       from: query.from ?? null,
@@ -803,6 +807,7 @@ const getBookingConversionReport = async (
 const getServiceReport = async (
   language: Language = DEFAULT_LANGUAGE,
 ): Promise<IServiceReportResponse> => {
+  const currency = await reportingCurrency();
   // =====================================================
   // 1. FETCH SERVICE APPOINTMENT METRICS
   // =====================================================
@@ -907,6 +912,7 @@ const getServiceReport = async (
     .filter((serviceId): serviceId is string => Boolean(serviceId));
 
   if (serviceIds.length === 0) {
+    await assertReportingCurrency(currency);
     return {
       items: [],
     };
@@ -1032,6 +1038,7 @@ const getServiceReport = async (
       };
     });
 
+  await assertReportingCurrency(currency);
   return {
     items,
   };
@@ -1040,6 +1047,7 @@ const getServiceReport = async (
 const getPackageReport = async (
   language: Language = DEFAULT_LANGUAGE,
 ): Promise<IPackageReportResponse> => {
+  const currency = await reportingCurrency();
   // =====================================================
   // 1. FETCH PACKAGE APPOINTMENT METRICS
   // =====================================================
@@ -1139,6 +1147,7 @@ const getPackageReport = async (
     .filter((packageId): packageId is string => Boolean(packageId));
 
   if (packageIds.length === 0) {
+    await assertReportingCurrency(currency);
     return {
       items: [],
     };
@@ -1260,6 +1269,7 @@ const getPackageReport = async (
       };
     });
 
+  await assertReportingCurrency(currency);
   return {
     items,
   };
@@ -1267,6 +1277,7 @@ const getPackageReport = async (
 const getGroupPurchaseReport = async (
   language: Language = DEFAULT_LANGUAGE,
 ): Promise<IGroupPurchaseReportResponse> => {
+  const currency = await reportingCurrency();
   // =====================================================
   // 1. FETCH ALL GROUP PURCHASE PACKAGES
   // =====================================================
@@ -1294,6 +1305,7 @@ const getGroupPurchaseReport = async (
   });
 
   if (packages.length === 0) {
+    await assertReportingCurrency(currency);
     return {
       items: [],
     };
@@ -1386,6 +1398,7 @@ const getGroupPurchaseReport = async (
     };
   });
 
+  await assertReportingCurrency(currency);
   return {
     items,
   };
@@ -1396,6 +1409,7 @@ const getStaffReport = async (
   query: IStaffReportQuery,
   language: Language = DEFAULT_LANGUAGE,
 ): Promise<IStaffReportResponse> => {
+  const currency = await reportingCurrency();
   // =====================================================
   // 1. RESOLVE BRANCH SCOPE
   // =====================================================
@@ -1462,6 +1476,7 @@ const getStaffReport = async (
   });
 
   if (staff.length === 0) {
+    await assertReportingCurrency(currency);
     return {
       items: [],
     };
@@ -1600,6 +1615,7 @@ const getStaffReport = async (
   // 7. RESPONSE DTO WITH LOCALIZATION
   // =====================================================
 
+  await assertReportingCurrency(currency);
   return {
     items: staff.map((item) => {
       // NEW: Localized staff name
@@ -1628,6 +1644,7 @@ const getStaffReport = async (
 };
 
 const getPaymentReport = async (): Promise<IPaymentReportResponse> => {
+  const currency = await reportingCurrency();
   // =====================================================
   // 1. STRIPE BUSINESS PAYMENTS
   // =====================================================
@@ -1743,6 +1760,7 @@ const getPaymentReport = async (): Promise<IPaymentReportResponse> => {
   // 5. RESPONSE
   // =====================================================
 
+  await assertReportingCurrency(currency);
   return {
     stripePayments,
     walletPayments,
@@ -1752,6 +1770,7 @@ const getPaymentReport = async (): Promise<IPaymentReportResponse> => {
 };
 
 const getWalletReport = async (): Promise<IWalletReportResponse> => {
+  const currency = await reportingCurrency();
   // =====================================================
   // 1. TOP-UP TOTAL
   // =====================================================
@@ -1890,6 +1909,7 @@ const getWalletReport = async (): Promise<IWalletReportResponse> => {
   // 6. RESPONSE
   // =====================================================
 
+  await assertReportingCurrency(currency);
   return {
     topupTotal,
     bonusIssued,

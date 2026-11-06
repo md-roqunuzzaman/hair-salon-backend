@@ -9,6 +9,7 @@ model GroupPurchase {
   quantity          Int
   unitPrice         Decimal @db.Decimal(10, 2)
   amount            Decimal @db.Decimal(10, 2)
+  currency          String?
   validDaysSnapshot Int?
 
   paymentStatus PaymentStatus @default(PENDING)

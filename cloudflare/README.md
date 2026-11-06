@@ -1,5 +1,17 @@
 # Cloudflare deployment
 
+## Tencent moderation and S6 follow-up — locally verified, 2026-11-05
+
+The normal production Worker now uses a fixed-endpoint TC3-signed fetch adapter instead of the Tencent SDK's unsupported readline import chain. It boots in disposable Miniflare without a diagnostic stub. Actual Tencent Pass/Review/Block contract tests retain fail-closed review/reply persistence, authorization and generic errors. Final checks pass: 445 full-regression cases, 86 Node security cases, eight Worker security cases and one exact production-artifact boot case, with zero failed/skipped/cancelled. TypeScript, Prisma validation, v36 schema/migration/isolation checks, staging preparation and upload dry-run pass. See [the exact changed files, test results and remaining limits](../docs/tencent-moderation-release.md).
+
+This supersedes the Tencent/S6/route-check blockers in the original international checkpoint below. No deployment, live database, real provider request, schema/migration change, secret or delivery-setting change occurred. Staging delivery remains true and production false. Live Tencent configuration/entitlements/policy/accuracy and remote release/recovery checks remain unverified; passing local checks is not unconditional production approval.
+
+## Brand international settings — v36, local candidate 2026-11-05
+
+Brand-configured timezone/currency paths now use safe transaction snapshots, original payment denominations, proper Stripe units and mixed-currency/report guards. New nullable Appointment.timezone and GroupPurchase.currency columns do not backfill history. Existing history still restricts administrator currency/timezone changes. See the complete [implementation and validation report](../docs/brand-international-integration.md).
+
+**Original checkpoint (superseded by the follow-up above):** the Tencent SDK imported node:readline and the production Worker failed local boot. S6/provider tests and the historical booking-policy route check were unresolved. The diagnostic international provider stub remains test-only and is never a rollout workaround. The separate scoped fix above establishes normal-artifact runtime verification; existing international limitations and live-release requirements remain in force.
+
 ## Schema lookup indexes — v32, local preparation 2026-11-02
 
 SQLite `0032_branch_location_outbox_lock_indexes.sql` mirrors the owner's new Prisma indexes: `Branch(status, latitude, longitude)` and `EmailOutbox(status, lockedUntil)`. It creates two non-unique indexes only; no rows, credentials, delivery history, financial values or constraints are rewritten. v1-v31 remain immutable. Build registration, generated Worker schema, schema parity and the release verifier include v32.

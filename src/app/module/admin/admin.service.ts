@@ -1,3 +1,4 @@
+import { getBrandInternationalSettings } from "../../utils/brand-international-settings.utils.js";
 import {
   AppointmentStatus,
   Prisma,
@@ -259,7 +260,7 @@ const getAdminUserById = async (userId: string) => {
             paidBalance,
             bonusBalance,
             totalBalance: paidBalance + bonusBalance,
-            currency: user.wallet?.currency ?? "HKD",
+            currency: user.wallet?.currency ?? (await getBrandInternationalSettings()).currency,
           }
         : null,
 

@@ -1,3 +1,6 @@
+import { getBrandInternationalSettings } from "../../utils/brand-international-settings.utils.js";
+import { localDateBoundary } from "../../utils/brand-timezone.utils.js";
+import { reportingCurrency, assertReportingCurrency } from "../../utils/report-currency.utils.js";
 import {
   AppointmentStatus,
   BalanceType,
@@ -22,6 +25,8 @@ const roundPercentage = (value: number) => {
 };
 
 const getBrandDashboard = async (query: IDashboardQuery) => {
+  const currency = await reportingCurrency();
+  const { timezone } = await getBrandInternationalSettings();
   // =====================================================
   // 1. DATE RANGE
   // =====================================================
@@ -48,11 +53,11 @@ const getBrandDashboard = async (query: IDashboardQuery) => {
     query.from || query.to
       ? {
           ...(query.from && {
-            gte: new Date(`${query.from}T00:00:00+08:00`),
+            gte: localDateBoundary(query.from, timezone),
           }),
 
           ...(query.to && {
-            lte: new Date(`${query.to}T23:59:59.999+08:00`),
+            lte: localDateBoundary(query.to, timezone, true),
           }),
         }
       : undefined;
@@ -492,6 +497,7 @@ const getBrandDashboard = async (query: IDashboardQuery) => {
   // 11. FINAL DTO
   // =====================================================
 
+  await assertReportingCurrency(currency);
   return {
     period: {
       from: query.from ?? null,
@@ -551,13 +557,13 @@ const getBrandDashboard = async (query: IDashboardQuery) => {
 
       netCollected,
 
-      currency: "HKD",
+      currency,
     },
 
     wallet: {
       topupTotal,
       bonusIssued,
-      currency: "HKD",
+      currency,
     },
 
     groupPurchase: {
@@ -567,7 +573,7 @@ const getBrandDashboard = async (query: IDashboardQuery) => {
 
       salesAmount: groupPurchaseSalesAmount,
 
-      currency: "HKD",
+      currency,
     },
   };
 };
@@ -578,6 +584,8 @@ const getBranchDashboard = async (
   role: Role,
   query: IDashboardQuery,
 ) => {
+  const currency = await reportingCurrency();
+  const { timezone } = await getBrandInternationalSettings();
   // =====================================================
   // 1. CHECK BRANCH EXISTS
   // =====================================================
@@ -642,11 +650,11 @@ const getBranchDashboard = async (
     query.from || query.to
       ? {
           ...(query.from && {
-            gte: new Date(`${query.from}T00:00:00+08:00`),
+            gte: localDateBoundary(query.from, timezone),
           }),
 
           ...(query.to && {
-            lte: new Date(`${query.to}T23:59:59.999+08:00`),
+            lte: localDateBoundary(query.to, timezone, true),
           }),
         }
       : undefined;
@@ -946,6 +954,7 @@ const getBranchDashboard = async (
   // 10. RESPONSE
   // =====================================================
 
+  await assertReportingCurrency(currency);
   return {
     period: {
       from: query.from ?? null,
@@ -1003,7 +1012,7 @@ const getBranchDashboard = async (
       grossCollected,
       refundTotal,
       netCollected,
-      currency: "HKD",
+      currency,
     },
   };
 };

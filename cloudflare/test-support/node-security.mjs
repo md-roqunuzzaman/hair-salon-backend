@@ -9,6 +9,8 @@ Object.assign(process.env, {
   STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_WEBHOOK_SECRET: 'whsec_security_fixture',
   R2_ACCOUNT_ID: 'test-account', R2_ACCESS_KEY_ID: 'test-key', R2_SECRET_ACCESS_KEY: 'test-secret',
   R2_BUCKET_NAME: 'test-bucket', OPENAI_API_KEY: 'synthetic-moderation-key',
+  TENCENT_SECRET_ID: 'synthetic-tencent-id', TENCENT_SECRET_KEY: 'synthetic-tencent-key',
+  TENCENT_REGION: 'ap-guangzhou', TENCENT_MODERATION_BIZ_TYPE: 'text_common', TENCENT_IMS_BIZ_TYPE: 'image_common',
   EMAIL_ENCRYPTION_KEY: 'ab'.repeat(32), MICROSOFT_EMAIL_CLIENT_ID: 'test-client',
   MICROSOFT_EMAIL_CLIENT_SECRET: 'synthetic-client-secret', MICROSOFT_EMAIL_TENANT: 'organizations',
   MICROSOFT_EMAIL_REDIRECT_URI: 'https://api.example.com/api/v1/brand-email-settings/microsoft/callback',

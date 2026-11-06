@@ -107,6 +107,7 @@ model Appointment {
 
   date                    DateTime
   startTime               String
+  timezone                String?
   endTime                 String
   emailScheduleRevision   Int       @default(0)
   emailPaymentConfirmedAt DateTime?
@@ -457,6 +458,14 @@ model Brand {
   logoObjectKey String?
   translations  Json?
   banners       Banner[]
+
+  // =====================================================
+  // BRAND INTERNATIONAL CONFIGURATION
+  // =====================================================
+
+  countryCode String @default("HK")
+  currency    String @default("HKD")
+  timezone    String @default("Asia/Hong_Kong")
   // Banner carousel override settings
 
   primaryColor           String                  @default("#0F766E")
@@ -793,6 +802,7 @@ model GroupPurchase {
   quantity          Int
   unitPrice         BigInt
   amount            BigInt
+  currency          String?
   validDaysSnapshot Int?
 
   paymentStatus PaymentStatus @default(PENDING)

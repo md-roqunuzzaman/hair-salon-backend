@@ -1,3 +1,4 @@
+import { getPurchaseCurrency, assertCurrencyAmount } from "../../utils/transaction-currency.utils.js";
 import { Prisma } from "../../../../generated/prisma/client.js";
 import { AppError } from "../../utils/app-error.js";
 import {
@@ -63,7 +64,7 @@ export async function groupRefundFunding(
   for (const payment of payments) {
     if (
       payment.customerId !== customerId ||
-      payment.currency !== "HKD" ||
+      payment.currency !== await getPurchaseCurrency(tx, purchaseId) ||
       (payment.provider === "STRIPE" && !payment.providerPaymentId)
     ) {
       throw new AppError("REFUND_RECONCILIATION_REQUIRED", 409);
@@ -267,6 +268,7 @@ export async function validateAllocationPlan(
     throw new AppError("POLICY_REFUND_CALCULATION_MISMATCH", 409);
   for (const allocation of request.allocations) {
     const p = allocation.payment;
+    assertCurrencyAmount(allocation.amount, p.currency);
     const savedFunding = saved.funding?.find((f) => f.paymentId === p.id);
     if (
       !savedFunding ||
@@ -280,7 +282,7 @@ export async function validateAllocationPlan(
       p.customerId !== request.customerId ||
       p.groupPurchaseId !== purchase.id ||
       p.purpose !== "GROUP_PURCHASE" ||
-      p.currency !== "HKD" ||
+      p.currency !== await getPurchaseCurrency(tx, purchase.id) ||
       p.provider !== allocation.provider ||
       !["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(p.status) ||
       !["STRIPE", "WALLET"].includes(p.provider)

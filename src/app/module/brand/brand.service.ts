@@ -7,13 +7,20 @@ import { DEFAULT_LANGUAGE, type Language } from "../../utils/language.js";
 import { getLocalizedContent } from "../../utils/localization.js";
 
 import type {
+  IBrandInternationalSettings,
   IBrandTheme,
   IBrandTranslations,
+  IUpdateBrandInternationalSettingsPayload,
   IUpdateBrandPayload,
   IUpdateBrandThemePayload,
 } from "./brand.interface.js";
 import { Prisma } from "../../../../generated/prisma/client.js";
 import { validateBrandThemeContrast } from "./brand-theme.utils.js";
+import {
+  validateCountryCode,
+  validateCurrencyCode,
+  validateTimezone,
+} from "../../utils/international-config.utils.js";
 
 // =====================================================
 // HELPERS
@@ -98,6 +105,9 @@ const getBrand = async (language: Language = DEFAULT_LANGUAGE) => {
 
   return {
     id: brand.id,
+    countryCode: brand.countryCode,
+    currency: brand.currency,
+    timezone: brand.timezone,
 
     name: localized.name,
     description: localized.description,
@@ -356,9 +366,143 @@ const updateBrandTheme = async (
   return result;
 };
 
+const getBrandInternationalSettings =
+  async (): Promise<IBrandInternationalSettings> => {
+    const brand = await prisma.brand.findFirst({
+      select: {
+        countryCode: true,
+        currency: true,
+        timezone: true,
+      },
+    });
+
+    if (!brand) {
+      throw new AppError("Brand not found", 404);
+    }
+
+    return {
+      countryCode: brand.countryCode,
+      currency: brand.currency,
+      timezone: brand.timezone,
+    };
+  };
+
+const updateBrandInternationalSettings = async (
+  payload: IUpdateBrandInternationalSettingsPayload,
+): Promise<IBrandInternationalSettings> => {
+  // =====================================================
+  // 1. VALIDATE REQUEST
+  // =====================================================
+
+  if (!payload || Object.keys(payload).length === 0) {
+    throw new AppError(
+      "At least one international setting must be provided",
+      400,
+    );
+  }
+
+  // =====================================================
+  // 2. VALIDATE PROVIDED VALUES
+  // =====================================================
+
+  const countryCode =
+    payload.countryCode !== undefined
+      ? validateCountryCode(payload.countryCode)
+      : undefined;
+
+  const currency =
+    payload.currency !== undefined
+      ? validateCurrencyCode(payload.currency)
+      : undefined;
+
+  const timezone =
+    payload.timezone !== undefined
+      ? validateTimezone(payload.timezone)
+      : undefined;
+
+  // =====================================================
+  // 3. FIND BRAND
+  // =====================================================
+
+  return prisma.$transaction(async tx => {
+  const brand = await tx.brand.findFirst({
+    select: {
+      id: true,
+      countryCode: true,
+      currency: true,
+      timezone: true,
+    },
+  });
+
+  if (!brand) {
+    throw new AppError("Brand not found", 404);
+  }
+
+  // =====================================================
+  // 4. RESOLVE NEXT CONFIGURATION
+  // =====================================================
+
+  const nextCountryCode = countryCode ?? brand.countryCode;
+
+  const nextCurrency = currency ?? brand.currency;
+
+  const nextTimezone = timezone ?? brand.timezone;
+
+  // =====================================================
+  // 5. CURRENCY CHANGE SAFETY
+  // =====================================================
+
+  if (nextCurrency !== brand.currency && (
+    await tx.payment.count() || await tx.wallet.count() || await tx.groupPurchase.count() || await tx.appointment.count()
+  )) {
+    throw new AppError(
+      "Currency changes require an empty financial history; existing wallets and transactions cannot be redenominated",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 6. TIMEZONE CHANGE SAFETY
+  // =====================================================
+
+  if (nextTimezone !== brand.timezone && await tx.appointment.count()) {
+    throw new AppError(
+      "Timezone changes require appointment history reconciliation; existing calendar keys must not be reinterpreted",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 7. UPDATE BRAND
+  // =====================================================
+
+  const updatedBrand = await tx.brand.update({
+    where: {
+      id: brand.id,
+    },
+
+    data: {
+      countryCode: nextCountryCode,
+      currency: nextCurrency,
+      timezone: nextTimezone,
+    },
+
+    select: {
+      countryCode: true,
+      currency: true,
+      timezone: true,
+    },
+  });
+
+  return updatedBrand;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+};
+
 export const brandService = {
   getBrand,
   updateBrand,
   getBrandTheme,
   updateBrandTheme,
+  getBrandInternationalSettings,
+  updateBrandInternationalSettings,
 };

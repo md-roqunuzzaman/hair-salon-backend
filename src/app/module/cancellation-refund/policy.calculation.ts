@@ -1,3 +1,4 @@
+import { createDateTimeInTimezone } from "../../utils/brand-timezone.utils.js";
 import { Prisma } from '../../../../generated/prisma/client.js';
 import { AppError } from '../../utils/app-error.js';
 import { policyTimeMinutes } from './policy-time.js';
@@ -19,7 +20,7 @@ export const cents = (value: Prisma.Decimal | number | string) => {
     return amount.mul(100).toNumber();
 };
 export const money = (value: number) => new Prisma.Decimal(value).div(100).toNumber();
-export const appointmentTime = (date: Date, time: string) => new Date(`${date.toISOString().slice(0, 10)}T${time}:00+08:00`);
+export const appointmentTime = (date: Date, time: string, timezone = "Asia/Hong_Kong") => createDateTimeInTimezone(date.toISOString().slice(0, 10), time, timezone);
 const rounded = (value: Prisma.Decimal) => value.toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber();
 export function evaluatePolicy(snapshot: PolicySnapshot, eligibleCents: number, elapsedMs: number) {
     const p = policyTimeMinutes(snapshot.config);

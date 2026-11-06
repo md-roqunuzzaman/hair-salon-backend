@@ -1,3 +1,5 @@
+import { appointmentTimezone } from "../../utils/appointment-timezone.utils.js";
+import { assertCurrencyAmount, currencyDigits, historicalPurchaseCurrency, getPurchaseCurrency } from "../../utils/transaction-currency.utils.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { createHmac } from "node:crypto";
 import { Prisma, Role } from "../../../../generated/prisma/client.js";
@@ -79,7 +81,7 @@ async function funding(tx: Prisma.TransactionClient, payments: any[]) {
   if (
     eligible.some(
       (p) =>
-        p.currency !== "HKD" ||
+        !Number.isInteger(currencyDigits(p.currency)) ||
         p.refunds.some((r: any) => r.status === "PENDING"),
     )
   )
@@ -295,7 +297,7 @@ async function loadGroupRefundBatch(
       for (const payment of payments) {
         if (
           payment.customerId !== purchase.customerId ||
-          payment.currency !== "HKD" ||
+          payment.currency !== historicalPurchaseCurrency(purchase.currency, payments.map(row => row.currency)) ||
           (payment.provider === "STRIPE" && !payment.providerPaymentId) ||
           payment.refunds.some((refund) => refund.status === "PENDING")
         ) {
@@ -493,7 +495,7 @@ async function appointmentEvaluation(
   const evaluatedAt = new Date();
 
   const ms =
-    appointmentTime(appointment.date, appointment.startTime).getTime() -
+    appointmentTime(appointment.date, appointment.startTime, await appointmentTimezone(tx, appointment.id)).getTime() -
     evaluatedAt.getTime();
 
   // =====================================================
@@ -520,7 +522,7 @@ async function appointmentEvaluation(
     if (
       eligiblePayments.some(
         (item) =>
-          item.currency !== "HKD" ||
+          item.currency !== appointment.currency ||
           item.refunds.some((refund) => refund.status === "PENDING"),
       )
     ) {
@@ -548,6 +550,8 @@ async function appointmentEvaluation(
   const eligible = payment ? remaining(payment) : 0;
 
   const calculation = evaluatePolicy(snapshot, eligible, ms);
+  assertCurrencyAmount(money(calculation.refundCents), appointment.currency);
+  assertCurrencyAmount(money(calculation.deductionCents), appointment.currency);
 
   let reason = calculation.reason;
 
@@ -594,7 +598,7 @@ async function appointmentEvaluation(
 
     refundAmount: reason ? 0 : money(calculation.refundCents),
 
-    currency: "HKD",
+    currency: appointment.currency,
 
     destination: payment?.provider ?? null,
 
@@ -639,7 +643,7 @@ async function appointmentEvaluation(
     policyVersion: snapshot.version,
 
     cancellationDeadline: new Date(
-      appointmentTime(appointment.date, appointment.startTime).getTime() -
+      appointmentTime(appointment.date, appointment.startTime, await appointmentTimezone(tx, appointment.id)).getTime() -
         snapshot.config.minimumCancellationMinutes * 60000,
     ),
 
@@ -799,6 +803,9 @@ async function groupEvaluation(
     : 0;
 
   const calculation = evaluatePolicy(snapshot, eligible, age);
+  const purchaseCurrency = await getPurchaseCurrency(tx, purchase.id);
+  assertCurrencyAmount(money(calculation.refundCents), purchaseCurrency);
+  assertCurrencyAmount(money(calculation.deductionCents), purchaseCurrency);
 
   let reason = calculation.reason;
 
@@ -843,7 +850,7 @@ async function groupEvaluation(
 
     refundAmount: reason ? 0 : money(calculation.refundCents),
 
-    currency: "HKD",
+    currency: await getPurchaseCurrency(tx, purchase.id),
 
     destination: payment?.provider ?? null,
 

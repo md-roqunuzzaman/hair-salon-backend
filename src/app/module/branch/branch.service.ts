@@ -1,3 +1,4 @@
+import { reportingCurrency, assertReportingCurrency } from "../../utils/report-currency.utils.js";
 import {
   AppointmentStatus,
   BranchStatus,
@@ -10,6 +11,7 @@ import {
 
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { getDateInTimezone } from "../../utils/brand-timezone.utils.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 import { getLocalizedContent } from "../../utils/localization.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
@@ -984,7 +986,6 @@ const updateBranchStatus = async (
     where: {
       id: branchId,
     },
-
     select: {
       id: true,
       name: true,
@@ -1018,7 +1019,6 @@ const updateBranchStatus = async (
         id: branchId,
         status: branch.status,
       },
-
       data: {
         status: payload.status,
       },
@@ -1041,13 +1041,9 @@ const updateBranchStatus = async (
     await auditLogService.createAuditLog(
       {
         userId,
-
         action: "BRANCH_STATUS_CHANGED",
-
         entityType: "BRANCH",
-
         entityId: branchId,
-
         metadata: {
           previousStatus: branch.status,
           newStatus: result.status,
@@ -1063,14 +1059,12 @@ const updateBranchStatus = async (
     const assignedStaff = await tx.staff.findMany({
       where: {
         status: StaffStatus.ACTIVE,
-
         branches: {
           some: {
             branchId,
           },
         },
       },
-
       select: {
         userId: true,
       },
@@ -1084,7 +1078,6 @@ const updateBranchStatus = async (
       where: {
         branchId,
       },
-
       select: {
         userId: true,
       },
@@ -1122,13 +1115,9 @@ const updateBranchStatus = async (
       await notificationService.createNotification(
         {
           userId: recipientId,
-
           type: "BRANCH_STATUS_CHANGED",
-
           title: staffTranslations.en!.title!,
-
           message: staffTranslations.en!.message!,
-
           translations: staffTranslations,
         },
         tx,
@@ -1140,20 +1129,33 @@ const updateBranchStatus = async (
     // ===================================================
 
     if (result.status === BranchStatus.INACTIVE) {
-      const now = new Date();
+      // -------------------------------------------------
+      // DYNAMIC BRAND TIMEZONE
+      // -------------------------------------------------
 
-      const todayUTC = new Date(
-        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-      );
+      const brand = await tx.brand.findFirst({
+        select: {
+          timezone: true,
+        },
+      });
+
+      if (!brand) {
+        throw new AppError("Brand not found", 404);
+      }
+
+      // Brand-local calendar date (YYYY-MM-DD)
+      const brandToday = getDateInTimezone(brand.timezone);
+
+      // Appointment.date is stored as a date-only value
+      // normalized to UTC midnight.
+      const todayDateOnly = new Date(`${brandToday}T00:00:00.000Z`);
 
       const affectedAppointments = await tx.appointment.findMany({
         where: {
           branchId,
-
           date: {
-            gte: todayUTC,
+            gte: todayDateOnly,
           },
-
           appointmentStatus: {
             in: [
               AppointmentStatus.PENDING_PAYMENT,
@@ -1162,7 +1164,6 @@ const updateBranchStatus = async (
             ],
           },
         },
-
         select: {
           customerId: true,
         },
@@ -1183,13 +1184,9 @@ const updateBranchStatus = async (
         await notificationService.createNotification(
           {
             userId: customerId,
-
             type: "BRANCH_UNAVAILABLE",
-
             title: customerTranslations.en!.title!,
-
             message: customerTranslations.en!.message!,
-
             translations: customerTranslations,
           },
           tx,
@@ -1354,6 +1351,26 @@ const updateBusinessHours = async (
   await prisma.$transaction(async (tx) => {
     const now = new Date();
 
+    // -------------------------------------------------
+    // DYNAMIC BRAND TIMEZONE
+    // -------------------------------------------------
+
+    const brand = await tx.brand.findFirst({
+      select: {
+        timezone: true,
+      },
+    });
+
+    if (!brand) {
+      throw new AppError("Brand not found", 404);
+    }
+
+    const brandToday = getDateInTimezone(brand.timezone);
+
+    // Appointment.date is stored as a date-only value
+    // normalized to UTC midnight.
+    const todayDateOnly = new Date(`${brandToday}T00:00:00.000Z`);
+
     for (const hour of payload.hours) {
       const existingHour = await tx.branchBusinessHour.findUnique({
         where: {
@@ -1423,20 +1440,11 @@ const updateBusinessHours = async (
       // 6C. CHECK EXISTING ACTIVE APPOINTMENTS
       // -------------------------------------------------
 
-      // Weekly business-hour changes can affect future
-      // appointments on the same weekday.
-
       const activeAppointments = await tx.appointment.findMany({
         where: {
           branchId,
           date: {
-            gte: new Date(
-              Date.UTC(
-                now.getUTCFullYear(),
-                now.getUTCMonth(),
-                now.getUTCDate(),
-              ),
-            ),
+            gte: todayDateOnly,
           },
           OR: [
             {
@@ -1582,6 +1590,7 @@ const updateBusinessHours = async (
     hours: businessHours,
   };
 };
+
 // =====================================================
 // GET BOOKING POLICY
 // =====================================================
@@ -2262,6 +2271,7 @@ const getBranchDailySummary = async (
   role: Role,
   date: string,
 ): Promise<IBranchDailySummaryResult> => {
+  const currency = await reportingCurrency();
   // =====================================================
   // 1. CHECK ROLE
   // =====================================================
@@ -2440,6 +2450,7 @@ const getBranchDailySummary = async (
   // 12. RETURN DAILY SUMMARY
   // =====================================================
 
+  await assertReportingCurrency(currency);
   return {
     date,
 
@@ -2637,6 +2648,7 @@ const getBranchStaffOutput = async (
   role: Role,
   query: IBranchStaffOutputQuery,
 ): Promise<IBranchStaffOutputResult> => {
+  const currency = await reportingCurrency();
   // =====================================================
   // 1. CHECK ROLE
   // =====================================================
@@ -2794,6 +2806,7 @@ const getBranchStaffOutput = async (
   const staffIds = [...staffMap.keys()];
 
   if (staffIds.length === 0) {
+    await assertReportingCurrency(currency);
     return {
       items: [],
     };
@@ -2903,6 +2916,7 @@ const getBranchStaffOutput = async (
   // 11. RETURN RESULT
   // =====================================================
 
+  await assertReportingCurrency(currency);
   return {
     items,
   };

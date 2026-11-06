@@ -8,6 +8,8 @@ import metadata from '../cloudflare/runtime/model-metadata.json' with { type: 'j
 
 const directory = 'cloudflare/.build';
 const integration = process.argv.includes('--test');
+const internationalProviderStub = process.argv.includes('--international-provider-stub');
+if (internationalProviderStub && !integration) throw new Error('Provider stub is restricted to disposable integration builds');
 const outputName = integration ? 'integration' : 'worker';
 await mkdir(directory, { recursive: true });
 const templates = [];
@@ -79,7 +81,9 @@ const groupPurchaseValiditySnapshot = await readFile('cloudflare/migrations/0031
 const lookupIndexes = await readFile('cloudflare/migrations/0032_branch_location_outbox_lock_indexes.sql','utf8');
 const branchBusinessBreak = await readFile('cloudflare/migrations/0033_branch_business_break.sql','utf8');
 const branchPortfolio = await readFile('cloudflare/migrations/0034_branch_portfolio.sql','utf8');
-const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence, emailOutboxManagement, businessEmailRetirement, unifiedMerchantEmail, emailEnabledDefault, branchBannerCarousel, registrationVerification, policyTimeMinutes, refundAllocations, groupPurchaseValiditySnapshot, lookupIndexes, branchBusinessBreak, branchPortfolio].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
+const brandInternationalSettings = await readFile('cloudflare/migrations/0035_brand_international_settings.sql','utf8');
+const internationalSnapshots = await readFile('cloudflare/migrations/0036_international_transaction_snapshots.sql','utf8');
+const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence, emailOutboxManagement, businessEmailRetirement, unifiedMerchantEmail, emailEnabledDefault, branchBannerCarousel, registrationVerification, policyTimeMinutes, refundAllocations, groupPurchaseValiditySnapshot, lookupIndexes, branchBusinessBreak, branchPortfolio, brandInternationalSettings, internationalSnapshots].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);
@@ -102,6 +106,7 @@ await build({
   external: ['node:*', 'cloudflare:*', './compiler.wasm'], loader: { '.sql': 'text' },
   minify: true, sourcemap: true,
   plugins: [{ name: 'cloudflare-runtime', setup(builder) {
+    if (internationalProviderStub) builder.onResolve({ filter: /^tencentcloud-sdk-nodejs$/ }, () => ({ path: path.resolve('cloudflare/runtime/international-provider-stub.mjs') }));
     builder.onResolve({ filter: /./ }, args => {
       const name = args.path.replace(/^node:/, '');
       if (builtinSet.has(name)) {

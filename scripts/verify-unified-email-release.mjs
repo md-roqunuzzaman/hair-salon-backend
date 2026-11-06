@@ -16,7 +16,12 @@ const config = JSON.parse(await readFile('wrangler.jsonc','utf8'));
 assert.equal(config.vars.EMAIL_OUTBOX_ENABLED,'false');
 assert.ok(['false','true'].includes(config.env.staging.vars.EMAIL_OUTBOX_ENABLED));
 assert.equal(config.main,'cloudflare/.build/worker.mjs');
-assert.equal(migrations.length,34);
+assert.equal(migrations.length,36);
+assert.match(migrations[35].sql, /ALTER TABLE "Appointment" ADD COLUMN "timezone" TEXT/);
+assert.match(migrations[35].sql, /ALTER TABLE "GroupPurchase" ADD COLUMN "currency" TEXT/);
+assert.match(migrations[34].sql, /ADD COLUMN "countryCode"/);
+assert.match(migrations[34].sql, /ADD COLUMN "currency"/);
+assert.match(migrations[34].sql, /ADD COLUMN "timezone"/);
 assert.match(migrations[33].sql, /CREATE TABLE "BranchPortfolioCase"/);
 assert.match(migrations[32].sql, /CREATE TABLE "BranchBusinessBreak"/);
 assert.match(migrations[31].sql, /CREATE INDEX "Branch_status_latitude_longitude_idx"/);
@@ -41,6 +46,8 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
     if(name==='0032_branch_location_outbox_lock_indexes.sql')continue;
     if(name==='0033_branch_business_break.sql'||name==='20261103015042_add_branch_business_break')continue;
     if(name==='0034_branch_portfolio.sql'||['20261103082916_add_branch_portfolio','20261103084502_add_staff_portfolio_branch_relation'].includes(name))continue;
+    if(name==='0035_brand_international_settings.sql'||name==='20261105023508_add_brand_international_settings')continue;
+    if(name==='0036_international_transaction_snapshots.sql'||name==='20261105060000_international_transaction_snapshots')continue;
     // Current PostgreSQL index candidates are retained verbatim; Workers use v32 SQLite.
     if(directory==='prisma/migrations'&&['20261102082512_email_outbox_stale_lock_index','20261102083831_email_outbox_stale_lock_index'].includes(name))continue;
     const file = `${directory}/${name}${directory.startsWith('prisma')?'/migration.sql':''}`;
@@ -52,6 +59,9 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
   }
 }
 const metadata=JSON.parse(await readFile('cloudflare/runtime/model-metadata.json','utf8'));
+assert.equal(metadata.Appointment.scalars.timezone,'String');
+assert.equal(metadata.GroupPurchase.scalars.currency,'String');
+for(const field of ['countryCode','currency','timezone'])assert.equal(metadata.Brand.scalars[field],'String');
 assert.equal(metadata.BranchPortfolioCase.relations.branch,'Branch');
 assert.equal(metadata.BranchPortfolioCase.relations.images,'BranchPortfolioCaseImage');
 assert.equal(metadata.StaffPortfolioCase.relations.branch,'Branch');
@@ -61,9 +71,14 @@ assert.equal(metadata.BranchBusinessHour.relations.breaks,'BranchBusinessBreak',
 assert.equal(metadata.BranchBusinessBreak.scalars.startTime,'String','Break time missing from Worker metadata');
 assert.equal(metadata.GroupPurchase.scalars.validDaysSnapshot,'Int','Snapshot field missing from Worker adapter metadata');
 const bundle = await readFile(config.main);
+assert.ok(!bundle.includes('INTERNATIONAL_TEST_TENCENT_STUB'),'International test provider leaked into production Worker');
 assert.ok(!bundle.includes('__login-rate-test'),'Login test control leaked into production Worker');
 assert.ok(!bundle.includes('__auth-session-test'),'Session test control leaked into production Worker');
 const map = JSON.parse(await readFile(`${config.main}.map`,'utf8'));
+assert.ok(map.sources.some(source=>source.endsWith('src/app/lib/tencent-moderation.ts')), 'Worker-compatible Tencent transport missing');
+for (const excluded of ['tencentcloud-sdk-nodejs','runtime/security-fixture.mjs','test-support/tencent-responses.mjs']) assert.ok(!map.sources.some(source=>source.includes(excluded)),`Unsupported moderation production source: ${excluded}`);
+assert.ok(!map.sources.some(source=>source.endsWith('runtime/international-provider-stub.mjs')), 'International test provider source leaked into production Worker');
+for (const required of ['utils/transaction-currency.utils.ts','utils/appointment-timezone.utils.ts','utils/brand-timezone.utils.ts']) assert.ok(map.sources.some(source=>source.endsWith(required)),`Missing international runtime source: ${required}`);
 assert.ok(map.sources.some(source=>source.endsWith('runtime/sqlite-errors.mjs')), 'SQLite error compatibility normalizer missing');
 assert.ok(map.sources.some(source=>source.endsWith('utils/auth-session.ts')), 'Active-session enforcement missing');
 assert.ok(!map.sources.some(source=>source.endsWith('runtime/auth-session-fixture.mjs')), 'Session fixture leaked into production Worker');

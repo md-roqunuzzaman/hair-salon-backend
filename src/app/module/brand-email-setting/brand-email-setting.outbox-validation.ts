@@ -1,3 +1,5 @@
+import { appointmentTimezone } from "../../utils/appointment-timezone.utils.js";
+import { createDateTimeInTimezone } from "../../utils/brand-timezone.utils.js";
 import type { EmailOutbox, Prisma } from '../../../../generated/prisma/client.js';
 export const BUSINESS_EMAIL_GENERATION = 'MERCHANT_V1';
 export async function assessOutboxDelivery(db: Prisma.TransactionClient, job: EmailOutbox, now = new Date()) {
@@ -12,7 +14,7 @@ export async function assessOutboxDelivery(db: Prisma.TransactionClient, job: Em
     if (job.eventType === 'RESERVE_NOW_RESERVED' || job.eventType === 'BOOKING_RESCHEDULED') {
       const target = data.target;
       if (!target || !['RESERVED','CONFIRMED'].includes(a.appointmentStatus) || a.emailScheduleRevision !== target.revision || a.date.toISOString() !== target.date || a.startTime !== target.startTime || a.endTime !== target.endTime || a.staffId !== target.staffId) return 'EMAIL_BOOKING_OUTDATED';
-      if (new Date(`${a.date.toISOString().slice(0,10)}T${a.startTime}:00+08:00`) <= now) return 'EMAIL_BOOKING_OUTDATED';
+      if (createDateTimeInTimezone(a.date.toISOString().slice(0,10), a.startTime, await appointmentTimezone(db, a.id)) <= now) return 'EMAIL_BOOKING_OUTDATED';
     }
     if (job.eventType === 'BOOKING_CANCELLED' && a.appointmentStatus !== 'CANCELLED') return 'EMAIL_RECORD_CONTEXT_INVALID';
   } else if (data.kind === 'REFUND') {

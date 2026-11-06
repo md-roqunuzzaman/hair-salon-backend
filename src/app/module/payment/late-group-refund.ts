@@ -1,3 +1,4 @@
+import { stripeAmount } from "../../utils/transaction-currency.utils.js";
 import crypto from "node:crypto";
 import Stripe from "stripe";
 import { PaymentProvider, PaymentPurpose, Prisma, RefundStatus } from "../../../../generated/prisma/client.js";
@@ -41,10 +42,10 @@ export async function getOrCreateLateGroupPurchaseRefund(paymentId: string, amou
 
 function validateLocal(refund: RefundWithPayment) {
   const payment = refund.payment;
-  const cents = refund.amount.mul(100).toNumber();
+  const cents = stripeAmount(refund.amount, payment.currency);
   if (payment.provider !== PaymentProvider.STRIPE ||
       ![PaymentPurpose.GROUP_PURCHASE, PaymentPurpose.APPOINTMENT, PaymentPurpose.APPOINTMENT_DEPOSIT, PaymentPurpose.APPOINTMENT_REMAINING].some(p=>p===payment.purpose) ||
-      (payment.purpose===PaymentPurpose.GROUP_PURCHASE?!payment.groupPurchaseId:!payment.appointmentId) || !payment.providerPaymentId || payment.currency !== "HKD" ||
+      (payment.purpose===PaymentPurpose.GROUP_PURCHASE?!payment.groupPurchaseId:!payment.appointmentId) || !payment.providerPaymentId ||
       refund.reason !== identity(payment).reason || !refund.amount.equals(payment.amount) || !Number.isSafeInteger(cents) || cents <= 0 ||
       refund.idempotencyKey !== identity(payment).key) {
     throw new AppError("Invalid late group purchase refund identity or amount", 409);
@@ -107,7 +108,7 @@ export async function ensureLateGroupPurchaseRefund(refundId: string) {
   try {
     const intent = await stripe.paymentIntents.retrieve(refund.payment.providerPaymentId!);
     if (intent.id !== refund.payment.providerPaymentId || intent.status !== "succeeded" || intent.amount !== cents || intent.amount_received !== cents ||
-        intent.currency.toLowerCase() !== "hkd" || intent.metadata.paymentId !== refund.paymentId || intent.metadata.customerId !== refund.payment.customerId ||
+        intent.currency.toLowerCase() !== refund.payment.currency.toLowerCase() || intent.metadata.paymentId !== refund.paymentId || intent.metadata.customerId !== refund.payment.customerId ||
         (refund.payment.groupPurchaseId ? intent.metadata.groupPurchaseId !== refund.payment.groupPurchaseId : intent.metadata.appointmentId !== refund.payment.appointmentId) || intent.metadata.purpose !== refund.payment.purpose) throw new AppError("Original Stripe payment verification failed", 409);
     const others = await prisma.refund.count({ where: { paymentId: refund.paymentId, id: { not: refundId }, status: { in: [RefundStatus.PENDING, RefundStatus.SUCCEEDED] } } });
     if (others) throw new AppError("Another refund already exists for this payment", 409);

@@ -13,6 +13,7 @@ interface PurchaseSnapshot {
   bookingMethod: BookingMethod | null;
   paymentStatus: PaymentStatus;
   amount: Prisma.Decimal;
+  currency: string | null;
   depositPercentage: Prisma.Decimal | null;
   depositAmount: Prisma.Decimal | null;
   remainingAmount: Prisma.Decimal | null;
@@ -31,7 +32,7 @@ export const presentGroupPurchase = (purchase: PurchaseSnapshot, qrVerified = fa
   return {
     purchaseFlow: purchase.purchaseFlow,
     bookingMethod: purchase.bookingMethod,
-    currency: "HKD",
+    currency: purchase.currency,
     depositPercentage: purchase.depositPercentage === null ? null : Number(purchase.depositPercentage),
     depositAmount: purchase.depositAmount === null ? null : Number(purchase.depositAmount),
     // Historical agreed remainder; amountDueAtSalon below reflects current settlement.

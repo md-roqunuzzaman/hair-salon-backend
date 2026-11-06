@@ -1,10 +1,10 @@
 // Disposable Worker HTTP verification only; excluded from the production entry.
-import { Moderations } from 'openai/resources/moderations';
+import { safeResult, valid } from '../test-support/tencent-responses.mjs';
 
 const logs = [];
 let capturing = false;
 let providerInstalled = false;
-let response = { results: [{ flagged: false, categories: { harassment: false } }] };
+let response = valid(safeResult);
 let providerFailure = false;
 let providerCalls = 0;
 let blockedProviderCalls = 0;
@@ -22,17 +22,17 @@ export async function securityTestControl(db, body) {
     providerInstalled = true;
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
-      if (new URL(typeof input === 'string' ? input : input.url ?? String(input)).hostname === 'api.openai.com') {
+      const host = new URL(typeof input === 'string' ? input : input.url ?? String(input)).hostname;
+      if (['tms.tencentcloudapi.com', 'ims.tencentcloudapi.com'].includes(host)) {
+        providerCalls++;
+        if (providerFailure) throw new Error('synthetic provider diagnostic; never public');
+        return new Response(response === undefined ? undefined : JSON.stringify(response), { headers: { 'content-type': 'application/json' } });
+      }
+      if (host === 'api.openai.com' || host.endsWith('.tencentcloudapi.com')) {
         blockedProviderCalls++;
-        throw new Error('Unmocked OpenAI network access blocked by disposable fixture');
+        throw new Error('Unmocked moderation network access blocked by disposable fixture');
       }
       return originalFetch(input, init);
-    };
-    // The real moderation validator/callers still run; only external I/O is mocked.
-    Moderations.prototype.create = async () => {
-      providerCalls++;
-      if (providerFailure) throw new Error('synthetic provider diagnostic; never public');
-      return response;
     };
   }
   if ('moderationResponse' in body) response = body.moderationResponse;

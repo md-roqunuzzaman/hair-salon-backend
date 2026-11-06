@@ -1,3 +1,4 @@
+import { stripeAmount, assertCurrencyAmount } from "../../utils/transaction-currency.utils.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { Prisma } from '../../../../generated/prisma/client.js';
 import { prisma } from '../../lib/prisma.js';
@@ -66,6 +67,8 @@ async function walletRefund(allocationId: string) {
         await tx.$queryRaw `SELECT "id" FROM "Wallet" WHERE "id"=${wallet.id} FOR UPDATE`;
         const before = a.payment.refunds.filter(r => r.status === 'SUCCEEDED').reduce((s, r) => s + cents(r.amount), 0);
         const split = walletRefundSplit(cents(a.payment.amount), paidCents, before, cents(a.amount));
+        assertCurrencyAmount(money(split.paidCents), a.payment.currency);
+        assertCurrencyAmount(money(split.bonusCents), a.payment.currency);
         await tx.wallet.update({ where: { id: wallet.id }, data: { paidBalance: { increment: money(split.paidCents) }, bonusBalance: { increment: money(split.bonusCents) } } });
         for (const [balanceType, value] of [['PAID', split.paidCents], ['BONUS', split.bonusCents]] as const)
             if (value > 0)
@@ -85,7 +88,7 @@ type StripeAllocation = Prisma.RefundAllocationGetPayload<{
 }>;
 function verify(a: StripeAllocation, r: Stripe.Refund) {
     const intent = typeof r.payment_intent === 'string' ? r.payment_intent : r.payment_intent?.id;
-    if (!a.refund || !r.id || (a.refund.providerRefundId && a.refund.providerRefundId !== r.id) || intent !== a.payment.providerPaymentId || r.amount !== cents(a.amount) || r.currency?.toUpperCase() !== a.payment.currency || r.metadata?.refundAllocationId !== a.id || r.metadata?.refundId !== a.refundId || r.metadata?.refundRequestId !== a.refundRequestId || r.metadata?.paymentId !== a.paymentId)
+    if (!a.refund || !r.id || (a.refund.providerRefundId && a.refund.providerRefundId !== r.id) || intent !== a.payment.providerPaymentId || r.amount !== stripeAmount(a.amount, a.payment.currency) || r.currency?.toUpperCase() !== a.payment.currency || r.metadata?.refundAllocationId !== a.id || r.metadata?.refundId !== a.refundId || r.metadata?.refundRequestId !== a.refundRequestId || r.metadata?.paymentId !== a.paymentId)
         throw new AppError('REFUND_RECONCILIATION_MISMATCH', 409);
 }
 async function applyStripe(a: StripeAllocation, r: Stripe.Refund) {
@@ -155,7 +158,7 @@ async function stripeRefund(allocationId: string) {
         return;
     let provider: Stripe.Refund;
     try {
-        provider = await stripe.refunds.create({ payment_intent: a.payment.providerPaymentId, amount: cents(a.amount), metadata: { refundAllocationId: a.id, refundRequestId: a.refundRequestId, refundId: a.refundId!, paymentId: a.paymentId } }, { idempotencyKey: a.idempotencyKey, maxNetworkRetries: 0, timeout: 15000 });
+        provider = await stripe.refunds.create({ payment_intent: a.payment.providerPaymentId, amount: stripeAmount(a.amount, a.payment.currency), metadata: { refundAllocationId: a.id, refundRequestId: a.refundRequestId, refundId: a.refundId!, paymentId: a.paymentId } }, { idempotencyKey: a.idempotencyKey, maxNetworkRetries: 0, timeout: 15000 });
     }
     catch {
         await prisma.refundAllocation.updateMany({ where: { id: a.id, status: 'PROCESSING' }, data: { lastErrorCode: 'STRIPE_REFUND_OUTCOME_UNCERTAIN' } });

@@ -20,7 +20,7 @@ function installProviderMocks() {
   stripe.refunds.create = async (params, options) => {
     refundCreateCalls++;
     if (refunds.has(options.idempotencyKey)) return refunds.get(options.idempotencyKey);
-    const refund = { id: `re_${crypto.randomUUID()}`, ...params, currency: 'hkd', status: refundMode==='timeout'?'succeeded':refundMode };
+    const refund = { id: `re_${crypto.randomUUID()}`, ...params, currency: intents.get(params.payment_intent)?.currency ?? 'hkd', status: refundMode==='timeout'?'succeeded':refundMode };
     refunds.set(options.idempotencyKey, refund);
     if(refundMode==='timeout')throw new Error('Synthetic timeout after provider acceptance');
     return refund;
@@ -30,6 +30,7 @@ function installProviderMocks() {
 }
 export async function bookNowFixture(db, customerId) {
   installProviderMocks();
+  const brand = await db.brand.findFirstOrThrow();
   const date = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
   const day = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'][new Date(date).getUTCDay()];
   const branch = await db.branch.create({ data: { name: 'Public Book Now', address: 'Hong Kong', bookingPolicy: { create: { minimumBookingNoticeMinutes: 0, depositPercentage: 30 } }, businessHours: { create: { day, openTime: '00:00', closeTime: '23:59' } }, hourlyCapacities: { create: { day, maxBookingsPerHour: 100 } } } });
@@ -39,13 +40,19 @@ export async function bookNowFixture(db, customerId) {
     if (assigned) await db.branchManagerBranch.create({ data: { userId: manager.id, branchId: branch.id } });
   }
   const staff = await db.staff.create({ data: { name: 'Book Now Stylist', email: 'book-now-staff@example.com', roleTitle: 'Stylist', user: { create: { name: 'Stylist', email: 'book-now-staff@example.com', passwordHash: 'unused', role: 'STAFF' } }, branches: { create: { branchId: branch.id } }, schedule: { create: { branchId: branch.id, day, startTime: '00:00', endTime: '23:59' } } } });
-  const item = await db.package.create({ data: { name: 'Book Now Package', type: 'GROUP_PURCHASE_PACKAGE', regularPrice: '120.50', packagePrice: '100.25', durationMinutes: 30, capacity: 100, branches: { create: { branchId: branch.id } }, staff: { create: { staffId: staff.id } } } });
+  const item = await db.package.create({ data: { name: 'Book Now Package', type: 'GROUP_PURCHASE_PACKAGE', regularPrice: brand.currency === 'JPY' ? '120' : '120.50', packagePrice: brand.currency === 'JPY' ? '100' : '100.25', durationMinutes: 30, capacity: 100, branches: { create: { branchId: branch.id } }, staff: { create: { staffId: staff.id } } } });
   const service=await db.service.create({data:{name:'Policy haircut',price:300,durationMinutes:30,branches:{create:{branchId:branch.id}},staff:{create:{staffId:staff.id}}}});
-  await db.wallet.upsert({ where: { customerId }, create: { customerId, paidBalance: 10000, bonusBalance: 1000 }, update: {} });
+  await db.wallet.upsert({ where: { customerId }, create: { customerId, currency: brand.currency, paidBalance: 10000, bonusBalance: 1000 }, update: {} });
   return { packageId: item.id, branchId: branch.id, staffId: staff.id, serviceId:service.id, date };
 }
 
 export async function policyTestControl(db,body,storage){
+  if (body.paymentCreatedAt) await db.payment.update({ where: { id: body.paymentCreatedAt.id }, data: { createdAt: new Date(body.paymentCreatedAt.value) } });
+  // Simulate externally changed legacy settings only in the disposable test build.
+  if (body.internationalSettings) {
+    const brand = await db.brand.findFirstOrThrow();
+    await db.brand.update({ where: { id: brand.id }, data: body.internationalSettings });
+  }
   if(body.failIntentRead!==undefined)failIntentRead=body.failIntentRead;
   if(body.restoreProviderState){installProviderMocks();intents.clear();refunds.clear();for(const [k,v] of body.restoreProviderState.intents)intents.set(k,v);for(const [k,v]of body.restoreProviderState.refunds)refunds.set(k,v);refundCreateCalls=body.restoreProviderState.refundCreateCalls;}
 
