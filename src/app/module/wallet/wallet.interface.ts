@@ -8,6 +8,7 @@ export interface IWalletResponse {
 export interface IWalletTransactionsQuery {
   page?: string;
   limit?: string;
+  direction?: "INCOME" | "EXPENSE";
 
   type?:
     | "TOP_UP"
@@ -26,6 +27,10 @@ export interface IWalletTransactionItem {
   type: string;
   balanceType: string;
   amount: number;
+
+  // Issue 11: Transaction item / service / package / promotion name
+  itemName: string;
+
   createdAt: string;
 }
 

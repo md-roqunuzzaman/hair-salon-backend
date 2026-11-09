@@ -13,6 +13,8 @@ const getWalletTransactionsValidationSchema = z.object({
         .regex(/^\d+$/, "limit must be a positive integer")
         .optional(),
 
+      direction: z.enum(["INCOME", "EXPENSE"]).optional(),
+
       type: z
         .enum([
           "TOP_UP",
@@ -44,7 +46,6 @@ const getWalletTransactionsValidationSchema = z.object({
       }
     }),
 });
-
 const createWalletTopupValidationSchema = z.object({
   body: z
     .object({

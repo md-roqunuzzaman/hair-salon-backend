@@ -7,7 +7,7 @@ import { AppError } from "../../utils/app-error.js";
 import { cookieBaseOptions, setAuthCookies } from "../../utils/auth-cookies.js";
 
 const registerUser = catchAsync(async (req: Request, res: Response) => {
-  const result = await authService.registerUser(req.body);
+  const result = await authService.registerUser(req.body, res.locals.language);
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,

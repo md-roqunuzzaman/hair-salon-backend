@@ -27,6 +27,7 @@ import { clearSuccessfulLoginAccountLimit } from "../../middleware/login-rate-li
 import { assertBcryptPasswordLength } from "../../utils/password-security.js";
 import { withAuthSessionStorage } from "../../utils/auth-session.js";
 import parsePhoneNumberFromString from "libphonenumber-js";
+import { securityEmailCopy } from "./auth-email.localization.js";
 
 const OTP_TTL_SECONDS = 5 * 60; // 5 minutes
 const RESET_TOKEN_TTL_SECONDS = 10 * 60; // 10 minutes
@@ -90,7 +91,7 @@ const hashPasswordResetOtp = (userId: string, otp: string): string => {
     .digest("hex");
 };
 
-const registerUser = async (payload: IRegisterUserPayload) => {
+const registerUser = async (payload: IRegisterUserPayload, language?: unknown) => {
   const { name, password } = payload;
 
   // =====================================================
@@ -191,6 +192,12 @@ const registerUser = async (payload: IRegisterUserPayload) => {
   // 5. RENDER EMAIL BEFORE CREATING USER
   // =====================================================
 
+  const emailCopy = securityEmailCopy("verification", language, {
+    name: normalizedName,
+    brandName: brand.name,
+    year: new Date().getFullYear(),
+    expirationMinutes: OTP_TTL_SECONDS / 60,
+  });
   const html = await ejs.renderFile(
     path.join(process.cwd(), "src/app/templates/verify-email.ejs"),
     {
@@ -199,6 +206,7 @@ const registerUser = async (payload: IRegisterUserPayload) => {
       year: new Date().getFullYear(),
       otp,
       expirationMinutes: OTP_TTL_SECONDS / 60,
+      ...emailCopy,
     },
   );
 
@@ -297,7 +305,7 @@ const registerUser = async (payload: IRegisterUserPayload) => {
       userId: createdUser.id,
       to: createdUser.email,
       eventType: "AUTH_EMAIL_VERIFICATION_OTP",
-      subject: `Verify Your Email - ${brand.name}`,
+      subject: emailCopy.emailSubject,
       html,
     });
   } catch (error) {
@@ -630,6 +638,7 @@ const resendVerificationOtp = async (payload: { email: string }) => {
         role: true,
         status: true,
         emailVerified: true,
+        preferredLanguage: true,
       },
     });
 
@@ -668,6 +677,12 @@ const resendVerificationOtp = async (payload: { email: string }) => {
     // 8. RENDER EMAIL
     // =====================================================
 
+    const emailCopy = securityEmailCopy("verification", currentUser.preferredLanguage, {
+      name: currentUser.name,
+      brandName: brand.name,
+      year: new Date().getFullYear(),
+      expirationMinutes: OTP_TTL_SECONDS / 60,
+    });
     const html = await ejs.renderFile(
       path.join(process.cwd(), "src/app/templates/verify-email.ejs"),
       {
@@ -676,6 +691,7 @@ const resendVerificationOtp = async (payload: { email: string }) => {
         year: new Date().getFullYear(),
         otp,
         expirationMinutes: OTP_TTL_SECONDS / 60,
+        ...emailCopy,
       },
     );
 
@@ -689,7 +705,7 @@ const resendVerificationOtp = async (payload: { email: string }) => {
         userId: currentUser.id,
         to: currentUser.email,
         eventType: "AUTH_EMAIL_VERIFICATION_OTP",
-        subject: `Verify Your Email - ${brand.name}`,
+        subject: emailCopy.emailSubject,
         html,
       });
     } catch (error) {
@@ -1212,6 +1228,7 @@ const forgotPassword = async (payload: IForgotPasswordPayload) => {
         name: true,
         email: true,
         status: true,
+        preferredLanguage: true,
       },
     });
 
@@ -1233,12 +1250,17 @@ const forgotPassword = async (payload: IForgotPasswordPayload) => {
     // 5. RENDER EMAIL TEMPLATE
     // =====================================================
 
+    const emailCopy = securityEmailCopy("resetOtp", user.preferredLanguage, {
+      name: user.name,
+      expirationMinutes: OTP_TTL_SECONDS / 60,
+    });
     const html = await ejs.renderFile(
       path.join(process.cwd(), "src/app/templates/forgot-password.ejs"),
       {
         name: user.name,
         otp,
         expirationMinutes: OTP_TTL_SECONDS / 60,
+        ...emailCopy,
       },
     );
 
@@ -1251,7 +1273,7 @@ const forgotPassword = async (payload: IForgotPasswordPayload) => {
       userId: user.id,
       to: user.email,
       eventType: "AUTH_PASSWORD_RESET_OTP",
-      subject: "Reset Your Password",
+      subject: emailCopy.emailSubject,
       html,
     });
 
@@ -1556,6 +1578,7 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
         name: true,
         email: true,
         status: true,
+        preferredLanguage: true,
       },
     });
 
@@ -1683,8 +1706,12 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
         "src/app/templates/reset-password.ejs",
       );
 
+      const emailCopy = securityEmailCopy("resetSuccess", user.preferredLanguage, {
+        name: user.name,
+      });
       const html = await ejs.renderFile(templatePath, {
         name: user.name,
+        ...emailCopy,
       });
 
       await sendMerchantSecurityEmail({
@@ -1692,7 +1719,7 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
         userId: user.id,
         eventType: "AUTH_PASSWORD_RESET_SUCCESS",
         to: user.email,
-        subject: "Password Reset Successful",
+        subject: emailCopy.emailSubject,
         html,
       });
     } catch (error) {

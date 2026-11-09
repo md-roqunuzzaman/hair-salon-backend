@@ -28,8 +28,9 @@ for (const name of ['forgot-password', 'reset-password', 'verify-email']) {
 await writeFile(`${directory}/templates.mjs`, `const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&#34;',"'":'&#39;'}[char]));\nconst templates = {${templates.join(',\n')}};\nexport default { async renderFile(file, data) { const name = file.split(/[\\\\/]/).pop(); if (!templates[name]) throw new Error('Unknown email template'); return templates[name](data); } };\n`);
 const { default: compiledTemplates } = await import(`../${directory}/templates.mjs?${Date.now()}`);
 for (const name of ['forgot-password', 'reset-password', 'verify-email']) {
-  const data = { brandName: '<Brand & Co>', year: 2026, name: '<b>Test & "name"</b>', otp: '123456', expirationMinutes: 5 };
-  const original = ejs.render(await readFile(`src/app/templates/${name}.ejs`, 'utf8'), data);
+  const source = await readFile(`src/app/templates/${name}.ejs`, 'utf8');
+  const data = { ...Object.fromEntries([...source.matchAll(/<%=\s*(\w+)\s*%>/g)].map(([, field]) => [field, '<Translated & "text">'])), brandName: '<Brand & Co>', year: 2026, name: '<b>Test & "name"</b>', otp: '123456', expirationMinutes: 5 };
+  const original = ejs.render(source, data);
   if (await compiledTemplates.renderFile(`${name}.ejs`, data) !== original) throw new Error(`Email template parity failed: ${name}`);
 }
 let migration = await readFile('cloudflare/migrations/0001_initial.sql', 'utf8');

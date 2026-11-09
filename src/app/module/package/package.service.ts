@@ -706,7 +706,6 @@ const getPackages = async (
   const listingStatus = query.listingStatus as ListingStatus | undefined;
 
   const where: Prisma.PackageWhereInput = {
-    // Fixed package type: legacy standard packages excluded.
     type: PackageType.GROUP_PURCHASE_PACKAGE,
 
     ...(status && {
@@ -807,10 +806,21 @@ const getPackages = async (
 
       const capacity = item.capacity;
 
+      // Total unsold quantity, including reservations.
       const remainingQuantity =
         capacity !== null ? Math.max(capacity - item.soldQuantity, 0) : null;
 
-      const soldOut = capacity !== null && item.soldQuantity >= capacity;
+      // Quantity available for new purchases.
+      const availableQuantity =
+        capacity !== null
+          ? Math.max(capacity - item.soldQuantity - item.reservedQuantity, 0)
+          : null;
+
+      // Null capacity means unlimited inventory.
+      const soldOut =
+        capacity !== null &&
+        availableQuantity !== null &&
+        availableQuantity <= 0;
 
       // ===============================================
       // PRIMARY IMAGE SIGNED URL
@@ -879,6 +889,8 @@ const getPackages = async (
         soldQuantity: item.soldQuantity,
 
         remainingQuantity,
+
+        availableQuantity,
 
         purchaseLimitPerCustomer: item.purchaseLimitPerCustomer,
 
@@ -1034,10 +1046,23 @@ const getPackageById = async (
 
   const capacity = packageData.capacity;
 
+  // Total units not yet sold (includes pending reservations).
   const remainingQuantity =
     capacity !== null ? Math.max(capacity - packageData.soldQuantity, 0) : null;
 
-  const soldOut = capacity !== null && packageData.soldQuantity >= capacity;
+  // Units currently available for new purchases.
+  // Reserved units are temporarily unavailable.
+  const availableQuantity =
+    capacity !== null
+      ? Math.max(
+          capacity - packageData.soldQuantity - packageData.reservedQuantity,
+          0,
+        )
+      : null;
+
+  // Null capacity means unlimited inventory.
+  const soldOut =
+    capacity !== null && availableQuantity !== null && availableQuantity <= 0;
 
   // =====================================================
   // 5. GENERATE SIGNED IMAGE URLS
@@ -1117,6 +1142,8 @@ const getPackageById = async (
     soldQuantity: packageData.soldQuantity,
 
     remainingQuantity,
+
+    availableQuantity,
 
     purchaseLimitPerCustomer: packageData.purchaseLimitPerCustomer,
 
@@ -1311,7 +1338,8 @@ const updatePackage = async (
   // 8. GROUP PURCHASE SETTINGS
   // =====================================================
 
-  const capacity = payload.capacity ?? packageData.capacity;
+  const capacity =
+    payload.capacity !== undefined ? payload.capacity : packageData.capacity;
 
   const purchaseLimit =
     payload.purchaseLimitPerCustomer ?? packageData.purchaseLimitPerCustomer;
@@ -1337,8 +1365,14 @@ const updatePackage = async (
     );
   }
 
-  if (capacity < packageData.soldQuantity) {
-    throw new AppError("Capacity cannot be lower than sold quantity", 400);
+  const committedQuantity =
+    packageData.soldQuantity + packageData.reservedQuantity;
+
+  if (capacity < committedQuantity) {
+    throw new AppError(
+      "Capacity cannot be lower than sold and reserved quantity",
+      400,
+    );
   }
 
   // =====================================================
@@ -1404,9 +1438,6 @@ const updatePackage = async (
       throw new AppError("Duplicate package images are not allowed", 400);
     }
 
-    // Existing images can be retained.
-    // New images must follow the package-specific path.
-
     const existingImageKeys = new Set(
       packageData.images.map((image) => image.objectKey),
     );
@@ -1434,103 +1465,142 @@ const updatePackage = async (
   // 13. UPDATE PACKAGE + IMAGES
   // =====================================================
 
-  const updatedPackage = await prisma.$transaction(async (tx) => {
-    await tx.package.update({
-      where: {
-        id: packageId,
-        type: PackageType.GROUP_PURCHASE_PACKAGE,
-      },
-      data: {
-        // ENGLISH BASE
-
-        name: nextName,
-        description: nextDescription,
-
-        // MULTILINGUAL
-
-        translations: nextTranslations,
-
-        // DISPLAY FIELDS
-
-        validDays: nextValidDays,
-        applicableFor: nextApplicableFor,
-        purchaseNotice: nextPurchaseNotice,
-        howToUse: nextHowToUse,
-
-        // PRICING
-
-        ...(payload.regularPrice !== undefined && {
-          regularPrice: payload.regularPrice,
-        }),
-
-        ...(payload.packagePrice !== undefined && {
-          packagePrice: payload.packagePrice,
-        }),
-
-        ...(payload.durationMinutes !== undefined && {
-          durationMinutes: payload.durationMinutes,
-        }),
-
-        // GROUP PURCHASE
-
-        ...(payload.capacity !== undefined && {
-          capacity: payload.capacity,
-        }),
-
-        ...(payload.purchaseLimitPerCustomer !== undefined && {
-          purchaseLimitPerCustomer: payload.purchaseLimitPerCustomer,
-        }),
-
-        ...(payload.salesStartAt !== undefined && {
-          salesStartAt,
-        }),
-
-        ...(payload.salesEndAt !== undefined && {
-          salesEndAt,
-        }),
-      },
-    });
-
-    // ================================================
-    // REPLACE PACKAGE IMAGES
-    // ================================================
-
-    if (uniqueImageObjectKeys !== undefined) {
-      await tx.packageImage.deleteMany({
+  const updatedPackage = await prisma.$transaction(
+    async (tx) => {
+      // Re-read current inventory inside the transaction.
+      const currentPackage = await tx.package.findFirst({
         where: {
-          packageId,
+          id: packageId,
+          type: PackageType.GROUP_PURCHASE_PACKAGE,
+        },
+        select: {
+          id: true,
+          soldQuantity: true,
+          reservedQuantity: true,
         },
       });
 
-      if (uniqueImageObjectKeys.length > 0) {
-        await tx.packageImage.createMany({
-          data: uniqueImageObjectKeys.map((objectKey, index) => ({
-            packageId,
-            objectKey,
-            isPrimary: index === 0,
-            sortOrder: index,
-          })),
-        });
+      if (!currentPackage) {
+        throw new AppError("Package not found", 404);
       }
-    }
 
-    // ================================================
-    // FETCH UPDATED PACKAGE
-    // ================================================
+      const currentCommittedQuantity =
+        currentPackage.soldQuantity + currentPackage.reservedQuantity;
 
-    return tx.package.findUnique({
-      where: {
-        id: packageId,
-      },
-      include: {
-        images: {
-          orderBy: {
-            sortOrder: "asc",
+      if (capacity < currentCommittedQuantity) {
+        throw new AppError(
+          "Capacity cannot be lower than sold and reserved quantity",
+          400,
+        );
+      }
+
+      // Optimistic concurrency guard:
+      // The update succeeds only if inventory counters
+      // have not changed since the transaction read.
+      const updateResult = await tx.package.updateMany({
+        where: {
+          id: packageId,
+          type: PackageType.GROUP_PURCHASE_PACKAGE,
+          soldQuantity: currentPackage.soldQuantity,
+          reservedQuantity: currentPackage.reservedQuantity,
+        },
+        data: {
+          // ENGLISH BASE
+          name: nextName,
+          description: nextDescription,
+
+          // MULTILINGUAL
+          translations: nextTranslations,
+
+          // DISPLAY FIELDS
+          validDays: nextValidDays,
+          applicableFor: nextApplicableFor,
+          purchaseNotice: nextPurchaseNotice,
+          howToUse: nextHowToUse,
+
+          // PRICING
+          ...(payload.regularPrice !== undefined && {
+            regularPrice: payload.regularPrice,
+          }),
+
+          ...(payload.packagePrice !== undefined && {
+            packagePrice: payload.packagePrice,
+          }),
+
+          ...(payload.durationMinutes !== undefined && {
+            durationMinutes: payload.durationMinutes,
+          }),
+
+          // GROUP PURCHASE
+          ...(payload.capacity !== undefined && {
+            capacity: payload.capacity,
+          }),
+
+          ...(payload.purchaseLimitPerCustomer !== undefined && {
+            purchaseLimitPerCustomer: payload.purchaseLimitPerCustomer,
+          }),
+
+          ...(payload.salesStartAt !== undefined && {
+            salesStartAt,
+          }),
+
+          ...(payload.salesEndAt !== undefined && {
+            salesEndAt,
+          }),
+        },
+      });
+
+      if (updateResult.count !== 1) {
+        throw new AppError(
+          "Package inventory changed. Please retry the update",
+          409,
+        );
+      }
+
+      // ================================================
+      // REPLACE PACKAGE IMAGES
+      // ================================================
+
+      if (uniqueImageObjectKeys !== undefined) {
+        await tx.packageImage.deleteMany({
+          where: {
+            packageId,
+          },
+        });
+
+        if (uniqueImageObjectKeys.length > 0) {
+          await tx.packageImage.createMany({
+            data: uniqueImageObjectKeys.map((objectKey, index) => ({
+              packageId,
+              objectKey,
+              isPrimary: index === 0,
+              sortOrder: index,
+            })),
+          });
+        }
+      }
+
+      // ================================================
+      // FETCH UPDATED PACKAGE
+      // ================================================
+
+      return tx.package.findUnique({
+        where: {
+          id: packageId,
+        },
+        include: {
+          images: {
+            orderBy: {
+              sortOrder: "asc",
+            },
           },
         },
-      },
-    });
-  });
+      });
+    },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    },
+  );
 
   if (!updatedPackage) {
     throw new AppError("Package not found after update", 404);
@@ -1542,9 +1612,27 @@ const updatePackage = async (
 
   const localized = localizePackage(updatedPackage, language);
 
-  const updatedCapacity = updatedPackage.capacity ?? 0;
+  const updatedCapacity = updatedPackage.capacity;
 
-  const remainingQuantity = updatedCapacity - updatedPackage.soldQuantity;
+  const remainingQuantity =
+    updatedCapacity !== null
+      ? Math.max(updatedCapacity - updatedPackage.soldQuantity, 0)
+      : null;
+
+  const availableQuantity =
+    updatedCapacity !== null
+      ? Math.max(
+          updatedCapacity -
+            updatedPackage.soldQuantity -
+            updatedPackage.reservedQuantity,
+          0,
+        )
+      : null;
+
+  const soldOut =
+    updatedCapacity !== null &&
+    availableQuantity !== null &&
+    availableQuantity <= 0;
 
   return {
     id: updatedPackage.id,
@@ -1569,13 +1657,14 @@ const updatePackage = async (
     soldQuantity: updatedPackage.soldQuantity,
     reservedQuantity: updatedPackage.reservedQuantity,
     remainingQuantity,
+    availableQuantity,
 
     purchaseLimitPerCustomer: updatedPackage.purchaseLimitPerCustomer,
 
     salesStartAt: updatedPackage.salesStartAt,
     salesEndAt: updatedPackage.salesEndAt,
 
-    soldOut: remainingQuantity <= 0,
+    soldOut,
 
     images: updatedPackage.images.map((image) => ({
       id: image.id,
@@ -2046,16 +2135,12 @@ const getBranchPackages = async (
   // =====================================================
 
   const where: Prisma.PackageWhereInput = {
-    // Only Group Purchase Packages.
     type: PackageType.GROUP_PURCHASE_PACKAGE,
 
-    // Only active packages.
     status: PackageStatus.ACTIVE,
 
-    // Only publicly listed packages.
     listingStatus: ListingStatus.LISTED,
 
-    // Only packages assigned to this branch.
     branches: {
       some: {
         branchId,
@@ -2138,15 +2223,27 @@ const getBranchPackages = async (
 
       const capacity = item.capacity;
 
+      // Total unsold units, including reserved units.
       const remainingQuantity =
         capacity !== null ? Math.max(capacity - item.soldQuantity, 0) : null;
 
-      const soldOut = capacity !== null && item.soldQuantity >= capacity;
+      // Currently available inventory after reservations.
+      const availableQuantity =
+        capacity !== null
+          ? Math.max(capacity - item.soldQuantity - item.reservedQuantity, 0)
+          : null;
+
+      // Unlimited capacity cannot be sold out.
+      const soldOut =
+        capacity !== null &&
+        availableQuantity !== null &&
+        availableQuantity <= 0;
 
       // ===============================================
       // GROUP PURCHASE AVAILABILITY
       // ===============================================
 
+      // Preserve existing sales-window requirements.
       const purchaseAvailable =
         !soldOut &&
         item.salesStartAt !== null &&
@@ -2231,6 +2328,8 @@ const getBranchPackages = async (
         soldQuantity: item.soldQuantity,
 
         remainingQuantity,
+
+        availableQuantity,
 
         purchaseLimitPerCustomer: item.purchaseLimitPerCustomer,
 

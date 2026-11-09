@@ -21,9 +21,44 @@ const getMyWallet = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getMyTransactions = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. AUTHENTICATED CUSTOMER
+  // =====================================================
+
   const customerId = req.user!.userId;
 
-  const result = await walletService.getMyTransactions(customerId, req.body);
+  // =====================================================
+  // 2. RESOLVE REQUEST LANGUAGE
+  // =====================================================
+
+  const supportedLanguages = ["en", "zh-CN", "zh-HK"] as const;
+
+  type Language = (typeof supportedLanguages)[number];
+
+  const requestedLanguage = req.headers["accept-language"]
+    ?.split(",")[0]
+    ?.split(";")[0]
+    ?.trim();
+
+  const language: Language = supportedLanguages.includes(
+    requestedLanguage as Language,
+  )
+    ? (requestedLanguage as Language)
+    : "en";
+
+  // =====================================================
+  // 3. FETCH WALLET TRANSACTIONS
+  // =====================================================
+
+  const result = await walletService.getMyTransactions(
+    customerId,
+    req.body,
+    language,
+  );
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

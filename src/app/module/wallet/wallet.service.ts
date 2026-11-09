@@ -1,6 +1,11 @@
 import { localDateBoundary } from "../../utils/brand-timezone.utils.js";
 import { getBrandInternationalSettings } from "../../utils/brand-international-settings.utils.js";
-import { assertCurrencyAmount, assertSameCurrency, stripeAmount, getPurchaseCurrency } from "../../utils/transaction-currency.utils.js";
+import {
+  assertCurrencyAmount,
+  assertSameCurrency,
+  stripeAmount,
+  getPurchaseCurrency,
+} from "../../utils/transaction-currency.utils.js";
 import {
   AppointmentStatus,
   BalanceType,
@@ -30,6 +35,7 @@ import {
 } from "./wallet.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 
 const getMyWallet = async (customerId: string): Promise<IWalletResponse> => {
   let wallet = await prisma.wallet.findUnique({
@@ -39,14 +45,18 @@ const getMyWallet = async (customerId: string): Promise<IWalletResponse> => {
   });
 
   if (!wallet) {
-    wallet = await prisma.$transaction(async tx => tx.wallet.create({
-      data: {
-        customerId,
-        paidBalance: 0,
-        bonusBalance: 0,
-        currency: (await getBrandInternationalSettings(tx)).currency,
-      },
-    }), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    wallet = await prisma.$transaction(
+      async (tx) =>
+        tx.wallet.create({
+          data: {
+            customerId,
+            paidBalance: 0,
+            bonusBalance: 0,
+            currency: (await getBrandInternationalSettings(tx)).currency,
+          },
+        }),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
   }
 
   const paidBalance = Number(wallet.paidBalance);
@@ -64,29 +74,32 @@ const getMyWallet = async (customerId: string): Promise<IWalletResponse> => {
 const getMyTransactions = async (
   customerId: string,
   query: IWalletTransactionsQuery,
+  language: Language = DEFAULT_LANGUAGE,
 ) => {
+  // =====================================================
+  // 1. VALIDATE PAGINATION
+  // =====================================================
+
   const page = Number(query.page ?? 1);
   const limit = Number(query.limit ?? 20);
 
-  if (page < 1) {
+  if (!Number.isInteger(page) || page < 1) {
     throw new AppError("page must be at least 1", 400);
   }
 
-  if (limit < 1 || limit > 100) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
     throw new AppError("limit must be between 1 and 100", 400);
   }
 
-  const wallet = await prisma.wallet.findUnique({
-    where: {
-      customerId,
-    },
+  // =====================================================
+  // 2. FIND CUSTOMER WALLET
+  // =====================================================
 
-    select: {
-      id: true,
-    },
+  const wallet = await prisma.wallet.findUnique({
+    where: { customerId },
+    select: { id: true },
   });
 
-  // Wallet not created yet = no transaction history.
   if (!wallet) {
     return {
       items: [],
@@ -101,6 +114,10 @@ const getMyTransactions = async (
     };
   }
 
+  // =====================================================
+  // 3. BUILD TRANSACTION FILTERS
+  // =====================================================
+
   const where: Prisma.WalletTransactionWhereInput = {
     walletId: wallet.id,
   };
@@ -109,57 +126,482 @@ const getMyTransactions = async (
     where.type = query.type as WalletTransactionType;
   }
 
-  // HK timezone date boundaries.
+  if (query.direction === "INCOME") {
+    where.amount = { gt: 0 };
+  } else if (query.direction === "EXPENSE") {
+    where.amount = { lt: 0 };
+  }
+
   if (query.from || query.to) {
+    const { timezone } = await getBrandInternationalSettings();
+
     where.createdAt = {};
 
     if (query.from) {
-      where.createdAt.gte = localDateBoundary(query.from, (await getBrandInternationalSettings()).timezone);
+      where.createdAt.gte = localDateBoundary(query.from, timezone);
     }
 
     if (query.to) {
-      where.createdAt.lte = localDateBoundary(query.to, (await getBrandInternationalSettings()).timezone, true);
+      where.createdAt.lte = localDateBoundary(query.to, timezone, true);
     }
   }
 
-  const skip = (page - 1) * limit;
+  // =====================================================
+  // 4. FETCH TRANSACTIONS
+  // =====================================================
 
   const [transactions, total] = await prisma.$transaction([
     prisma.walletTransaction.findMany({
       where,
-
-      skip,
+      skip: (page - 1) * limit,
       take: limit,
-
-      orderBy: {
-        createdAt: "desc",
-      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 
       select: {
         id: true,
         type: true,
         balanceType: true,
         amount: true,
+        referenceId: true,
+        paymentId: true,
         createdAt: true,
+
+        payment: {
+          select: {
+            appointment: {
+              select: {
+                itemName: true,
+                itemNameTranslations: true,
+              },
+            },
+
+            groupPurchase: {
+              select: {
+                package: {
+                  select: {
+                    name: true,
+                    translations: true,
+                  },
+                },
+              },
+            },
+
+            walletTopup: {
+              select: {
+                promotion: {
+                  select: {
+                    name: true,
+                    translations: true,
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     }),
 
-    prisma.walletTransaction.count({
-      where,
-    }),
+    prisma.walletTransaction.count({ where }),
   ]);
 
-  const items: IWalletTransactionItem[] = transactions.map((transaction) => ({
-    id: transaction.id,
+  // =====================================================
+  // 5. LOCALIZATION HELPERS
+  // =====================================================
 
-    type: transaction.type,
+  const locale: "en" | "zh-CN" | "zh-HK" =
+    language === "zh-CN" || language === "zh-HK" ? language : "en";
 
-    balanceType: transaction.balanceType,
+  const getLocalizedName = (
+    fallbackName: string | null | undefined,
+    translations: Prisma.JsonValue | null | undefined,
+  ): string | null => {
+    if (
+      translations &&
+      typeof translations === "object" &&
+      !Array.isArray(translations)
+    ) {
+      const translationMap = translations as Record<string, unknown>;
 
-    amount: Number(transaction.amount),
+      const localized = translationMap[locale];
 
-    createdAt: transaction.createdAt.toISOString(),
-  }));
+      if (
+        localized &&
+        typeof localized === "object" &&
+        !Array.isArray(localized)
+      ) {
+        const name = (localized as Record<string, unknown>).name;
+
+        if (typeof name === "string" && name.trim()) {
+          return name.trim();
+        }
+      }
+
+      if (typeof localized === "string" && localized.trim()) {
+        return localized.trim();
+      }
+    }
+
+    return fallbackName?.trim() || null;
+  };
+
+  const fallbackNames: Record<
+    string,
+    Record<"en" | "zh-CN" | "zh-HK", string>
+  > = {
+    TOP_UP: {
+      en: "Wallet Top-up",
+      "zh-CN": "钱包充值",
+      "zh-HK": "錢包增值",
+    },
+
+    BONUS: {
+      en: "Wallet Bonus",
+      "zh-CN": "钱包奖励",
+      "zh-HK": "錢包獎賞",
+    },
+
+    APPOINTMENT_PAYMENT: {
+      en: "Appointment Payment",
+      "zh-CN": "预约付款",
+      "zh-HK": "預約付款",
+    },
+
+    GROUP_PURCHASE_PAYMENT: {
+      en: "Group Purchase Payment",
+      "zh-CN": "团购付款",
+      "zh-HK": "團購付款",
+    },
+
+    REFUND: {
+      en: "Wallet Refund",
+      "zh-CN": "钱包退款",
+      "zh-HK": "錢包退款",
+    },
+
+    ADJUSTMENT: {
+      en: "Wallet Adjustment",
+      "zh-CN": "钱包余额调整",
+      "zh-HK": "錢包餘額調整",
+    },
+  };
+
+  // =====================================================
+  // 6. RESOLVE TOP-UP PROMOTIONS
+  // =====================================================
+
+  const topupIds = [
+    ...new Set(
+      transactions
+        .filter(
+          (transaction) =>
+            (transaction.type === "TOP_UP" || transaction.type === "BONUS") &&
+            transaction.referenceId,
+        )
+        .map((transaction) => transaction.referenceId!),
+    ),
+  ];
+
+  const topups = topupIds.length
+    ? await prisma.walletTopup.findMany({
+        where: {
+          id: { in: topupIds },
+          walletId: wallet.id,
+        },
+        select: {
+          id: true,
+          promotion: {
+            select: {
+              name: true,
+              translations: true,
+            },
+          },
+        },
+      })
+    : [];
+
+  const topupMap = new Map(topups.map((topup) => [topup.id, topup]));
+
+  // =====================================================
+  // 7. RESOLVE HISTORICAL PAYMENT REFERENCES
+  // =====================================================
+
+  const historicalReferenceIds = [
+    ...new Set(
+      transactions
+        .filter(
+          (transaction) =>
+            transaction.referenceId &&
+            (transaction.type === "APPOINTMENT_PAYMENT" ||
+              transaction.type === "GROUP_PURCHASE_PAYMENT" ||
+              transaction.type === "REFUND"),
+        )
+        .map((transaction) => transaction.referenceId!),
+    ),
+  ];
+
+  const historicalAppointments = historicalReferenceIds.length
+    ? await prisma.appointment.findMany({
+        where: {
+          id: { in: historicalReferenceIds },
+          customerId,
+        },
+        select: {
+          id: true,
+          itemName: true,
+          itemNameTranslations: true,
+        },
+      })
+    : [];
+
+  const historicalGroupPurchases = historicalReferenceIds.length
+    ? await prisma.groupPurchase.findMany({
+        where: {
+          id: { in: historicalReferenceIds },
+          customerId,
+        },
+        select: {
+          id: true,
+          package: {
+            select: {
+              name: true,
+              translations: true,
+            },
+          },
+        },
+      })
+    : [];
+
+  const historicalPayments = historicalReferenceIds.length
+    ? await prisma.payment.findMany({
+        where: {
+          id: { in: historicalReferenceIds },
+          customerId,
+        },
+        select: {
+          id: true,
+
+          appointment: {
+            select: {
+              itemName: true,
+              itemNameTranslations: true,
+            },
+          },
+
+          groupPurchase: {
+            select: {
+              package: {
+                select: {
+                  name: true,
+                  translations: true,
+                },
+              },
+            },
+          },
+        },
+      })
+    : [];
+
+  const appointmentMap = new Map(
+    historicalAppointments.map((appointment) => [appointment.id, appointment]),
+  );
+
+  const groupPurchaseMap = new Map(
+    historicalGroupPurchases.map((purchase) => [purchase.id, purchase]),
+  );
+
+  const paymentMap = new Map(
+    historicalPayments.map((payment) => [payment.id, payment]),
+  );
+
+  // =====================================================
+  // 8. RESOLVE REFUND REFERENCES
+  // =====================================================
+
+  // Refund ledger entries may use:
+  //
+  // referenceId = Refund.id
+  // paymentId   = Payment.id
+  //
+  // Older transactions may not have a direct payment
+  // relation. Resolve the Refund -> Payment relationship
+  // without changing historical ledger records.
+
+  const refundReferenceIds = [
+    ...new Set(
+      transactions
+        .filter(
+          (transaction) =>
+            transaction.type === "REFUND" && transaction.referenceId,
+        )
+        .map((transaction) => transaction.referenceId!),
+    ),
+  ];
+
+  const historicalRefunds = refundReferenceIds.length
+    ? await prisma.refund.findMany({
+        where: {
+          id: {
+            in: refundReferenceIds,
+          },
+
+          payment: {
+            customerId,
+          },
+        },
+
+        select: {
+          id: true,
+          payment: {
+            select: {
+              appointment: {
+                select: {
+                  itemName: true,
+                  itemNameTranslations: true,
+                },
+              },
+
+              groupPurchase: {
+                select: {
+                  package: {
+                    select: {
+                      name: true,
+                      translations: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      })
+    : [];
+
+  const refundMap = new Map(
+    historicalRefunds.map((refund) => [refund.id, refund]),
+  );
+
+  // =====================================================
+  // 9. FORMAT TRANSACTION HISTORY
+  // =====================================================
+
+  const items: IWalletTransactionItem[] = transactions.map((transaction) => {
+    const payment = transaction.payment;
+    const referenceId = transaction.referenceId;
+
+    const historicalAppointment = referenceId
+      ? appointmentMap.get(referenceId)
+      : null;
+
+    const historicalGroupPurchase = referenceId
+      ? groupPurchaseMap.get(referenceId)
+      : null;
+
+    const historicalPayment = referenceId ? paymentMap.get(referenceId) : null;
+
+    const historicalRefund = referenceId ? refundMap.get(referenceId) : null;
+
+    // -----------------------------------------------
+    // Resolve appointment name
+    // -----------------------------------------------
+
+    const resolveAppointmentName = (): string | null => {
+      const candidates = [
+        payment?.appointment,
+        historicalPayment?.appointment,
+        historicalRefund?.payment.appointment,
+        historicalAppointment,
+      ];
+
+      for (const appointment of candidates) {
+        if (!appointment) continue;
+
+        const name = getLocalizedName(
+          appointment.itemName,
+          appointment.itemNameTranslations,
+        );
+
+        if (name) return name;
+      }
+
+      return null;
+    };
+
+    // -----------------------------------------------
+    // Resolve package name
+    // -----------------------------------------------
+
+    const resolvePackageName = (): string | null => {
+      const candidates = [
+        payment?.groupPurchase?.package,
+        historicalPayment?.groupPurchase?.package,
+        historicalRefund?.payment.groupPurchase?.package,
+        historicalGroupPurchase?.package,
+      ];
+
+      for (const packageItem of candidates) {
+        if (!packageItem) continue;
+
+        const name = getLocalizedName(
+          packageItem.name,
+          packageItem.translations,
+        );
+
+        if (name) return name;
+      }
+
+      return null;
+    };
+
+    // -----------------------------------------------
+    // Resolve transaction-specific name
+    // -----------------------------------------------
+
+    let itemName: string | null = null;
+
+    if (transaction.type === "APPOINTMENT_PAYMENT") {
+      itemName = resolveAppointmentName();
+    }
+
+    if (transaction.type === "GROUP_PURCHASE_PAYMENT") {
+      itemName = resolvePackageName() ?? resolveAppointmentName();
+    }
+
+    if (transaction.type === "TOP_UP" || transaction.type === "BONUS") {
+      const topup = referenceId ? topupMap.get(referenceId) : null;
+
+      const promotion = topup?.promotion ?? payment?.walletTopup?.promotion;
+
+      if (promotion) {
+        itemName = getLocalizedName(promotion.name, promotion.translations);
+      }
+    }
+
+    if (transaction.type === "REFUND") {
+      itemName = resolvePackageName() ?? resolveAppointmentName();
+    }
+
+    // -----------------------------------------------
+    // Localized fallback
+    // -----------------------------------------------
+
+    if (!itemName) {
+      itemName =
+        fallbackNames[transaction.type]?.[locale] ?? "Wallet Transaction";
+    }
+
+    return {
+      id: transaction.id,
+      type: transaction.type,
+      balanceType: transaction.balanceType,
+      amount: Number(transaction.amount),
+      itemName,
+      createdAt: transaction.createdAt.toISOString(),
+    };
+  });
+
+  // =====================================================
+  // 10. PAGINATION
+  // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
@@ -176,7 +618,6 @@ const getMyTransactions = async (
     },
   };
 };
-
 const createTopup = async (
   customerId: string,
   payload: ICreateWalletTopupPayload,
@@ -268,23 +709,29 @@ const createTopup = async (
   // 3. FIND OR CREATE CUSTOMER WALLET
   // =====================================================
 
-  const wallet = await prisma.$transaction(async tx => {
-    assertSameCurrency(currency, (await getBrandInternationalSettings(tx)).currency);
-    return tx.wallet.upsert({
-    where: {
-      customerId,
-    },
+  const wallet = await prisma.$transaction(
+    async (tx) => {
+      assertSameCurrency(
+        currency,
+        (await getBrandInternationalSettings(tx)).currency,
+      );
+      return tx.wallet.upsert({
+        where: {
+          customerId,
+        },
 
-    update: {},
+        update: {},
 
-    create: {
-      customerId,
-      paidBalance: 0,
-      bonusBalance: 0,
-      currency,
+        create: {
+          customerId,
+          paidBalance: 0,
+          bonusBalance: 0,
+          currency,
+        },
+      });
     },
-    });
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
 
   assertSameCurrency(wallet.currency, currency);
 
@@ -464,7 +911,12 @@ const deductWalletBalance = async (
     throw new AppError("INSUFFICIENT_WALLET_BALANCE", 422);
   }
 
-  const payment = paymentId ? await tx.payment.findUnique({ where: { id: paymentId }, select: { currency: true } }) : null;
+  const payment = paymentId
+    ? await tx.payment.findUnique({
+        where: { id: paymentId },
+        select: { currency: true },
+      })
+    : null;
   if (!payment) throw new AppError("Wallet payment currency is missing", 409);
   assertSameCurrency(wallet.currency, payment.currency);
   assertCurrencyAmount(amount, payment.currency);
