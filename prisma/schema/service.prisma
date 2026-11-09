@@ -48,10 +48,29 @@ model ServiceBranch {
 
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
-  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
+  branch              Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  bookingHoursEnabled Boolean                @default(false)
+  bookingWindows      ServiceBookingWindow[]
+  createdAt           DateTime               @default(now())
 
   @@id([serviceId, branchId])
   @@index([branchId])
+}
+
+model ServiceBookingWindow {
+  id        String @id @default(uuid())
+  serviceId String
+  branchId  String
+
+  day       DayOfWeek
+  startTime String
+  endTime   String
+
+  serviceBranch ServiceBranch @relation(fields: [serviceId, branchId], references: [serviceId, branchId], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([serviceId, branchId, day, startTime, endTime])
+  @@index([serviceId, branchId, day])
 }

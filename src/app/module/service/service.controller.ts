@@ -156,6 +156,52 @@ const getBranchServices = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+// =====================================================
+// UPDATE SERVICE BOOKING SCHEDULE
+// =====================================================
+
+const updateServiceBookingSchedule = catchAsync(
+  async (req: Request, res: Response) => {
+    const serviceId = req.params.serviceId as string;
+    const branchId = req.params.branchId as string;
+
+    const result = await serviceService.updateServiceBookingSchedule(
+      serviceId,
+      branchId,
+      req.body,
+    );
+
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message: "Service booking schedule updated successfully",
+      data: result,
+    });
+  },
+);
+
+// =====================================================
+// GET SERVICE BOOKING SCHEDULE
+// =====================================================
+
+const getServiceBookingSchedule = catchAsync(
+  async (req: Request, res: Response) => {
+    const serviceId = req.params.serviceId as string;
+    const branchId = req.params.branchId as string;
+
+    const result = await serviceService.getServiceBookingSchedule(
+      serviceId,
+      branchId,
+    );
+
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message: "Service booking schedule retrieved successfully",
+      data: result,
+    });
+  },
+);
 export const serviceController = {
   createService,
   getServices,
@@ -164,4 +210,6 @@ export const serviceController = {
   updateServiceStatus,
   assignServiceToBranches,
   getBranchServices,
+  updateServiceBookingSchedule,
+  getServiceBookingSchedule,
 };

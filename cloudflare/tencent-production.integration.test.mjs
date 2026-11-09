@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 const require = createRequire(path.resolve('node_modules/wrangler/package.json'));
 const { Miniflare, Log, LogLevel } = await import(pathToFileURL(require.resolve('miniflare')).href);
 
-test('exact normal production artifact boots, initializes disposable v36 storage and retains HTTP/security contracts', async t => {
+test('exact normal production artifact boots, initializes disposable current-version storage and retains HTTP/security contracts', async t => {
   const config = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
   const bytes = await readFile(config.main);
   const digest = createHash('sha256').update(bytes).digest('hex');

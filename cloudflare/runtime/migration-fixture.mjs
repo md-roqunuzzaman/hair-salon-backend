@@ -350,17 +350,48 @@ export class MigrationFixture {
     let internationalRollback=false;
     try { applyMigrations(storage,[...migrations.slice(0,35),{...migrations[35],sql:migrations[35].sql+'; SELECT * FROM deliberately_missing_international_table;'}]); } catch { internationalRollback=true; }
     if(!internationalRollback||storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==35||JSON.stringify(['Appointment','GroupPurchase','Payment','Wallet'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()))!==beforeInternational)throw new Error('International snapshots migration failed atomic rollback');
-    applyMigrations(storage,migrations);
+    applyMigrations(storage,migrations.slice(0,36));
     if(storage.sql.exec('SELECT COUNT(*) AS n FROM Appointment WHERE timezone IS NOT NULL').one().n||storage.sql.exec('SELECT COUNT(*) AS n FROM GroupPurchase WHERE currency IS NOT NULL').one().n)throw new Error('International migration invented historical snapshots');
     for(const [table,column]of [['Appointment','timezone'],['GroupPurchase','currency']]){const c=storage.sql.exec(`PRAGMA table_info("${table}")`).toArray().find(c=>c.name===column);if(!c||c.notnull||c.dflt_value!==null)throw new Error('Historical snapshots must remain nullable without defaults');}
     // Explicit synthetic writes after migration must survive repeat startup.
     storage.sql.exec("UPDATE Appointment SET timezone='Europe/London'");
     storage.sql.exec("UPDATE GroupPurchase SET currency='GBP'");
     const internationalState=JSON.stringify(['Appointment','GroupPurchase'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()));
-    applyMigrations(storage,migrations);
+    applyMigrations(storage,migrations.slice(0,36));
     if(JSON.stringify(['Appointment','GroupPurchase'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()))!==internationalState)throw new Error('Repeat initialization overwrote international snapshots');
     storage.sql.exec('UPDATE Appointment SET timezone=NULL');
     storage.sql.exec('UPDATE GroupPurchase SET currency=NULL');
+    const currencyTables=['GroupPurchase','Appointment','Payment','Wallet','WalletTransaction','Refund','RefundRequest','RefundAllocation'];
+    const currencyRows=()=>JSON.stringify(currencyTables.map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()));
+    const beforeCurrencyNullGuard=currencyRows();
+    const beforeCurrencyLedger=JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray());
+    const currencyTriggerCount=()=>storage.sql.exec("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger' AND name IN ('required_GroupPurchase_currency_INSERT','required_GroupPurchase_currency_UPDATE')").one().n;
+    let missingCurrencyBlocked=false;
+    try{applyMigrations(storage,migrations);}catch{missingCurrencyBlocked=true;}
+    if(!missingCurrencyBlocked||currencyRows()!==beforeCurrencyNullGuard||JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray())!==beforeCurrencyLedger||currencyTriggerCount()!==0||storage.sql.exec("SELECT name FROM sqlite_master WHERE name='_GroupPurchaseCurrencyRequiredGuard'").toArray().length)throw new Error('Unreconciled currency must block v37 without modifying rows, ledger or schema');
+    // Explicitly reconcile the disposable HKD-only fixture, never migration data.
+    storage.sql.exec("UPDATE GroupPurchase SET currency='HKD'");
+    storage.sql.exec("INSERT INTO GroupPurchase (id,customerId,packageId,quantity,unitPrice,amount,currency,paymentStatus,updatedAt) VALUES ('currency-gbp','customer','legacy-package',1,10000,10000,'GBP','FAILED',1)");
+    const beforeRequiredCurrency=currencyRows();
+    const purchaseTableSql=storage.sql.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='GroupPurchase'").one().sql;
+    let requiredCurrencyRollback=false;
+    try{applyMigrations(storage,[...migrations.slice(0,36),{...migrations[36],sql:migrations[36].sql+'; SELECT * FROM deliberately_missing_required_currency_table;'}]);}catch{requiredCurrencyRollback=true;}
+    if(!requiredCurrencyRollback||currencyRows()!==beforeRequiredCurrency||JSON.stringify(storage.sql.exec('SELECT * FROM _Migrations ORDER BY version').toArray())!==beforeCurrencyLedger||currencyTriggerCount()!==0||storage.sql.exec("SELECT name FROM sqlite_master WHERE name='_GroupPurchaseCurrencyRequiredGuard'").toArray().length)throw new Error('v37 trigger creation and ledger must roll back atomically');
+    applyMigrations(storage,migrations.slice(0,37));
+    if(storage.sql.exec('SELECT MAX(version) AS n FROM _Migrations').one().n!==37||currencyRows()!==beforeRequiredCurrency||currencyTriggerCount()!==2||storage.sql.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='GroupPurchase'").one().sql!==purchaseTableSql)throw new Error('v37 changed historical rows or rebuilt the referenced purchase table');
+    const currencyColumn=storage.sql.exec('PRAGMA table_info(GroupPurchase)').toArray().find(c=>c.name==='currency');
+    if(currencyColumn.dflt_value!==null)throw new Error('v37 invented a currency default');
+    for(const statement of [
+      "INSERT INTO GroupPurchase (id,customerId,packageId,quantity,unitPrice,amount,updatedAt) VALUES ('currency-omitted','customer','legacy-package',1,10000,10000,1)",
+      "INSERT INTO GroupPurchase (id,customerId,packageId,quantity,unitPrice,amount,currency,updatedAt) VALUES ('currency-null','customer','legacy-package',1,10000,10000,NULL,1)",
+      "UPDATE GroupPurchase SET currency=NULL WHERE id='legacy-direct'",
+      "UPDATE GroupPurchase SET amount=10000000000 WHERE id='legacy-direct'",
+      "INSERT INTO GroupPurchase (id,customerId,packageId,quantity,unitPrice,amount,currency,updatedAt) VALUES ('currency-orphan','customer','missing-package',1,10000,10000,'HKD',1)"
+    ]){let rejected=false;try{storage.sql.exec(statement);}catch{rejected=true;}if(!rejected||currencyRows()!==beforeRequiredCurrency)throw new Error('Required currency, existing money or FK enforcement failed');}
+    storage.sql.exec("INSERT INTO GroupPurchase (id,customerId,packageId,quantity,unitPrice,amount,currency,updatedAt) VALUES ('currency-jpy','customer','legacy-package',1,10000,10000,'JPY',1)");
+    const currencyState=currencyRows();
+    applyMigrations(storage,migrations);
+    if(currencyRows()!==currencyState||currencyTriggerCount()!==2||storage.sql.exec('SELECT COUNT(*) AS n FROM _Migrations WHERE version=37').one().n!==1||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('v37 repeat startup changed currency snapshots or foreign keys');
     if(JSON.stringify(['BranchBookingPolicy','BranchCancellationPolicy','GroupPurchaseCancellationPolicy','GroupPurchaseRefundPolicy'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()))!==minuteState)throw new Error('Minute migration multiplied thresholds twice');
     const legacyVerification=storage.sql.exec("SELECT emailVerified,emailVerifiedAt FROM User WHERE id='customer'").one();
     if(legacyVerification.emailVerified!==1||legacyVerification.emailVerifiedAt!==null)throw new Error('Existing customer lost access or received an invented verification timestamp');
@@ -460,7 +491,7 @@ export class MigrationFixture {
     if(storage.sql.exec("SELECT brandId FROM BannerCarouselSetting WHERE id='carousel-custom'").one().brandId!==null)throw new Error('Carousel brand deletion must retain branch settings');
     storage.sql.exec("DELETE FROM Branch WHERE id IN ('carousel-a','carousel-b')");
     if(storage.sql.exec('SELECT COUNT(*) AS n FROM BannerCarouselSetting').one().n!==0||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Carousel branch cascade failed');
-    return Response.json({ preserved: true, repeatable: true, foreignKey: true, checksumProtected: true });
+    return Response.json({ preserved: true, repeatable: true, foreignKey: true, checksumProtected: true, currencyRequired: true });
   }
 }
 export default { fetch(request, env) { return env.DB.get(env.DB.idFromName('upgrade')).fetch(request); } };

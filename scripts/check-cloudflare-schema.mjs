@@ -57,9 +57,20 @@ try {
   await apply(actual, await readFile('cloudflare/migrations/0034_branch_portfolio.sql','utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0035_brand_international_settings.sql','utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0036_international_transaction_snapshots.sql','utf8'));
+  const [currencyPreflight, ...currencyRequiredTriggers] = (await readFile('cloudflare/migrations/0037_group_purchase_currency_required.sql','utf8')).split(/(?=CREATE TRIGGER)/);
+  await apply(actual, currencyPreflight);
+  for (const trigger of currencyRequiredTriggers) await actual.prepare(trigger).run();
+  await apply(actual, await readFile('cloudflare/migrations/0038_service_booking_windows.sql','utf8'));
   // v16 enforces this required field with triggers to retain the referenced table.
   // Verify both exact definitions before treating their enforcement as NOT NULL.
   for (const trigger of requiredTriggers) {
+    const name = trigger.match(/CREATE TRIGGER "([^"]+)"/)[1];
+    const stored = await actual.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").bind(name).first();
+    assert.equal(stored.sql.replace(/;\s*$/, '').trim(), trigger.replace(/;\s*$/, '').trim());
+  }
+  // Normalize logical requiredness only after checking the exact enforcing SQL.
+  assert.equal(currencyRequiredTriggers.length,2);
+  for (const trigger of currencyRequiredTriggers) {
     const name = trigger.match(/CREATE TRIGGER "([^"]+)"/)[1];
     const stored = await actual.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").bind(name).first();
     assert.equal(stored.sql.replace(/;\s*$/, '').trim(), trigger.replace(/;\s*$/, '').trim());
@@ -73,6 +84,9 @@ try {
       const columns = (await db.prepare(`PRAGMA table_info(${quoted})`).all()).results.map(({ cid, ...row }) => row);
       if (db === actual && name === 'Appointment') {
         columns.find(column => column.name === 'orderNumber').notnull = 1;
+      }
+      if (db === actual && name === 'GroupPurchase') {
+        columns.find(column => column.name === 'currency').notnull = 1;
       }
       const foreignKeys = (await db.prepare(`PRAGMA foreign_key_list(${quoted})`).all()).results.map(({ id, ...row }) => row);
       const indexes = (await db.prepare(`PRAGMA index_list(${quoted})`).all()).results;

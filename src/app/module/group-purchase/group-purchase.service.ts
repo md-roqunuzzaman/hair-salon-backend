@@ -46,6 +46,7 @@ import {
   assertTimezoneDuration,
   createDateTimeInTimezone,
 } from "../../utils/brand-timezone.utils.js";
+import { assertCurrencyAmount } from "../../utils/transaction-currency.utils.js";
 
 const initialAppointmentSelect = {
   id: true,
@@ -706,6 +707,7 @@ const createGroupPurchase = async (
               quantity: payload.quantity,
               unitPrice,
               amount,
+              currency: bookingCurrency,
               paymentStatus: purchasePaymentStatus,
               reservationExpiresAt,
               depositPercentage,
@@ -1917,7 +1919,29 @@ const createGroupPurchaseAppointment = async (
             throw new AppError("Brand not found", 404);
           }
 
-          const bookingCurrency = brand.currency;
+          // =============================================
+          // 4.8 PRESERVE ORIGINAL PURCHASE CURRENCY
+          // =============================================
+
+          // Never use the current Brand currency for an
+          // existing purchase redemption.
+          //
+          // A purchase made in HKD must remain HKD even
+          // if the Brand currency later changes to USD.
+          //
+          // Historical NULL/empty currency records must
+          // be reconciled rather than silently defaulted.
+
+          if (!currentPurchase.currency?.trim()) {
+            throw new AppError(
+              "Historical purchase currency requires reconciliation before booking",
+              409,
+            );
+          }
+
+          const bookingCurrency = currentPurchase.currency;
+
+          // Preserve existing timezone behavior.
           const bookingTimezone = brand.timezone;
 
           // =============================================
@@ -2014,6 +2038,7 @@ const createGroupPurchaseAppointment = async (
             where: {
               branchId,
             },
+
             select: {
               minimumBookingNoticeMinutes: true,
             },
@@ -2121,7 +2146,8 @@ const createGroupPurchaseAppointment = async (
               // Already paid through group purchase.
               price: new Prisma.Decimal(0),
 
-              // Persisted international settings snapshot.
+              // Original purchase currency snapshot.
+              // Timezone follows existing Brand settings.
               currency: bookingCurrency,
               timezone: bookingTimezone,
 
@@ -2257,11 +2283,17 @@ export const recordGroupPurchaseRemainingPayment = async (
         async (tx) => {
           const now = new Date();
 
-          // =============================================
+          // =====================================================
           // 4. FIND GROUP PURCHASE
-          // =============================================
+          // =====================================================
 
-          await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id" = ${purchaseId} FOR UPDATE`;
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "GroupPurchase"
+            WHERE "id" = ${purchaseId}
+            FOR UPDATE
+          `;
+
           const purchase = await tx.groupPurchase.findUnique({
             where: {
               id: purchaseId,
@@ -2271,6 +2303,7 @@ export const recordGroupPurchaseRemainingPayment = async (
               settledPaymentId: true,
               customerId: true,
               amount: true,
+              currency: true,
               depositAmount: true,
               purchaseFlow: true,
               bookingMethod: true,
@@ -2297,9 +2330,22 @@ export const recordGroupPurchaseRemainingPayment = async (
             throw new AppError("Group purchase not found", 404);
           }
 
-          // =============================================
+          // =====================================================
+          // 4A. VERIFY HISTORICAL CURRENCY SNAPSHOT
+          // =====================================================
+
+          if (!purchase.currency || !purchase.currency.trim()) {
+            throw new AppError(
+              "Historical purchase currency requires reconciliation before recording remaining payment",
+              409,
+            );
+          }
+
+          const purchaseCurrency = purchase.currency;
+
+          // =====================================================
           // 5. VALIDATE PURCHASE FLOW
-          // =============================================
+          // =====================================================
 
           if (purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK) {
             throw new AppError(
@@ -2320,13 +2366,14 @@ export const recordGroupPurchaseRemainingPayment = async (
             );
           }
 
-          // =============================================
+          // =====================================================
           // 6. VALIDATE FIRST APPOINTMENT
-          // =============================================
+          // =====================================================
 
           const initialAppointments = purchase.appointments.filter(
             (item) => item.bookingMethod === purchase.bookingMethod,
           );
+
           const appointment =
             initialAppointments.length === 1 ? initialAppointments[0] : null;
 
@@ -2341,9 +2388,9 @@ export const recordGroupPurchaseRemainingPayment = async (
             );
           }
 
-          // =============================================
+          // =====================================================
           // 7. BRANCH MANAGER AUTHORIZATION
-          // =============================================
+          // =====================================================
 
           if (role === Role.BRANCH_MANAGER) {
             const managerBranch = await tx.branchManagerBranch.findUnique({
@@ -2363,9 +2410,9 @@ export const recordGroupPurchaseRemainingPayment = async (
             }
           }
 
-          // =============================================
+          // =====================================================
           // 8. VALIDATE PURCHASE PAYMENT STATUS
-          // =============================================
+          // =====================================================
 
           const expectedPaymentStatus = isDeposit
             ? PaymentStatus.PARTIALLY_PAID
@@ -2378,9 +2425,9 @@ export const recordGroupPurchaseRemainingPayment = async (
             );
           }
 
-          // =============================================
+          // =====================================================
           // 9. VALIDATE QR VERIFICATION
-          // =============================================
+          // =====================================================
 
           if (appointment.appointmentStatus !== AppointmentStatus.CONFIRMED) {
             throw new AppError(
@@ -2403,9 +2450,9 @@ export const recordGroupPurchaseRemainingPayment = async (
             );
           }
 
-          // =============================================
+          // =====================================================
           // 10. CALCULATE REMAINING AMOUNT
-          // =============================================
+          // =====================================================
 
           const totalAmount = purchase.amount;
 
@@ -2429,13 +2476,19 @@ export const recordGroupPurchaseRemainingPayment = async (
             throw new AppError("No remaining payment is due", 409);
           }
 
-          // =============================================
-          // 11. CHECK EXISTING SALON PAYMENT
-          // =============================================
+          // =====================================================
+          // 10A. VALIDATE CURRENCY PRECISION
+          // =====================================================
+
+          assertCurrencyAmount(totalAmount, purchaseCurrency);
+
+          assertCurrencyAmount(depositAmount, purchaseCurrency);
+
+          assertCurrencyAmount(remainingAmount, purchaseCurrency);
 
           // =====================================================
-          // =====================================================
-          // 11. VERIFY INITIAL PAYMENT AND CHECK EXISTING PAYMENTS
+          // 11. VERIFY INITIAL PAYMENT
+          //     AND CHECK EXISTING PAYMENTS
           // =====================================================
 
           let initialPaymentId: string | null = null;
@@ -2460,6 +2513,7 @@ export const recordGroupPurchaseRemainingPayment = async (
               initialPayment.customerId !== purchase.customerId ||
               initialPayment.purpose !== PaymentPurpose.GROUP_PURCHASE ||
               initialPayment.status !== PaymentStatus.PAID ||
+              initialPayment.currency !== purchaseCurrency ||
               !initialPayment.amount.equals(depositAmount)
             ) {
               throw new AppError(
@@ -2472,10 +2526,8 @@ export const recordGroupPurchaseRemainingPayment = async (
           }
 
           // For RESERVE_NOW, no deposit was paid.
-          // For DEPOSIT, exclude the verified initial deposit payment.
-          //
-          // Check every other active GROUP_PURCHASE payment attempt,
-          // regardless of amount or payment provider.
+          // For DEPOSIT, exclude the verified initial payment.
+          // Check every other active payment attempt.
 
           const existingPayments = await tx.payment.findMany({
             where: {
@@ -2536,9 +2588,10 @@ export const recordGroupPurchaseRemainingPayment = async (
               409,
             );
           }
-          // =============================================
+
+          // =====================================================
           // 12. ATOMIC PURCHASE STATUS CLAIM
-          // =============================================
+          // =====================================================
 
           const updatedPurchase = await tx.groupPurchase.updateMany({
             where: {
@@ -2549,6 +2602,7 @@ export const recordGroupPurchaseRemainingPayment = async (
             },
             data: {
               paymentStatus: PaymentStatus.PAID,
+
               ...(expectedPaymentStatus === PaymentStatus.UNPAID
                 ? { emailPurchaseConfirmedAt: now }
                 : {}),
@@ -2562,9 +2616,9 @@ export const recordGroupPurchaseRemainingPayment = async (
             );
           }
 
-          // =============================================
+          // =====================================================
           // 13. UPDATE INITIAL APPOINTMENT
-          // =============================================
+          // =====================================================
 
           const updatedAppointment = await tx.appointment.updateMany({
             where: {
@@ -2586,9 +2640,9 @@ export const recordGroupPurchaseRemainingPayment = async (
             );
           }
 
-          // =============================================
+          // =====================================================
           // 14. CREATE SALON PAYMENT RECORD
-          // =============================================
+          // =====================================================
 
           const payment = await tx.payment.create({
             data: {
@@ -2598,15 +2652,17 @@ export const recordGroupPurchaseRemainingPayment = async (
               provider: PaymentProvider.SALON,
               salonPaymentMethod: payload.paymentMethod,
               amount: remainingAmount,
-              currency: "HKD",
+
+              currency: purchaseCurrency,
+
               status: PaymentStatus.PAID,
               paidAt: now,
             },
           });
 
-          // =============================================
+          // =====================================================
           // 15. CUSTOMER NOTIFICATION
-          // =============================================
+          // =====================================================
 
           const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
             Number(payment.amount),
@@ -2625,9 +2681,9 @@ export const recordGroupPurchaseRemainingPayment = async (
             tx,
           );
 
-          // =============================================
+          // =====================================================
           // 16. AUDIT LOG
-          // =============================================
+          // =====================================================
 
           await auditLogService.createAuditLog(
             {
@@ -2642,9 +2698,13 @@ export const recordGroupPurchaseRemainingPayment = async (
                 bookingMethod: purchase.bookingMethod,
                 previousPaymentStatus: expectedPaymentStatus,
                 newPaymentStatus: PaymentStatus.PAID,
+
                 totalAmount: Number(totalAmount),
                 depositAmount: Number(depositAmount),
                 remainingAmount: Number(remainingAmount),
+
+                currency: purchaseCurrency,
+
                 paymentMethod: payload.paymentMethod,
                 provider: PaymentProvider.SALON,
               },
@@ -2652,9 +2712,9 @@ export const recordGroupPurchaseRemainingPayment = async (
             tx,
           );
 
-          // =============================================
+          // =====================================================
           // 17. RESPONSE
-          // =============================================
+          // =====================================================
 
           return {
             purchaseId: purchase.id,
@@ -2662,12 +2722,17 @@ export const recordGroupPurchaseRemainingPayment = async (
             bookingMethod: purchase.bookingMethod,
             appointmentStatus: appointment.appointmentStatus,
             paymentStatus: PaymentStatus.PAID,
+
+            currency: purchaseCurrency,
+
             totalAmount: Number(totalAmount),
             depositAmount: Number(depositAmount),
             remainingAmount: Number(remainingAmount),
+
             remainingPayment: {
               id: payment.id,
               amount: Number(payment.amount),
+              currency: payment.currency,
               paymentMethod: payment.salonPaymentMethod,
               provider: payment.provider,
               status: payment.status,

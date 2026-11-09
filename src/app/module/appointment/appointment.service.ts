@@ -873,6 +873,87 @@ export const assertBranchHourlyCapacityAvailable = async (
     hourStart += 60;
   }
 };
+const assertServiceBookingWindowAvailable = async (
+  tx: Prisma.TransactionClient,
+  params: {
+    serviceId?: string;
+    branchId: string;
+    date: string;
+    requestedStart: number;
+    requestedEnd: number;
+  },
+): Promise<void> => {
+  const { serviceId, branchId, date, requestedStart, requestedEnd } = params;
+
+  // Package bookings are not restricted by service booking windows.
+  if (!serviceId) {
+    return;
+  }
+
+  const serviceBranch = await tx.serviceBranch.findUnique({
+    where: {
+      serviceId_branchId: {
+        serviceId,
+        branchId,
+      },
+    },
+    select: {
+      bookingHoursEnabled: true,
+      bookingWindows: {
+        select: {
+          day: true,
+          startTime: true,
+          endTime: true,
+        },
+      },
+    },
+  });
+
+  if (!serviceBranch) {
+    throw new AppError("Service is not available at this branch", 400);
+  }
+
+  // Default: normal branch/staff booking schedule.
+  if (!serviceBranch.bookingHoursEnabled) {
+    return;
+  }
+
+  const dateOnly = new Date(`${date}T00:00:00.000Z`);
+
+  if (Number.isNaN(dateOnly.getTime())) {
+    throw new AppError("Invalid booking date", 400);
+  }
+
+  const days = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+  ] as const;
+
+  const requestedDay = days[dateOnly.getUTCDay()];
+
+  const isAllowed = serviceBranch.bookingWindows.some((window) => {
+    if (window.day !== requestedDay) {
+      return false;
+    }
+
+    const windowStart = timeToMinutes(window.startTime);
+    const windowEnd = timeToMinutes(window.endTime);
+
+    return requestedStart >= windowStart && requestedEnd <= windowEnd;
+  });
+
+  if (!isAllowed) {
+    throw new AppError(
+      "The selected time is outside the service booking hours",
+      409,
+    );
+  }
+};
 
 const createPayNowAppointment = async (
   customerId: string,
@@ -1078,7 +1159,9 @@ const createPayNowAppointment = async (
 
           if (
             !Number.isFinite(requestedStart) ||
+            !Number.isFinite(requestedEnd) ||
             requestedStart < 0 ||
+            requestedStart >= requestedEnd ||
             requestedEnd > 1440
           ) {
             throw new AppError("Invalid booking time range", 400);
@@ -1092,6 +1175,7 @@ const createPayNowAppointment = async (
           // =================================================
 
           assertCurrencyAmount(price, bookingCurrency);
+
           assertTimezoneDuration(
             date,
             startTime,
@@ -1099,6 +1183,7 @@ const createPayNowAppointment = async (
             durationMinutes,
             bookingTimezone,
           );
+
           const appointmentStartUTC = createDateTimeInTimezone(
             date,
             startTime,
@@ -1118,6 +1203,30 @@ const createPayNowAppointment = async (
           // Maximum advance booking days is enforced by
           // AvailabilityService. The transaction-level check
           // above protects the minimum notice against elapsed time.
+
+          // =================================================
+          // 7.1 SERVICE-SPECIFIC BOOKING HOURS VALIDATION
+          // =================================================
+          // Custom booking hours are optional per service/branch.
+          //
+          // bookingHoursEnabled = false:
+          //   Existing branch/staff booking behavior remains.
+          //
+          // bookingHoursEnabled = true:
+          //   The full appointment must fit within one
+          //   configured booking window for the requested day.
+          //
+          // Package bookings are unaffected.
+          //
+          // Run inside the current Serializable transaction.
+
+          await assertServiceBookingWindowAvailable(tx, {
+            serviceId: serviceId ?? undefined,
+            branchId,
+            date,
+            requestedStart,
+            requestedEnd,
+          });
 
           // =================================================
           // 8. SMART STAFF RESOLUTION
@@ -1559,6 +1668,7 @@ const createDepositAppointment = async (
           // =================================================
 
           assertCurrencyAmount(price, bookingCurrency);
+
           assertTimezoneDuration(
             date,
             startTime,
@@ -1566,6 +1676,7 @@ const createDepositAppointment = async (
             durationMinutes,
             bookingTimezone,
           );
+
           const appointmentStartUTC = createDateTimeInTimezone(
             date,
             startTime,
@@ -1584,6 +1695,21 @@ const createDepositAppointment = async (
 
           // Maximum advance days is checked by the
           // timezone-aware AvailabilityService.
+
+          // =================================================
+          // 8.1 SERVICE-SPECIFIC BOOKING HOURS VALIDATION
+          // =================================================
+          // Optional custom booking schedule per service/branch.
+          // Package bookings remain unaffected.
+          // This check runs inside the Serializable transaction.
+
+          await assertServiceBookingWindowAvailable(tx, {
+            serviceId: serviceId ?? undefined,
+            branchId,
+            date,
+            requestedStart,
+            requestedEnd,
+          });
 
           // =================================================
           // 9. RESOLVE AVAILABLE STAFF INSIDE TRANSACTION
@@ -1824,7 +1950,6 @@ const createDepositAppointment = async (
 
   throw new AppError("The selected time slot is no longer available", 409);
 };
-
 const createReserveAppointment = async (
   customerId: string,
   payload: ICreateReserveAppointmentPayload,
@@ -2066,6 +2191,7 @@ const createReserveAppointment = async (
           // =================================================
 
           assertCurrencyAmount(price, bookingCurrency);
+
           assertTimezoneDuration(
             date,
             startTime,
@@ -2073,6 +2199,7 @@ const createReserveAppointment = async (
             durationMinutes,
             bookingTimezone,
           );
+
           const appointmentStartUTC = createDateTimeInTimezone(
             date,
             startTime,
@@ -2091,6 +2218,22 @@ const createReserveAppointment = async (
 
           // Maximum advance booking days is enforced by
           // the timezone-aware AvailabilityService.
+
+          // =================================================
+          // 7.1 SERVICE-SPECIFIC BOOKING HOURS VALIDATION
+          // =================================================
+          // Custom booking hours are optional per service/branch.
+          // Entire appointment must fit within one allowed window.
+          // Package bookings remain unaffected.
+          // Validation runs inside the Serializable transaction.
+
+          await assertServiceBookingWindowAvailable(tx, {
+            serviceId: serviceId ?? undefined,
+            branchId,
+            date,
+            requestedStart,
+            requestedEnd,
+          });
 
           // =================================================
           // 8. RESOLVE AVAILABLE STAFF INSIDE TRANSACTION
@@ -4041,10 +4184,15 @@ const rescheduleAppointment = async (
   }
 
   const requestedStart = timeToMinutes(startTime);
-
   const requestedEnd = requestedStart + appointment.durationMinutes;
 
-  if (requestedStart < 0 || requestedStart >= 1440 || requestedEnd > 1440) {
+  if (
+    !Number.isFinite(requestedStart) ||
+    !Number.isFinite(requestedEnd) ||
+    requestedStart < 0 ||
+    requestedStart >= requestedEnd ||
+    requestedEnd > 1440
+  ) {
     throw new AppError("Appointment time is outside the valid day range", 422);
   }
 
@@ -4227,6 +4375,28 @@ const rescheduleAppointment = async (
             appointment.durationMinutes,
             currentTimezone,
           );
+
+          // =============================================
+          // 8.5.1 SERVICE-SPECIFIC BOOKING HOURS
+          // =============================================
+
+          // Validate the new booking time against the
+          // service's configured booking windows.
+          //
+          // If custom booking hours are disabled,
+          // existing availability rules remain unchanged.
+          //
+          // Package bookings are unaffected.
+          //
+          // Runs inside the Serializable transaction.
+
+          await assertServiceBookingWindowAvailable(tx, {
+            serviceId: appointment.serviceId ?? undefined,
+            branchId: current.branchId,
+            date,
+            requestedStart,
+            requestedEnd,
+          });
 
           // =============================================
           // 8.6 FINAL STAFF SELECTION
@@ -4447,7 +4617,6 @@ const rescheduleAppointment = async (
 
   throw new AppError("The selected time slot is no longer available", 409);
 };
-
 const getAppointmentQr = async (
   appointmentId: string,
   customerId: string,

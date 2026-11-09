@@ -1,4 +1,10 @@
-import { stripeAmount, getPurchaseCurrency, currencyDigits, assertCurrencyAmount, assertSameCurrency } from "../../utils/transaction-currency.utils.js";
+import {
+  stripeAmount,
+  getPurchaseCurrency,
+  currencyDigits,
+  assertCurrencyAmount,
+  assertSameCurrency,
+} from "../../utils/transaction-currency.utils.js";
 import { reconcileUnappliedCapture } from "./unapplied-capture.js";
 import { reconcileApprovedStripeRefund } from "../refund-request/refund-request.processing.js";
 import { reconcileRefundAllocation } from "../refund-request/refund-allocation.processing.js";
@@ -53,32 +59,27 @@ const createStripeIntent = async (
   customerId: string,
   payload: ICreateStripeIntentPayload,
 ): Promise<ICreateStripeIntentResponse> => {
+  const appointmentId = payload.appointmentId;
+
   // =====================================================
   // 1. FIND APPOINTMENT
   // =====================================================
 
   const appointment = await prisma.appointment.findUnique({
     where: {
-      id: payload.appointmentId,
+      id: appointmentId,
     },
-
     select: {
       id: true,
       customerId: true,
-
       groupPurchaseId: true,
-
       bookingMethod: true,
       appointmentStatus: true,
       paymentStatus: true,
-
       price: true,
-
       depositAmount: true,
       remainingAmount: true,
-
       currency: true,
-
       holdExpiresAt: true,
     },
   });
@@ -96,7 +97,7 @@ const createStripeIntent = async (
   }
 
   // =====================================================
-  // 3. BLOCK GROUP PURCHASE-LINKED APPOINTMENTS
+  // 3. BLOCK GROUP PURCHASE APPOINTMENTS
   // =====================================================
 
   if (appointment.groupPurchaseId !== null) {
@@ -107,7 +108,7 @@ const createStripeIntent = async (
   }
 
   // =====================================================
-  // 4. MUST BE PAY NOW OR DEPOSIT
+  // 4. VALIDATE BOOKING METHOD
   // =====================================================
 
   if (
@@ -121,7 +122,7 @@ const createStripeIntent = async (
   }
 
   // =====================================================
-  // 5. VALID APPOINTMENT STATE
+  // 5. VALIDATE APPOINTMENT PAYMENT STATE
   // =====================================================
 
   if (appointment.appointmentStatus !== AppointmentStatus.PENDING_PAYMENT) {
@@ -137,7 +138,7 @@ const createStripeIntent = async (
   }
 
   // =====================================================
-  // 6. ACTIVE HOLD CHECK
+  // 6. VALIDATE ACTIVE HOLD
   // =====================================================
 
   if (!appointment.holdExpiresAt || appointment.holdExpiresAt <= new Date()) {
@@ -145,226 +146,453 @@ const createStripeIntent = async (
   }
 
   // =====================================================
-  // 7. DETERMINE PAYMENT PURPOSE + AMOUNT
+  // 7. DETERMINE PAYMENT PURPOSE AND AMOUNT
   // =====================================================
 
-  let paymentPurpose: PaymentPurpose;
-  let paymentAmount;
+  const paymentPurpose =
+    appointment.bookingMethod === BookingMethod.PAY_NOW
+      ? PaymentPurpose.APPOINTMENT
+      : PaymentPurpose.APPOINTMENT_DEPOSIT;
 
-  if (appointment.bookingMethod === BookingMethod.PAY_NOW) {
-    paymentPurpose = PaymentPurpose.APPOINTMENT;
-    paymentAmount = appointment.price;
-  } else {
-    if (!appointment.depositAmount) {
-      throw new AppError(
-        "Deposit amount is not configured for this appointment",
-        500,
-      );
+  let paymentAmount = appointment.price;
+
+  if (appointment.bookingMethod === BookingMethod.DEPOSIT) {
+    if (
+      !appointment.depositAmount ||
+      appointment.depositAmount.lte(0) ||
+      appointment.depositAmount.gte(appointment.price)
+    ) {
+      throw new AppError("Invalid deposit amount for this appointment", 422);
     }
 
-    paymentPurpose = PaymentPurpose.APPOINTMENT_DEPOSIT;
     paymentAmount = appointment.depositAmount;
   }
 
+  // Always use the appointment currency snapshot.
+  const currency = appointment.currency;
+
+  assertCurrencyAmount(paymentAmount, currency);
+
+  const amountInCents = stripeAmount(paymentAmount, currency);
+
+  if (!Number.isSafeInteger(amountInCents) || amountInCents <= 0) {
+    throw new AppError("Invalid Stripe payment amount", 422);
+  }
+
   // =====================================================
-  // 8. REUSE EXISTING ACTIVE PENDING PAYMENT
+  // 8. CREATE OR REUSE LOCAL PAYMENT ATOMICALLY
   // =====================================================
 
-  const existingPayment = await prisma.payment.findFirst({
-    where: {
-      appointmentId: appointment.id,
-      customerId,
-      purpose: paymentPurpose,
-      status: PaymentStatus.PENDING,
-      providerPaymentId: {
-        not: null,
-      },
-    },
+  let payment: Prisma.PaymentGetPayload<{}> | undefined;
 
-    orderBy: {
-      createdAt: "desc",
-    },
-  });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      payment = await prisma.$transaction(
+        async (tx) => {
+          // Serialize payment creation for this appointment.
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "Appointment"
+            WHERE "id" = ${appointmentId}
+            FOR UPDATE
+          `;
 
-  if (existingPayment && existingPayment.providerPaymentId) {
-    // Recheck appointment before returning an existing
-    // Stripe client secret.
-    const currentAppointment = await prisma.appointment.findUnique({
+          const current = await tx.appointment.findUnique({
+            where: {
+              id: appointmentId,
+            },
+            select: {
+              id: true,
+              customerId: true,
+              groupPurchaseId: true,
+              bookingMethod: true,
+              appointmentStatus: true,
+              paymentStatus: true,
+              price: true,
+              depositAmount: true,
+              currency: true,
+              holdExpiresAt: true,
+            },
+          });
+
+          if (
+            !current ||
+            current.customerId !== customerId ||
+            current.groupPurchaseId !== null ||
+            current.bookingMethod !== appointment.bookingMethod ||
+            current.appointmentStatus !== AppointmentStatus.PENDING_PAYMENT ||
+            current.paymentStatus !== PaymentStatus.PENDING ||
+            !current.holdExpiresAt ||
+            current.holdExpiresAt <= new Date()
+          ) {
+            throw new AppError(
+              "Appointment is no longer eligible for payment",
+              409,
+            );
+          }
+
+          // =================================================
+          // 8.1 VERIFY AMOUNT AND CURRENCY SNAPSHOT
+          // =================================================
+
+          if (
+            current.currency !== currency ||
+            !current.price.equals(appointment.price) ||
+            (current.depositAmount === null
+              ? appointment.depositAmount !== null
+              : appointment.depositAmount === null ||
+                !current.depositAmount.equals(appointment.depositAmount))
+          ) {
+            throw new AppError(
+              "Appointment payment amount or currency changed",
+              409,
+            );
+          }
+
+          const currentExpectedAmount =
+            current.bookingMethod === BookingMethod.PAY_NOW
+              ? current.price
+              : current.depositAmount;
+
+          if (
+            !currentExpectedAmount ||
+            !currentExpectedAmount.equals(paymentAmount)
+          ) {
+            throw new AppError("Appointment payable amount changed", 409);
+          }
+
+          // =================================================
+          // 8.2 FIND EXISTING PENDING STRIPE PAYMENT
+          // =================================================
+
+          const pending = await tx.payment.findFirst({
+            where: {
+              appointmentId,
+              customerId,
+              purpose: paymentPurpose,
+              provider: PaymentProvider.STRIPE,
+              status: PaymentStatus.PENDING,
+            },
+            orderBy: {
+              createdAt: "asc",
+            },
+          });
+
+          if (pending) {
+            if (
+              !pending.amount.equals(paymentAmount) ||
+              pending.currency !== currency
+            ) {
+              throw new AppError(
+                "Existing pending payment amount or currency mismatch",
+                409,
+              );
+            }
+
+            return pending;
+          }
+
+          // =================================================
+          // 8.3 BLOCK OTHER PENDING PAYMENT ATTEMPTS
+          // =================================================
+
+          const otherPending = await tx.payment.findFirst({
+            where: {
+              appointmentId,
+              customerId,
+              purpose: paymentPurpose,
+              status: PaymentStatus.PENDING,
+            },
+          });
+
+          if (otherPending) {
+            throw new AppError(
+              "Another payment attempt is already pending",
+              409,
+            );
+          }
+
+          // =================================================
+          // 8.4 CREATE PAYMENT ATTEMPT
+          // =================================================
+
+          return tx.payment.create({
+            data: {
+              customerId,
+              appointmentId,
+              purpose: paymentPurpose,
+              provider: PaymentProvider.STRIPE,
+              amount: paymentAmount,
+              currency,
+              status: PaymentStatus.PENDING,
+            },
+          });
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 15000,
+        },
+      );
+
+      break;
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034" &&
+        attempt < 3
+      ) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  if (!payment) {
+    throw new AppError("Appointment payment creation conflict", 409);
+  }
+
+  // =====================================================
+  // 9. VERIFY LOCAL PAYMENT SNAPSHOT
+  // =====================================================
+
+  if (
+    payment.customerId !== customerId ||
+    payment.appointmentId !== appointmentId ||
+    payment.purpose !== paymentPurpose ||
+    payment.provider !== PaymentProvider.STRIPE ||
+    payment.status !== PaymentStatus.PENDING ||
+    !payment.amount.equals(paymentAmount) ||
+    payment.currency !== currency
+  ) {
+    throw new AppError("Appointment payment snapshot mismatch", 409);
+  }
+
+  // =====================================================
+  // 10. CREATE OR REUSE STRIPE PAYMENT INTENT
+  // =====================================================
+
+  try {
+    let paymentIntent: Stripe.PaymentIntent;
+
+    if (payment.providerPaymentId) {
+      // Reuse the existing Stripe intent.
+      // Retrieval failure must not create another
+      // payment attempt automatically.
+
+      paymentIntent = await stripe.paymentIntents.retrieve(
+        payment.providerPaymentId,
+      );
+    } else {
+      // Stripe idempotency key is based on the stable
+      // local payment ID.
+
+      paymentIntent = await stripe.paymentIntents.create(
+        {
+          amount: amountInCents,
+          currency: currency.toLowerCase(),
+
+          metadata: {
+            paymentId: payment.id,
+            appointmentId,
+            customerId,
+            purpose: paymentPurpose,
+          },
+
+          automatic_payment_methods: {
+            enabled: true,
+            allow_redirects: "never",
+          },
+        },
+        {
+          idempotencyKey: `${paymentPurpose.toLowerCase()}-${payment.id}`,
+        },
+      );
+
+      // =================================================
+      // 10.1 SAVE STRIPE PAYMENT INTENT ID SAFELY
+      // =================================================
+
+      const updated = await prisma.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: PaymentStatus.PENDING,
+          provider: PaymentProvider.STRIPE,
+          providerPaymentId: null,
+        },
+        data: {
+          providerPaymentId: paymentIntent.id,
+        },
+      });
+
+      if (updated.count !== 1) {
+        const latestPayment = await prisma.payment.findUnique({
+          where: {
+            id: payment.id,
+          },
+        });
+
+        if (
+          !latestPayment ||
+          latestPayment.providerPaymentId !== paymentIntent.id
+        ) {
+          throw new AppError("Stripe PaymentIntent identity conflict", 409);
+        }
+      }
+    }
+
+    // =====================================================
+    // 11. VERIFY STRIPE PAYMENT INTENT
+    // =====================================================
+
+    if (
+      paymentIntent.amount !== amountInCents ||
+      paymentIntent.currency.toLowerCase() !== currency.toLowerCase() ||
+      paymentIntent.metadata?.paymentId !== payment.id ||
+      paymentIntent.metadata?.appointmentId !== appointmentId ||
+      paymentIntent.metadata?.customerId !== customerId ||
+      paymentIntent.metadata?.purpose !== paymentPurpose
+    ) {
+      throw new AppError(
+        "Stripe PaymentIntent does not match appointment",
+        409,
+      );
+    }
+
+    const payableStatuses = [
+      "requires_payment_method",
+      "requires_confirmation",
+      "requires_action",
+    ];
+
+    if (
+      !paymentIntent.client_secret ||
+      !payableStatuses.includes(paymentIntent.status)
+    ) {
+      throw new AppError("Stripe PaymentIntent is not in a payable state", 409);
+    }
+
+    // =====================================================
+    // 12. RECHECK APPOINTMENT AFTER STRIPE CALL
+    // =====================================================
+
+    const latestAppointment = await prisma.appointment.findUnique({
       where: {
-        id: appointment.id,
+        id: appointmentId,
       },
       select: {
         customerId: true,
         groupPurchaseId: true,
+        bookingMethod: true,
         appointmentStatus: true,
         paymentStatus: true,
+        price: true,
+        depositAmount: true,
+        currency: true,
         holdExpiresAt: true,
       },
     });
 
     if (
-      !currentAppointment ||
-      currentAppointment.customerId !== customerId ||
-      currentAppointment.groupPurchaseId !== null ||
-      currentAppointment.appointmentStatus !==
+      !latestAppointment ||
+      latestAppointment.customerId !== customerId ||
+      latestAppointment.groupPurchaseId !== null ||
+      latestAppointment.bookingMethod !== appointment.bookingMethod ||
+      latestAppointment.appointmentStatus !==
         AppointmentStatus.PENDING_PAYMENT ||
-      currentAppointment.paymentStatus !== PaymentStatus.PENDING ||
-      !currentAppointment.holdExpiresAt ||
-      currentAppointment.holdExpiresAt <= new Date()
+      latestAppointment.paymentStatus !== PaymentStatus.PENDING ||
+      !latestAppointment.holdExpiresAt ||
+      latestAppointment.holdExpiresAt <= new Date()
     ) {
       throw new AppError("Appointment is no longer eligible for payment", 409);
     }
 
-    try {
-      const existingIntent = await stripe.paymentIntents.retrieve(
-        existingPayment.providerPaymentId,
-      );
+    // =====================================================
+    // 13. RECHECK AMOUNT AND CURRENCY
+    // =====================================================
 
-      if (
-        existingIntent.client_secret &&
-        [
-          "requires_payment_method",
-          "requires_confirmation",
-          "requires_action",
-          "processing",
-        ].includes(existingIntent.status)
-      ) {
-        return {
-          paymentId: existingPayment.id,
-          appointmentId: appointment.id,
-          amount: Number(existingPayment.amount),
-          currency: existingPayment.currency,
-          paymentStatus: "PENDING",
-          clientSecret: existingIntent.client_secret,
-        };
-      }
-    } catch {
-      // Existing Stripe intent cannot be reused.
-      // Continue with a new payment attempt.
-    }
-  }
+    const latestExpectedAmount =
+      latestAppointment.bookingMethod === BookingMethod.PAY_NOW
+        ? latestAppointment.price
+        : latestAppointment.depositAmount;
 
-  // =====================================================
-  // 9. RECHECK BEFORE CREATING PAYMENT ATTEMPT
-  // =====================================================
-
-  const latestAppointment = await prisma.appointment.findUnique({
-    where: {
-      id: appointment.id,
-    },
-
-    select: {
-      customerId: true,
-      groupPurchaseId: true,
-      bookingMethod: true,
-      appointmentStatus: true,
-      paymentStatus: true,
-      holdExpiresAt: true,
-    },
-  });
-
-  if (
-    !latestAppointment ||
-    latestAppointment.customerId !== customerId ||
-    latestAppointment.groupPurchaseId !== null ||
-    latestAppointment.bookingMethod !== appointment.bookingMethod ||
-    latestAppointment.appointmentStatus !== AppointmentStatus.PENDING_PAYMENT ||
-    latestAppointment.paymentStatus !== PaymentStatus.PENDING ||
-    !latestAppointment.holdExpiresAt ||
-    latestAppointment.holdExpiresAt <= new Date()
-  ) {
-    throw new AppError("Appointment is no longer eligible for payment", 409);
-  }
-
-  // =====================================================
-  // 10. CREATE LOCAL PAYMENT ATTEMPT
-  // =====================================================
-
-  const payment = await prisma.payment.create({
-    data: {
-      customerId,
-      appointmentId: appointment.id,
-      purpose: paymentPurpose,
-      amount: paymentAmount,
-      currency: appointment.currency,
-      status: PaymentStatus.PENDING,
-    },
-  });
-
-  // =====================================================
-  // 11. CREATE STRIPE PAYMENT INTENT
-  // =====================================================
-
-  try {
-    const paymentIntent = await stripe.paymentIntents.create(
-      {
-        amount: stripeAmount(paymentAmount, appointment.currency),
-
-        currency: appointment.currency.toLowerCase(),
-
-        metadata: {
-          paymentId: payment.id,
-          appointmentId: appointment.id,
-          customerId,
-          purpose: paymentPurpose,
-        },
-
-        automatic_payment_methods: {
-          enabled: true,
-          allow_redirects: "never",
-        },
-      },
-
-      {
-        idempotencyKey: `${paymentPurpose.toLowerCase()}-${payment.id}`,
-      },
-    );
-
-    if (!paymentIntent.client_secret) {
-      throw new Error("Stripe did not return client secret");
+    if (
+      latestAppointment.currency !== currency ||
+      !latestExpectedAmount ||
+      !latestExpectedAmount.equals(paymentAmount)
+    ) {
+      throw new AppError("Appointment payable amount or currency changed", 409);
     }
 
-    // ===================================================
-    // 12. SAVE STRIPE PAYMENT INTENT ID
-    // ===================================================
+    // =====================================================
+    // 14. RECHECK LOCAL PAYMENT
+    // =====================================================
 
-    const updatedPayment = await prisma.payment.update({
+    const latestPayment = await prisma.payment.findUnique({
       where: {
         id: payment.id,
       },
-
-      data: {
-        providerPaymentId: paymentIntent.id,
+      select: {
+        customerId: true,
+        appointmentId: true,
+        purpose: true,
+        provider: true,
+        amount: true,
+        currency: true,
+        status: true,
+        providerPaymentId: true,
       },
     });
 
+    if (
+      !latestPayment ||
+      latestPayment.customerId !== customerId ||
+      latestPayment.appointmentId !== appointmentId ||
+      latestPayment.purpose !== paymentPurpose ||
+      latestPayment.provider !== PaymentProvider.STRIPE ||
+      latestPayment.status !== PaymentStatus.PENDING ||
+      !latestPayment.amount.equals(paymentAmount) ||
+      latestPayment.currency !== currency ||
+      latestPayment.providerPaymentId !== paymentIntent.id
+    ) {
+      throw new AppError("Appointment payment is no longer payable", 409);
+    }
+
+    // =====================================================
+    // 15. RESPONSE
+    // =====================================================
+
     return {
-      paymentId: updatedPayment.id,
-      appointmentId: appointment.id,
-      amount: Number(updatedPayment.amount),
-      currency: updatedPayment.currency,
+      paymentId: payment.id,
+      appointmentId,
+      amount: Number(payment.amount),
+      currency: payment.currency,
       paymentStatus: "PENDING",
       clientSecret: paymentIntent.client_secret,
     };
-  } catch {
-    // ===================================================
-    // Stripe operation failed.
-    // Preserve payment audit trail.
-    // ===================================================
+  } catch (error) {
+    // =====================================================
+    // 16. ERROR HANDLING
+    // =====================================================
 
-    await prisma.payment.updateMany({
-      where: {
-        id: payment.id,
-        status: PaymentStatus.PENDING,
-      },
+    // Do not mark the payment FAILED here.
+    //
+    // Stripe may already have created the intent,
+    // even when the network response or DB update fails.
+    //
+    // The same payment ID and idempotency key allow
+    // safe recovery on the next request.
 
-      data: {
-        status: PaymentStatus.FAILED,
-        failedAt: new Date(),
-      },
+    if (error instanceof AppError) {
+      throw error;
+    }
+
+    logUnexpectedError(error, {
+      source: "src/app/module/payment/payment.service.ts:createStripeIntent",
     });
 
-    throw new AppError("Stripe PaymentIntent creation failed", 502);
+    throw new AppError("Unable to create Stripe PaymentIntent", 502);
   }
 };
 
@@ -393,15 +621,20 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
     throw new AppError("Invalid Stripe webhook signature", 400);
   }
 
-  // Refund notifications may arrive after a timeout or a crash before local finalization.
+  // Refund notifications may arrive after a timeout
+  // or a crash before local finalization.
+
   if (
     ["refund.created", "refund.updated", "refund.failed"].includes(event.type)
   ) {
     const providerRefund = event.data.object as Stripe.Refund;
+
     const processed = await prisma.stripeWebhookEvent.findUnique({
       where: { id: event.id },
     });
+
     if (processed) return { received: true };
+
     const allocation = await prisma.refundAllocation.findFirst({
       where: {
         OR: [
@@ -415,15 +648,19 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         ],
       },
     });
+
     if (allocation) {
       await reconcileRefundAllocation(allocation.id);
+
       await prisma.stripeWebhookEvent.upsert({
         where: { id: event.id },
         create: { id: event.id, type: event.type },
         update: {},
       });
+
       return { received: true };
     }
+
     const local = await prisma.refund.findFirst({
       where: {
         reason: {
@@ -441,17 +678,22 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       },
       include: { payment: true },
     });
+
     if (local?.payment.providerPaymentId) {
       const intent = await stripe.paymentIntents.retrieve(
         local.payment.providerPaymentId,
       );
+
       if (
         local.payment.appointmentId ||
         intent.metadata?.paymentStage === "REMAINING"
-      )
+      ) {
         return reconcileUnappliedCapture(local.paymentId, event);
+      }
+
       return handleGroupPurchaseStripeEvent(event, intent);
     }
+
     const approved = await prisma.refund.findFirst({
       where: {
         OR: [
@@ -463,13 +705,17 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       },
       include: { refundRequest: true, payment: true },
     });
+
     if (approved?.refundRequest) {
       const result = await reconcileApprovedStripeRefund(
         approved.refundRequest.id,
       );
-      if (result.status !== "COMPLETED")
+
+      if (result.status !== "COMPLETED") {
         throw new AppError("Stripe refund is still pending", 503);
+      }
     }
+
     return { received: true };
   }
 
@@ -538,7 +784,8 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       paymentIntent.status !== "succeeded" ||
       paymentIntent.currency.toLowerCase() !== payment.currency.toLowerCase() ||
       paymentIntent.amount !== stripeAmount(payment.amount, payment.currency) ||
-      paymentIntent.amount_received !== stripeAmount(payment.amount, payment.currency)
+      paymentIntent.amount_received !==
+        stripeAmount(payment.amount, payment.currency)
     ) {
       throw new AppError("Stripe payment verification failed", 409);
     }
@@ -561,8 +808,15 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
     // ===================================================
 
     const transactionResult = await prisma.$transaction(async (tx) => {
-      if (payment.appointmentId)
-        await tx.$queryRaw`SELECT "id" FROM "Appointment" WHERE "id"=${payment.appointmentId} FOR UPDATE`;
+      if (payment.appointmentId) {
+        await tx.$queryRaw`
+          SELECT "id"
+          FROM "Appointment"
+          WHERE "id" = ${payment.appointmentId}
+          FOR UPDATE
+        `;
+      }
+
       const existingEvent = await tx.stripeWebhookEvent.findUnique({
         where: {
           id: event.id,
@@ -586,17 +840,47 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         throw new AppError("Payment not found", 404);
       }
 
-      // ===============================================
-      // PAYMENT -> PAID
-      // ===============================================
+      // Verify the current database identity again
+      // under the transaction.
 
       if (
-        currentPayment.status === PaymentStatus.PENDING ||
-        currentPayment.status === PaymentStatus.FAILED
+        currentPayment.provider !== PaymentProvider.STRIPE ||
+        currentPayment.providerPaymentId !== paymentIntent.id ||
+        currentPayment.currency.toLowerCase() !==
+          paymentIntent.currency.toLowerCase() ||
+        stripeAmount(currentPayment.amount, currentPayment.currency) !==
+          paymentIntent.amount ||
+        paymentIntent.amount_received !== paymentIntent.amount
       ) {
-        await tx.payment.update({
+        throw new AppError("Stripe captured payment identity mismatch", 409);
+      }
+
+      // IMPORTANT:
+      // Do not mark PAID before the appointment remaining
+      // branch checks its previous state.
+      //
+      // Otherwise remaining payments may appear already
+      // settled and skip the appointment update.
+
+      let lateAppointmentPayment: LateAppointmentPayment | null = null;
+
+      // CONTINUES IN PART 2
+
+      // ===================================================
+      // LATE CAPTURE / DUPLICATE PAYMENT REFUND HELPER
+      // ===================================================
+
+      const rejectAppointmentCapture = async () => {
+        // Stripe has captured the money.
+        // Preserve the financial record while the existing
+        // reconciliation workflow handles the refund.
+
+        await tx.payment.updateMany({
           where: {
             id: currentPayment.id,
+            status: {
+              in: [PaymentStatus.PENDING, PaymentStatus.FAILED],
+            },
           },
           data: {
             status: PaymentStatus.PAID,
@@ -604,15 +888,13 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             failedAt: null,
           },
         });
-      }
 
-      let lateAppointmentPayment: LateAppointmentPayment | null = null;
-      const rejectAppointmentCapture = async () => {
         await getOrCreateLateGroupPurchaseRefund(
           currentPayment.id,
           currentPayment.amount,
           tx,
         );
+
         return {
           alreadyProcessed: false,
           lateAppointmentPayment: {
@@ -625,6 +907,11 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           },
         };
       };
+
+      // ===================================================
+      // APPOINTMENT PAYMENT IDENTITY
+      // ===================================================
+
       if (currentPayment.appointmentId) {
         if (
           paymentIntent.metadata?.paymentId !== currentPayment.id ||
@@ -632,44 +919,80 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             currentPayment.appointmentId ||
           paymentIntent.metadata?.customerId !== currentPayment.customerId ||
           paymentIntent.metadata?.purpose !== currentPayment.purpose
-        )
+        ) {
           throw new AppError(
             "Invalid appointment Stripe payment identity",
             409,
           );
+        }
+
+        // Check whether this captured payment is already
+        // being reconciled as a late payment.
+
         const pendingCapture = await tx.refund.findFirst({
           where: {
             paymentId: currentPayment.id,
             reason: "LATE_PAYMENT_AFTER_APPOINTMENT_EXPIRY",
           },
         });
-        const settled = ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(
-          currentPayment.status,
-        );
+
+        const settledStatuses: PaymentStatus[] = [
+          PaymentStatus.PAID,
+          PaymentStatus.PARTIALLY_REFUNDED,
+          PaymentStatus.REFUNDED,
+        ];
+
+        const settled = settledStatuses.includes(currentPayment.status);
+
         if (pendingCapture || settled) {
-          if (pendingCapture) return rejectAppointmentCapture();
+          if (pendingCapture) {
+            return rejectAppointmentCapture();
+          }
+
+          // Already settled. Do not mutate the appointment
+          // or generate another notification.
+
           await tx.stripeWebhookEvent.create({
-            data: { id: event.id, type: event.type },
+            data: {
+              id: event.id,
+              type: event.type,
+            },
           });
+
           return {
             alreadyProcessed: true,
             lateAppointmentPayment: null as LateAppointmentPayment | null,
           };
         }
+
+        // Prevent a second successful payment for the same
+        // appointment and payment purpose.
+
         const other = await tx.payment.findFirst({
           where: {
             appointmentId: currentPayment.appointmentId,
             purpose: currentPayment.purpose,
-            id: { not: currentPayment.id },
-            status: { in: ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"] },
+            id: {
+              not: currentPayment.id,
+            },
+            status: {
+              in: [
+                PaymentStatus.PAID,
+                PaymentStatus.PARTIALLY_REFUNDED,
+                PaymentStatus.REFUNDED,
+              ],
+            },
           },
         });
-        if (other) return rejectAppointmentCapture();
+
+        if (other) {
+          return rejectAppointmentCapture();
+        }
       }
 
-      // ===============================================
-      // APPOINTMENT PAYMENT
-      // ===============================================
+      // ===================================================
+      // NORMAL APPOINTMENT PAYMENT
+      // ===================================================
 
       if (currentPayment.appointmentId) {
         const appointment = await tx.appointment.findUnique({
@@ -684,8 +1007,10 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             paymentStatus: true,
             holdExpiresAt: true,
             qrToken: true,
-
-            // NEW: GROUP PURCHASE PROTECTION
+            price: true,
+            depositAmount: true,
+            remainingAmount: true,
+            currency: true,
             groupPurchaseId: true,
           },
         });
@@ -694,9 +1019,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           throw new AppError("Appointment not found", 404);
         }
 
-        // =============================================
-        // NEW: BLOCK GROUP PURCHASE-LINKED APPOINTMENTS
-        // =============================================
+        // =================================================
+        // BLOCK GROUP PURCHASE-LINKED APPOINTMENTS
+        // =================================================
 
         if (appointment.groupPurchaseId !== null) {
           throw new AppError(
@@ -705,14 +1030,46 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           );
         }
 
-        // =====================================================
+        // =================================================
+        // VERIFY APPOINTMENT FINANCIAL SNAPSHOT
+        // =================================================
+
+        if (appointment.currency !== currentPayment.currency) {
+          throw new AppError(
+            "Appointment and captured payment currency mismatch; reconciliation required",
+            503,
+          );
+        }
+
+        if (
+          currentPayment.purpose === PaymentPurpose.APPOINTMENT &&
+          !appointment.price.equals(currentPayment.amount)
+        ) {
+          throw new AppError(
+            "Appointment full payment amount mismatch; reconciliation required",
+            503,
+          );
+        }
+
+        if (
+          currentPayment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT &&
+          (!appointment.depositAmount ||
+            !appointment.depositAmount.equals(currentPayment.amount))
+        ) {
+          throw new AppError(
+            "Appointment deposit amount mismatch; reconciliation required",
+            503,
+          );
+        }
+
+        // =================================================
         // NORMAL DEPOSIT - STRIPE REMAINING PAYMENT
-        // =====================================================
+        // =================================================
 
         if (currentPayment.purpose === PaymentPurpose.APPOINTMENT_REMAINING) {
-          // ---------------------------------------------------
-          // 1. VALIDATE PAYMENT IDENTITY
-          // ---------------------------------------------------
+          // ---------------------------------------------
+          // 1. VALIDATE REMAINING PAYMENT IDENTITY
+          // ---------------------------------------------
 
           if (
             currentPayment.provider !== PaymentProvider.STRIPE ||
@@ -730,32 +1087,38 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             );
           }
 
-          // Stripe may send a fresh event ID for the same settled intent.
-          // Acknowledge it without re-running settlement or requesting a refund.
+          // ---------------------------------------------
+          // 2. DUPLICATE SETTLEMENT PROTECTION
+          // ---------------------------------------------
+
           if (
             currentPayment.status === PaymentStatus.PAID ||
             currentPayment.status === PaymentStatus.PARTIALLY_REFUNDED ||
             currentPayment.status === PaymentStatus.REFUNDED
           ) {
             await tx.stripeWebhookEvent.create({
-              data: { id: event.id, type: event.type },
+              data: {
+                id: event.id,
+                type: event.type,
+              },
             });
+
             return {
               alreadyProcessed: true,
               lateAppointmentPayment: null as LateAppointmentPayment | null,
             };
           }
 
-          // ---------------------------------------------------
-          // 2. LOCK APPOINTMENT
-          // ---------------------------------------------------
+          // ---------------------------------------------
+          // 3. LOCK APPOINTMENT
+          // ---------------------------------------------
 
           await tx.$queryRaw`
-    SELECT "id"
-    FROM "Appointment"
-    WHERE "id" = ${appointment.id}
-    FOR UPDATE
-  `;
+            SELECT "id"
+            FROM "Appointment"
+            WHERE "id" = ${appointment.id}
+            FOR UPDATE
+          `;
 
           const latestAppointment = await tx.appointment.findUnique({
             where: {
@@ -780,9 +1143,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             throw new AppError("Appointment not found", 404);
           }
 
-          // ---------------------------------------------------
-          // 3. VERIFY REMAINING AMOUNT
-          // ---------------------------------------------------
+          // ---------------------------------------------
+          // 4. VERIFY REMAINING AMOUNT
+          // ---------------------------------------------
 
           const expectedRemaining = latestAppointment.price.minus(
             latestAppointment.depositAmount ?? new Prisma.Decimal(0),
@@ -800,9 +1163,38 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             return rejectAppointmentCapture();
           }
 
-          // ---------------------------------------------------
-          // 4. CHECK FOR DUPLICATE SETTLEMENT
-          // ---------------------------------------------------
+          // ---------------------------------------------
+          // 5. VERIFY ORIGINAL DEPOSIT PAYMENT
+          // ---------------------------------------------
+
+          const originalDeposit = await tx.payment.findFirst({
+            where: {
+              appointmentId: appointment.id,
+              purpose: PaymentPurpose.APPOINTMENT_DEPOSIT,
+              status: {
+                in: [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED],
+              },
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+          });
+
+          if (
+            !originalDeposit ||
+            originalDeposit.customerId !== currentPayment.customerId ||
+            originalDeposit.currency !== currentPayment.currency ||
+            !originalDeposit.amount.equals(latestAppointment.depositAmount)
+          ) {
+            throw new AppError(
+              "Original appointment deposit mismatch; reconciliation required",
+              503,
+            );
+          }
+
+          // ---------------------------------------------
+          // 6. CHECK OTHER SETTLED REMAINING PAYMENT
+          // ---------------------------------------------
 
           const otherSettledPayment = await tx.payment.findFirst({
             where: {
@@ -820,9 +1212,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             },
           });
 
-          // ---------------------------------------------------
-          // 5. CHECK ELIGIBILITY
-          // ---------------------------------------------------
+          // ---------------------------------------------
+          // 7. VERIFY APPOINTMENT ELIGIBILITY
+          // ---------------------------------------------
 
           const eligible =
             latestAppointment.customerId === currentPayment.customerId &&
@@ -835,18 +1227,15 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             otherSettledPayment === null;
 
           if (!eligible) {
-            // Stripe has received the money, but the appointment
-            // is no longer eligible. Do not confirm the appointment.
-            //
-            // Commit the captured payment, then reconcile its refund outside
-            // the transaction without touching the original deposit.
+            // Funds were captured but the appointment
+            // is no longer eligible for settlement.
 
             return rejectAppointmentCapture();
           }
 
-          // ---------------------------------------------------
-          // 6. GUARDED APPOINTMENT SETTLEMENT
-          // ---------------------------------------------------
+          // ---------------------------------------------
+          // 8. GUARDED APPOINTMENT SETTLEMENT
+          // ---------------------------------------------
 
           const updatedAppointment = await tx.appointment.updateMany({
             where: {
@@ -872,9 +1261,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             );
           }
 
-          // ---------------------------------------------------
-          // 7. CUSTOMER NOTIFICATION
-          // ---------------------------------------------------
+          // ---------------------------------------------
+          // 9. CUSTOMER NOTIFICATION
+          // ---------------------------------------------
 
           const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
             Number(currentPayment.amount),
@@ -893,9 +1282,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             tx,
           );
 
-          // ---------------------------------------------------
-          // 8. AUDIT LOG
-          // ---------------------------------------------------
+          // ---------------------------------------------
+          // 10. AUDIT LOG
+          // ---------------------------------------------
 
           await auditLogService.createAuditLog(
             {
@@ -915,11 +1304,13 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
           );
         }
 
-        const now = new Date();
+        // CONTINUES IN PART 3
 
-        // =============================================
+        // =====================================================
         // PAY NOW PAYMENT
-        // =============================================
+        // =====================================================
+
+        const now = new Date();
 
         if (currentPayment.purpose === PaymentPurpose.APPOINTMENT) {
           if (appointment.bookingMethod !== BookingMethod.PAY_NOW) {
@@ -933,9 +1324,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             Boolean(appointment.holdExpiresAt) &&
             appointment.holdExpiresAt! > now;
 
+          // ---------------------------------------------------
           // NORMAL PAY NOW SUCCESS
-
-          // NORMAL PAY NOW SUCCESS
+          // ---------------------------------------------------
 
           if (holdIsStillActive) {
             const qrToken =
@@ -950,15 +1341,11 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
                 paymentStatus: PaymentStatus.PAID,
                 holdExpiresAt: null,
                 emailPaymentConfirmedAt: now,
-
-                // QR is generated only after successful payment.
                 qrToken,
                 qrVerifiedAt: null,
                 qrVerifiedBy: null,
               },
             });
-
-            // MULTILINGUAL BOOKING CONFIRMED NOTIFICATION
 
             const translations = notificationTemplates.PAY_NOW_CONFIRMED();
 
@@ -975,15 +1362,19 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             );
           }
 
-          // IDEMPOTENT NORMAL SUCCESS
+          // ---------------------------------------------------
+          // ALREADY CONFIRMED
+          // ---------------------------------------------------
           else if (
             appointment.appointmentStatus === AppointmentStatus.CONFIRMED &&
             appointment.paymentStatus === PaymentStatus.PAID
           ) {
-            // Already correctly processed.
+            // Already settled. No duplicate notification.
           }
 
+          // ---------------------------------------------------
           // LATE PAY NOW PAYMENT
+          // ---------------------------------------------------
           else {
             const lateAppointmentStatus =
               appointment.appointmentStatus ===
@@ -997,29 +1388,17 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
               },
               data: {
                 appointmentStatus: lateAppointmentStatus,
-                ...(appointment.paymentStatus !== PaymentStatus.REFUNDED
-                  ? {
-                      paymentStatus: PaymentStatus.PAID,
-                    }
-                  : {}),
                 holdExpiresAt: null,
               },
             });
 
-            lateAppointmentPayment = {
-              paymentId: currentPayment.id,
-              appointmentId: appointment.id,
-              customerId: appointment.customerId,
-              amount: Number(currentPayment.amount),
-              currency: currentPayment.currency,
-              providerPaymentId: paymentIntent.id,
-            };
+            return rejectAppointmentCapture();
           }
         }
 
-        // =============================================
-        // DEPOSIT PAYMENT
-        // =============================================
+        // =====================================================
+        // INITIAL DEPOSIT PAYMENT
+        // =====================================================
 
         if (currentPayment.purpose === PaymentPurpose.APPOINTMENT_DEPOSIT) {
           if (appointment.bookingMethod !== BookingMethod.DEPOSIT) {
@@ -1033,7 +1412,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             Boolean(appointment.holdExpiresAt) &&
             appointment.holdExpiresAt! > now;
 
+          // ---------------------------------------------------
           // NORMAL DEPOSIT SUCCESS
+          // ---------------------------------------------------
 
           if (holdIsStillActive) {
             const qrToken =
@@ -1054,8 +1435,6 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
               },
             });
 
-            // MULTILINGUAL DEPOSIT RECEIVED NOTIFICATION
-
             const translations = notificationTemplates.DEPOSIT_RECEIVED(
               Number(currentPayment.amount),
               currentPayment.currency,
@@ -1074,16 +1453,20 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             );
           }
 
-          // IDEMPOTENT NORMAL DEPOSIT SUCCESS
+          // ---------------------------------------------------
+          // ALREADY RESERVED / CONFIRMED
+          // ---------------------------------------------------
           else if (
             (appointment.appointmentStatus === AppointmentStatus.RESERVED ||
               appointment.appointmentStatus === AppointmentStatus.CONFIRMED) &&
             appointment.paymentStatus === PaymentStatus.PARTIALLY_PAID
           ) {
-            // Already correctly processed.
+            // Already settled. No duplicate notification.
           }
 
+          // ---------------------------------------------------
           // LATE DEPOSIT PAYMENT
+          // ---------------------------------------------------
           else {
             const lateAppointmentStatus =
               appointment.appointmentStatus ===
@@ -1097,30 +1480,41 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
               },
               data: {
                 appointmentStatus: lateAppointmentStatus,
-                ...(appointment.paymentStatus !== PaymentStatus.REFUNDED
-                  ? {
-                      paymentStatus: PaymentStatus.PAID,
-                    }
-                  : {}),
                 holdExpiresAt: null,
               },
             });
 
-            lateAppointmentPayment = {
-              paymentId: currentPayment.id,
-              appointmentId: appointment.id,
-              customerId: appointment.customerId,
-              amount: Number(currentPayment.amount),
-              currency: currentPayment.currency,
-              providerPaymentId: paymentIntent.id,
-            };
+            return rejectAppointmentCapture();
           }
         }
       }
 
-      // ===============================================
+      // =====================================================
+      // PAYMENT -> PAID
+      // =====================================================
+
+      // Update the local payment after the appointment
+      // settlement checks, not before them.
+
+      await tx.payment.updateMany({
+        where: {
+          id: currentPayment.id,
+          provider: PaymentProvider.STRIPE,
+          providerPaymentId: paymentIntent.id,
+          status: {
+            in: [PaymentStatus.PENDING, PaymentStatus.FAILED],
+          },
+        },
+        data: {
+          status: PaymentStatus.PAID,
+          paidAt: new Date(),
+          failedAt: null,
+        },
+      });
+
+      // =====================================================
       // WALLET TOP-UP PAYMENT
-      // ===============================================
+      // =====================================================
 
       if (currentPayment.walletTopupId) {
         const topup = await tx.walletTopup.findUnique({
@@ -1134,11 +1528,21 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         }
 
         if (topup.status !== WalletTopupStatus.PAID) {
-          const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: topup.walletId } });
+          const wallet = await tx.wallet.findUniqueOrThrow({
+            where: {
+              id: topup.walletId,
+            },
+          });
+
           assertSameCurrency(wallet.currency, currentPayment.currency);
+
           assertCurrencyAmount(topup.amount, currentPayment.currency);
+
           assertCurrencyAmount(topup.potentialBonus, currentPayment.currency);
-          // CREDIT PAID BALANCE + BONUS
+
+          // ---------------------------------------------------
+          // CREDIT WALLET PAID BALANCE + BONUS
+          // ---------------------------------------------------
 
           await tx.wallet.update({
             where: {
@@ -1154,7 +1558,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             },
           });
 
-          // TOP-UP LEDGER
+          // ---------------------------------------------------
+          // TOP-UP TRANSACTION
+          // ---------------------------------------------------
 
           await tx.walletTransaction.create({
             data: {
@@ -1166,7 +1572,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             },
           });
 
-          // BONUS LEDGER
+          // ---------------------------------------------------
+          // BONUS TRANSACTION
+          // ---------------------------------------------------
 
           if (Number(topup.potentialBonus) > 0) {
             await tx.walletTransaction.create({
@@ -1180,7 +1588,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             });
           }
 
-          // TOP-UP -> PAID
+          // ---------------------------------------------------
+          // WALLET TOP-UP -> PAID
+          // ---------------------------------------------------
 
           await tx.walletTopup.update({
             where: {
@@ -1192,7 +1602,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
             },
           });
 
-          // MULTILINGUAL WALLET TOP-UP NOTIFICATION
+          // ---------------------------------------------------
+          // CUSTOMER NOTIFICATION
+          // ---------------------------------------------------
 
           const translations = notificationTemplates.WALLET_TOPUP_SUCCESS(
             Number(topup.amount),
@@ -1212,24 +1624,16 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
         }
       }
 
-      // ===============================================
+      // =====================================================
       // MARK WEBHOOK PROCESSED
-      // ===============================================
+      // =====================================================
 
-      if (lateAppointmentPayment)
-        await getOrCreateLateGroupPurchaseRefund(
-          currentPayment.id,
-          currentPayment.amount,
-          tx,
-        );
-      if (!lateAppointmentPayment) {
-        await tx.stripeWebhookEvent.create({
-          data: {
-            id: event.id,
-            type: event.type,
-          },
-        });
-      }
+      await tx.stripeWebhookEvent.create({
+        data: {
+          id: event.id,
+          type: event.type,
+        },
+      });
 
       return {
         alreadyProcessed: false,
@@ -1237,9 +1641,9 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       };
     });
 
-    // ===================================================
+    // =====================================================
     // TRANSACTION ALREADY PROCESSED
-    // ===================================================
+    // =====================================================
 
     if (transactionResult.alreadyProcessed) {
       return {
@@ -1247,14 +1651,15 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       };
     }
 
+    // =====================================================
+    // LATE PAYMENT REFUND RECONCILIATION
+    // =====================================================
+
     const latePayment = transactionResult.lateAppointmentPayment;
 
-    // ===================================================
-    // LATE APPOINTMENT PAYMENT AUTO-REFUND
-    // ===================================================
-
-    if (latePayment)
+    if (latePayment) {
       return reconcileUnappliedCapture(latePayment.paymentId, event);
+    }
 
     return {
       received: true as const,
@@ -1274,103 +1679,118 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
       },
     });
 
-    if (payment) {
-      await prisma.$transaction(async (tx) => {
-        const existingEvent = await tx.stripeWebhookEvent.findUnique({
+    if (!payment) {
+      // Do not permanently acknowledge a payment event
+      // before its local payment record can be resolved.
+      throw new AppError(
+        "Stripe failed payment record not found; retry required",
+        503,
+      );
+    }
+
+    await prisma.$transaction(async (tx) => {
+      const existingEvent = await tx.stripeWebhookEvent.findUnique({
+        where: {
+          id: event.id,
+        },
+      });
+
+      if (existingEvent) {
+        return;
+      }
+
+      const currentPayment = await tx.payment.findUnique({
+        where: {
+          id: payment.id,
+        },
+      });
+
+      if (!currentPayment) {
+        throw new AppError("Payment not found", 404);
+      }
+
+      if (
+        currentPayment.provider !== PaymentProvider.STRIPE ||
+        currentPayment.providerPaymentId !== paymentIntent.id
+      ) {
+        throw new AppError("Stripe failed payment identity mismatch", 409);
+      }
+
+      // ===================================================
+      // PAYMENT -> FAILED
+      // ===================================================
+
+      // A failed Stripe payment attempt must never
+      // overwrite an already successful local payment.
+
+      if (currentPayment.status === PaymentStatus.PENDING) {
+        const changed = await tx.payment.updateMany({
           where: {
-            id: event.id,
+            id: currentPayment.id,
+            status: PaymentStatus.PENDING,
+          },
+          data: {
+            status: PaymentStatus.FAILED,
+            failedAt: new Date(),
           },
         });
 
-        if (existingEvent) {
-          return;
+        if (changed.count === 1 && currentPayment.appointmentId) {
+          const translations = notificationTemplates.PAYMENT_FAILED();
+
+          await notificationService.createNotification(
+            {
+              appointmentId: currentPayment.appointmentId,
+              userId: currentPayment.customerId,
+              type: "PAYMENT_FAILED",
+              title: translations.en!.title!,
+              message: translations.en!.message!,
+              translations,
+            },
+            tx,
+          );
         }
+      }
 
-        // Re-read current payment to avoid notifying after success.
+      // ===================================================
+      // WALLET TOP-UP -> FAILED
+      // ===================================================
 
-        const currentPayment = await tx.payment.findUnique({
+      if (currentPayment.walletTopupId) {
+        const topup = await tx.walletTopup.findUnique({
           where: {
-            id: payment.id,
+            id: currentPayment.walletTopupId,
           },
         });
 
-        if (!currentPayment) {
-          throw new AppError("Payment not found", 404);
-        }
-
-        // PAYMENT -> FAILED
-        // Only pending payment attempts can become FAILED.
-
-        if (currentPayment.status === PaymentStatus.PENDING) {
-          const changed = await tx.payment.updateMany({
+        if (
+          topup &&
+          topup.status === WalletTopupStatus.PENDING &&
+          currentPayment.status !== PaymentStatus.PAID
+        ) {
+          await tx.walletTopup.update({
             where: {
-              id: currentPayment.id,
-              status: PaymentStatus.PENDING,
+              id: topup.id,
             },
             data: {
-              status: PaymentStatus.FAILED,
+              status: WalletTopupStatus.FAILED,
               failedAt: new Date(),
             },
           });
-
-          // MULTILINGUAL PAYMENT FAILED NOTIFICATION
-
-          if (changed.count === 1 && currentPayment.appointmentId) {
-            const translations = notificationTemplates.PAYMENT_FAILED();
-
-            await notificationService.createNotification(
-              {
-                appointmentId: currentPayment.appointmentId ?? undefined,
-                userId: currentPayment.customerId,
-                type: "PAYMENT_FAILED",
-                title: translations.en!.title!,
-                message: translations.en!.message!,
-                translations,
-              },
-              tx,
-            );
-          }
         }
+      }
 
-        // WALLET TOP-UP -> FAILED
+      // ===================================================
+      // MARK EVENT PROCESSED
+      // ===================================================
 
-        if (currentPayment.walletTopupId) {
-          const topup = await tx.walletTopup.findUnique({
-            where: {
-              id: currentPayment.walletTopupId,
-            },
-          });
-
-          if (topup && topup.status === WalletTopupStatus.PENDING) {
-            await tx.walletTopup.update({
-              where: {
-                id: topup.id,
-              },
-              data: {
-                status: WalletTopupStatus.FAILED,
-                failedAt: new Date(),
-              },
-            });
-          }
-        }
-
-        // MARK EVENT PROCESSED
-
-        await tx.stripeWebhookEvent.create({
-          data: {
-            id: event.id,
-            type: event.type,
-          },
-        });
-      });
-    } else {
-      await prisma.stripeWebhookEvent.create({
+      await tx.stripeWebhookEvent.create({
         data: {
           id: event.id,
           type: event.type,
         },
       });
-    }
+    });
 
     return {
       received: true as const,
@@ -1409,6 +1829,7 @@ const createGroupPurchaseStripeIntent = async (
       id: true,
       customerId: true,
       amount: true,
+      currency: true,
       purchaseFlow: true,
       bookingMethod: true,
       depositAmount: true,
@@ -1476,7 +1897,7 @@ const createGroupPurchaseStripeIntent = async (
   }
 
   // =====================================================
-  // 4. DETERMINE PAYMENT AMOUNT
+  // 4. DETERMINE PAYMENT AMOUNT AND CURRENCY
   // =====================================================
 
   let paymentAmount = purchase.amount;
@@ -1490,38 +1911,107 @@ const createGroupPurchaseStripeIntent = async (
       throw new AppError("Invalid package deposit amount", 422);
     }
 
+    // Deposit is calculated on the full purchase amount.
     paymentAmount = purchase.depositAmount;
   }
 
+  // Resolve the historical purchase currency.
+  // Never substitute the current Brand currency.
   const currency = await getPurchaseCurrency(prisma, purchaseId);
+
+  // If the purchase has a stored currency snapshot,
+  // it must match the reconciled currency.
+  if (purchase.currency !== null && purchase.currency !== currency) {
+    throw new AppError("Group purchase currency snapshot mismatch", 409);
+  }
+
   const amountInCents = stripeAmount(paymentAmount, currency);
 
-  if (!Number.isSafeInteger(amountInCents) || amountInCents < (currency === "HKD" ? 400 : 1)) {
+  // Preserve the existing minimum-amount policy.
+  // A currency-specific Stripe minimum policy should
+  // be introduced separately before wider rollout.
+  if (
+    !Number.isSafeInteger(amountInCents) ||
+    amountInCents < (currency === "HKD" ? 400 : 1)
+  ) {
     throw new AppError("Invalid Stripe payment amount", 422);
   }
 
   // =====================================================
-  // 5. FIND EXISTING PENDING STRIPE PAYMENT
+  // 5. FIND OR CREATE LOCAL PAYMENT ATTEMPT
   // =====================================================
 
-  // Serialize local intent identity. Concurrent requests share one payment and Stripe key.
+  // Serialize local payment identity.
+  // Concurrent requests reuse the same payment and
+  // Stripe idempotency key.
+
   let payment: Prisma.PaymentGetPayload<{}> | undefined;
+
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       payment = await prisma.$transaction(
         async (tx) => {
-          await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id" = ${purchaseId} FOR UPDATE`;
+          // Lock the purchase before validating its state.
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "GroupPurchase"
+            WHERE "id" = ${purchaseId}
+            FOR UPDATE
+          `;
+
           const current = await tx.groupPurchase.findUnique({
             where: { id: purchaseId },
           });
+
           if (
             !current ||
             current.customerId !== customerId ||
             current.paymentStatus !== PaymentStatus.PENDING ||
             !current.reservationExpiresAt ||
             current.reservationExpiresAt <= new Date()
-          )
+          ) {
             throw new AppError("Group purchase is no longer payable", 409);
+          }
+
+          // Verify that the purchase flow has not changed.
+          if (
+            current.purchaseFlow !== purchase.purchaseFlow ||
+            current.bookingMethod !== purchase.bookingMethod
+          ) {
+            throw new AppError(
+              "Group purchase booking configuration changed",
+              409,
+            );
+          }
+
+          // Verify the full purchase amount and deposit.
+          if (
+            !current.amount.equals(purchase.amount) ||
+            (current.depositAmount === null
+              ? purchase.depositAmount !== null
+              : purchase.depositAmount === null ||
+                !current.depositAmount.equals(purchase.depositAmount))
+          ) {
+            throw new AppError("Group purchase amount changed", 409);
+          }
+
+          // Reconcile currency inside the transaction.
+          const currentCurrency = await getPurchaseCurrency(tx, purchaseId);
+
+          if (
+            currentCurrency !== currency ||
+            (current.currency !== null && current.currency !== currentCurrency)
+          ) {
+            throw new AppError("Group purchase currency changed", 409);
+          }
+
+          // Revalidate the amount in its transaction currency.
+          assertCurrencyAmount(paymentAmount, currentCurrency);
+
+          // =================================================
+          // REUSE EXISTING PENDING STRIPE PAYMENT
+          // =================================================
+
           const pending = await tx.payment.findFirst({
             where: {
               groupPurchaseId: purchaseId,
@@ -1530,16 +2020,29 @@ const createGroupPurchaseStripeIntent = async (
               provider: PaymentProvider.STRIPE,
               status: PaymentStatus.PENDING,
             },
-            orderBy: { createdAt: "asc" },
+            orderBy: {
+              createdAt: "asc",
+            },
           });
+
           if (pending) {
-            if (!pending.amount.equals(paymentAmount))
+            if (
+              !pending.amount.equals(paymentAmount) ||
+              pending.currency !== currentCurrency
+            ) {
               throw new AppError(
-                "Existing payment amount does not match purchase",
+                "Existing payment amount or currency does not match purchase",
                 409,
               );
+            }
+
             return pending;
           }
+
+          // =================================================
+          // CREATE NEW PAYMENT ATTEMPT
+          // =================================================
+
           return tx.payment.create({
             data: {
               customerId,
@@ -1547,25 +2050,41 @@ const createGroupPurchaseStripeIntent = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.STRIPE,
               amount: paymentAmount,
-              currency,
+              currency: currentCurrency,
               status: PaymentStatus.PENDING,
             },
           });
         },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        },
       );
+
       break;
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2034" &&
         attempt < 3
-      )
+      ) {
         continue;
+      }
+
       throw error;
     }
   }
-  if (!payment) throw new AppError("Group purchase payment conflict", 409);
+
+  if (!payment) {
+    throw new AppError("Group purchase payment conflict", 409);
+  }
+
+  // =====================================================
+  // 6. VERIFY LOCAL PAYMENT CURRENCY AND AMOUNT
+  // =====================================================
+
+  if (payment.currency !== currency || !payment.amount.equals(paymentAmount)) {
+    throw new AppError("Group purchase payment snapshot mismatch", 409);
+  }
 
   // =====================================================
   // 7. REUSE OR CREATE STRIPE PAYMENT INTENT
@@ -1583,6 +2102,7 @@ const createGroupPurchaseStripeIntent = async (
         {
           amount: amountInCents,
           currency: currency.toLowerCase(),
+
           metadata: {
             paymentId: payment.id,
             groupPurchaseId: purchaseId,
@@ -1591,6 +2111,7 @@ const createGroupPurchaseStripeIntent = async (
             purchaseFlow: purchase.purchaseFlow,
             bookingMethod: purchase.bookingMethod ?? "NONE",
           },
+
           automatic_payment_methods: {
             enabled: true,
             allow_redirects: "never",
@@ -1601,12 +2122,36 @@ const createGroupPurchaseStripeIntent = async (
         },
       );
 
-      await prisma.payment.update({
-        where: { id: payment.id },
+      // Save Stripe PaymentIntent identity.
+      // Conditional update avoids replacing a different
+      // provider intent created by a concurrent request.
+
+      const updated = await prisma.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: PaymentStatus.PENDING,
+          provider: PaymentProvider.STRIPE,
+          providerPaymentId: null,
+        },
         data: {
           providerPaymentId: paymentIntent.id,
         },
       });
+
+      if (updated.count !== 1) {
+        const latestPayment = await prisma.payment.findUnique({
+          where: {
+            id: payment.id,
+          },
+        });
+
+        if (
+          !latestPayment ||
+          latestPayment.providerPaymentId !== paymentIntent.id
+        ) {
+          throw new AppError("Stripe payment identity conflict", 409);
+        }
+      }
     }
 
     // =====================================================
@@ -1625,7 +2170,10 @@ const createGroupPurchaseStripeIntent = async (
       paymentIntent.metadata?.paymentId !== payment.id ||
       paymentIntent.metadata?.groupPurchaseId !== purchaseId ||
       paymentIntent.metadata?.customerId !== customerId ||
-      paymentIntent.metadata?.purpose !== PaymentPurpose.GROUP_PURCHASE
+      paymentIntent.metadata?.purpose !== PaymentPurpose.GROUP_PURCHASE ||
+      paymentIntent.metadata?.purchaseFlow !== purchase.purchaseFlow ||
+      paymentIntent.metadata?.bookingMethod !==
+        (purchase.bookingMethod ?? "NONE")
     ) {
       throw new AppError("Stripe PaymentIntent does not match purchase", 409);
     }
@@ -1642,8 +2190,12 @@ const createGroupPurchaseStripeIntent = async (
     // =====================================================
 
     const currentPurchase = await prisma.groupPurchase.findUnique({
-      where: { id: purchaseId },
+      where: {
+        id: purchaseId,
+      },
       select: {
+        customerId: true,
+        currency: true,
         paymentStatus: true,
         reservationExpiresAt: true,
         purchaseFlow: true,
@@ -1655,6 +2207,7 @@ const createGroupPurchaseStripeIntent = async (
 
     if (
       !currentPurchase ||
+      currentPurchase.customerId !== customerId ||
       currentPurchase.purchaseFlow !== purchase.purchaseFlow ||
       currentPurchase.bookingMethod !== purchase.bookingMethod ||
       currentPurchase.paymentStatus !== PaymentStatus.PENDING ||
@@ -1678,6 +2231,51 @@ const createGroupPurchaseStripeIntent = async (
       !currentExpectedAmount.equals(paymentAmount)
     ) {
       throw new AppError("Group purchase payable amount changed", 409);
+    }
+
+    // Ensure the original currency snapshot is unchanged.
+    if (
+      currentPurchase.currency !== null &&
+      currentPurchase.currency !== currency
+    ) {
+      throw new AppError("Group purchase currency changed", 409);
+    }
+
+    const latestCurrency = await getPurchaseCurrency(prisma, purchaseId);
+
+    if (latestCurrency !== payment.currency) {
+      throw new AppError("Group purchase payment currency mismatch", 409);
+    }
+
+    // Recheck the payment after Stripe's network call.
+    const latestPayment = await prisma.payment.findUnique({
+      where: {
+        id: payment.id,
+      },
+      select: {
+        customerId: true,
+        groupPurchaseId: true,
+        purpose: true,
+        provider: true,
+        amount: true,
+        currency: true,
+        status: true,
+        providerPaymentId: true,
+      },
+    });
+
+    if (
+      !latestPayment ||
+      latestPayment.customerId !== customerId ||
+      latestPayment.groupPurchaseId !== purchaseId ||
+      latestPayment.purpose !== PaymentPurpose.GROUP_PURCHASE ||
+      latestPayment.provider !== PaymentProvider.STRIPE ||
+      latestPayment.status !== PaymentStatus.PENDING ||
+      !latestPayment.amount.equals(paymentAmount) ||
+      latestPayment.currency !== currency ||
+      latestPayment.providerPaymentId !== paymentIntent.id
+    ) {
+      throw new AppError("Group purchase payment is no longer payable", 409);
     }
 
     // =====================================================
@@ -1728,6 +2326,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
           appointmentStatus: true,
           paymentStatus: true,
           qrVerifiedAt: true,
+          currency: true,
         },
       },
     },
@@ -1799,10 +2398,27 @@ const createGroupPurchaseRemainingStripeIntent = async (
 
   const remainingAmount = purchase.amount.minus(purchase.depositAmount);
 
+  // Resolve currency from original historical purchase.
   const currency = await getPurchaseCurrency(prisma, purchaseId);
+
+  if (
+    (purchase.currency !== null && purchase.currency !== currency) ||
+    appointment.currency !== currency
+  ) {
+    throw new AppError("Group purchase or appointment currency mismatch", 409);
+  }
+
+  assertCurrencyAmount(purchase.amount, currency);
+  assertCurrencyAmount(purchase.depositAmount, currency);
+  assertCurrencyAmount(remainingAmount, currency);
+
   const amountInCents = stripeAmount(remainingAmount, currency);
 
-  if (!Number.isSafeInteger(amountInCents) || amountInCents < (currency === "HKD" ? 400 : 1)) {
+  // Preserve existing Stripe minimum policy.
+  if (
+    !Number.isSafeInteger(amountInCents) ||
+    amountInCents < (currency === "HKD" ? 400 : 1)
+  ) {
     throw new AppError(
       "Remaining amount is below the supported Stripe minimum",
       422,
@@ -1819,6 +2435,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
     try {
       payment = await prisma.$transaction(
         async (tx) => {
+          // Serialize remaining-payment creation.
           await tx.$queryRaw`
             SELECT "id"
             FROM "GroupPurchase"
@@ -1837,6 +2454,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
                   appointmentStatus: true,
                   paymentStatus: true,
                   qrVerifiedAt: true,
+                  currency: true,
                 },
               },
             },
@@ -1857,6 +2475,19 @@ const createGroupPurchaseRemainingStripeIntent = async (
             );
           }
 
+          // =================================================
+          // VERIFY PURCHASE CURRENCY INSIDE TRANSACTION
+          // =================================================
+
+          const currentCurrency = await getPurchaseCurrency(tx, purchaseId);
+
+          if (
+            currentCurrency !== currency ||
+            (current.currency !== null && current.currency !== currentCurrency)
+          ) {
+            throw new AppError("Group purchase currency changed", 409);
+          }
+
           if (
             current.appointments.length !== 1 ||
             current.appointments[0].id !== appointment.id ||
@@ -1866,7 +2497,8 @@ const createGroupPurchaseRemainingStripeIntent = async (
               AppointmentStatus.CONFIRMED ||
             current.appointments[0].paymentStatus !==
               PaymentStatus.PARTIALLY_PAID ||
-            !current.appointments[0].qrVerifiedAt
+            !current.appointments[0].qrVerifiedAt ||
+            current.appointments[0].currency !== currentCurrency
           ) {
             throw new AppError(
               "Group purchase appointment is no longer eligible",
@@ -1874,7 +2506,9 @@ const createGroupPurchaseRemainingStripeIntent = async (
             );
           }
 
-          // Confirm the initial deposit payment.
+          // =================================================
+          // VERIFY INITIAL DEPOSIT PAYMENT
+          // =================================================
 
           const initialPayment = await tx.payment.findUnique({
             where: {
@@ -1888,7 +2522,8 @@ const createGroupPurchaseRemainingStripeIntent = async (
             initialPayment.customerId !== customerId ||
             initialPayment.purpose !== PaymentPurpose.GROUP_PURCHASE ||
             initialPayment.status !== PaymentStatus.PAID ||
-            !initialPayment.amount.equals(current.depositAmount)
+            !initialPayment.amount.equals(current.depositAmount) ||
+            initialPayment.currency !== currentCurrency
           ) {
             throw new AppError(
               "Paid group purchase deposit could not be verified",
@@ -1896,14 +2531,17 @@ const createGroupPurchaseRemainingStripeIntent = async (
             );
           }
 
-          // Do not create another attempt when any
-          // existing remaining payment is already settled.
+          // =================================================
+          // PREVENT DUPLICATE SETTLEMENT
+          // =================================================
 
           const settledRemaining = await tx.payment.findFirst({
             where: {
               groupPurchaseId: purchaseId,
               purpose: PaymentPurpose.GROUP_PURCHASE,
-              id: { not: initialPayment.id },
+              id: {
+                not: initialPayment.id,
+              },
               status: {
                 in: [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED],
               },
@@ -1916,6 +2554,10 @@ const createGroupPurchaseRemainingStripeIntent = async (
               409,
             );
           }
+
+          // =================================================
+          // REUSE PENDING STRIPE PAYMENT
+          // =================================================
 
           const pending = await tx.payment.findFirst({
             where: {
@@ -1934,7 +2576,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
               pending.id === initialPayment.id ||
               pending.customerId !== customerId ||
               !pending.amount.equals(remainingAmount) ||
-              pending.currency !== currency
+              pending.currency !== currentCurrency
             ) {
               throw new AppError(
                 "Existing group remaining payment attempt does not match",
@@ -1945,7 +2587,9 @@ const createGroupPurchaseRemainingStripeIntent = async (
             return pending;
           }
 
-          // Block any other pending remaining-payment provider.
+          // =================================================
+          // BLOCK OTHER PENDING PAYMENT PROVIDERS
+          // =================================================
 
           const otherPending = await tx.payment.findFirst({
             where: {
@@ -1962,6 +2606,10 @@ const createGroupPurchaseRemainingStripeIntent = async (
             );
           }
 
+          // =================================================
+          // CREATE REMAINING PAYMENT
+          // =================================================
+
           return tx.payment.create({
             data: {
               customerId,
@@ -1969,7 +2617,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.STRIPE,
               amount: remainingAmount,
-              currency,
+              currency: currentCurrency,
               status: PaymentStatus.PENDING,
             },
           });
@@ -2000,7 +2648,21 @@ const createGroupPurchaseRemainingStripeIntent = async (
   }
 
   // =====================================================
-  // 6. CREATE OR REUSE STRIPE PAYMENT INTENT
+  // 6. VERIFY LOCAL PAYMENT SNAPSHOT
+  // =====================================================
+
+  if (
+    payment.currency !== currency ||
+    !payment.amount.equals(remainingAmount)
+  ) {
+    throw new AppError(
+      "Group purchase remaining payment currency or amount mismatch",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 7. CREATE OR REUSE STRIPE PAYMENT INTENT
   // =====================================================
 
   try {
@@ -2015,6 +2677,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
         {
           amount: amountInCents,
           currency: currency.toLowerCase(),
+
           metadata: {
             paymentId: payment.id,
             groupPurchaseId: purchaseId,
@@ -2025,6 +2688,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
             bookingMethod: BookingMethod.DEPOSIT,
             purchaseFlow: GroupPurchaseFlow.DIRECT_BOOK,
           },
+
           automatic_payment_methods: {
             enabled: true,
             allow_redirects: "never",
@@ -2035,6 +2699,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
         },
       );
 
+      // Save Stripe identity conditionally.
       const updated = await prisma.payment.updateMany({
         where: {
           id: payment.id,
@@ -2049,7 +2714,9 @@ const createGroupPurchaseRemainingStripeIntent = async (
 
       if (updated.count !== 1) {
         const latest = await prisma.payment.findUnique({
-          where: { id: payment.id },
+          where: {
+            id: payment.id,
+          },
         });
 
         if (!latest || latest.providerPaymentId !== paymentIntent.id) {
@@ -2059,7 +2726,7 @@ const createGroupPurchaseRemainingStripeIntent = async (
     }
 
     // =====================================================
-    // 7. VERIFY STRIPE INTENT
+    // 8. VERIFY STRIPE PAYMENT INTENT
     // =====================================================
 
     if (
@@ -2067,9 +2734,12 @@ const createGroupPurchaseRemainingStripeIntent = async (
       paymentIntent.currency.toLowerCase() !== payment.currency.toLowerCase() ||
       paymentIntent.metadata?.paymentId !== payment.id ||
       paymentIntent.metadata?.groupPurchaseId !== purchaseId ||
+      paymentIntent.metadata?.appointmentId !== appointment.id ||
       paymentIntent.metadata?.customerId !== customerId ||
       paymentIntent.metadata?.purpose !== PaymentPurpose.GROUP_PURCHASE ||
-      paymentIntent.metadata?.paymentStage !== "REMAINING"
+      paymentIntent.metadata?.paymentStage !== "REMAINING" ||
+      paymentIntent.metadata?.bookingMethod !== BookingMethod.DEPOSIT ||
+      paymentIntent.metadata?.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK
     ) {
       throw new AppError("Stripe remaining PaymentIntent mismatch", 409);
     }
@@ -2086,18 +2756,22 @@ const createGroupPurchaseRemainingStripeIntent = async (
     }
 
     // =====================================================
-    // 8. RECHECK PURCHASE
+    // 9. RECHECK PURCHASE AFTER STRIPE NETWORK CALL
     // =====================================================
 
     const latestPurchase = await prisma.groupPurchase.findUnique({
-      where: { id: purchaseId },
+      where: {
+        id: purchaseId,
+      },
       select: {
         customerId: true,
+        currency: true,
         purchaseFlow: true,
         bookingMethod: true,
         paymentStatus: true,
         amount: true,
         depositAmount: true,
+        settledPaymentId: true,
       },
     });
 
@@ -2110,7 +2784,9 @@ const createGroupPurchaseRemainingStripeIntent = async (
       !latestPurchase.depositAmount ||
       !latestPurchase.amount
         .minus(latestPurchase.depositAmount)
-        .equals(remainingAmount)
+        .equals(remainingAmount) ||
+      latestPurchase.settledPaymentId !== purchase.settledPaymentId ||
+      (latestPurchase.currency !== null && latestPurchase.currency !== currency)
     ) {
       throw new AppError(
         "Group purchase is no longer eligible for remaining payment",
@@ -2118,8 +2794,48 @@ const createGroupPurchaseRemainingStripeIntent = async (
       );
     }
 
+    const latestCurrency = await getPurchaseCurrency(prisma, purchaseId);
+
+    if (latestCurrency !== currency) {
+      throw new AppError("Group purchase currency mismatch", 409);
+    }
+
+    // Verify the payment still points to this Stripe intent.
+    const latestPayment = await prisma.payment.findUnique({
+      where: {
+        id: payment.id,
+      },
+      select: {
+        customerId: true,
+        groupPurchaseId: true,
+        purpose: true,
+        provider: true,
+        amount: true,
+        currency: true,
+        status: true,
+        providerPaymentId: true,
+      },
+    });
+
+    if (
+      !latestPayment ||
+      latestPayment.customerId !== customerId ||
+      latestPayment.groupPurchaseId !== purchaseId ||
+      latestPayment.purpose !== PaymentPurpose.GROUP_PURCHASE ||
+      latestPayment.provider !== PaymentProvider.STRIPE ||
+      latestPayment.status !== PaymentStatus.PENDING ||
+      !latestPayment.amount.equals(remainingAmount) ||
+      latestPayment.currency !== currency ||
+      latestPayment.providerPaymentId !== paymentIntent.id
+    ) {
+      throw new AppError(
+        "Group purchase remaining payment is no longer payable",
+        409,
+      );
+    }
+
     // =====================================================
-    // 9. RESPONSE
+    // 10. RESPONSE
     // =====================================================
 
     return {
@@ -2146,10 +2862,15 @@ const createGroupPurchaseRemainingStripeIntent = async (
     );
   }
 };
+
 async function handleGroupPurchaseStripeEvent(
   event: Stripe.Event,
   paymentIntent: Stripe.PaymentIntent,
 ) {
+  // =====================================================
+  // 1. FIND AND VERIFY STRIPE PAYMENT
+  // =====================================================
+
   const payment = await prisma.payment.findUnique({
     where: {
       providerPaymentId: paymentIntent.id,
@@ -2179,7 +2900,7 @@ async function handleGroupPurchaseStripeEvent(
   }
 
   // =====================================================
-  // 1. HANDLE PAYMENT FAILURE
+  // 2. HANDLE PAYMENT FAILURE
   // =====================================================
 
   if (event.type === "payment_intent.payment_failed") {
@@ -2249,7 +2970,7 @@ async function handleGroupPurchaseStripeEvent(
   }
 
   // =====================================================
-  // 2. SETTLEMENT
+  // 3. SETTLEMENT
   // =====================================================
 
   type SettlementResult =
@@ -2277,7 +2998,9 @@ async function handleGroupPurchaseStripeEvent(
           });
 
           const purchase = await tx.groupPurchase.findUnique({
-            where: { id: payment.groupPurchaseId! },
+            where: {
+              id: payment.groupPurchaseId!,
+            },
             include: {
               appointments: {
                 select: {
@@ -2285,6 +3008,7 @@ async function handleGroupPurchaseStripeEvent(
                   bookingMethod: true,
                   appointmentStatus: true,
                   paymentStatus: true,
+                  currency: true,
                 },
               },
             },
@@ -2293,6 +3017,51 @@ async function handleGroupPurchaseStripeEvent(
           if (!currentPayment || !purchase) {
             throw new AppError("Payment or purchase not found", 404);
           }
+
+          // =================================================
+          // 3.1 VERIFY PAYMENT IDENTITY
+          // =================================================
+
+          if (
+            currentPayment.provider !== PaymentProvider.STRIPE ||
+            currentPayment.purpose !== PaymentPurpose.GROUP_PURCHASE ||
+            currentPayment.groupPurchaseId !== purchase.id ||
+            currentPayment.providerPaymentId !== paymentIntent.id ||
+            !currentPayment.amount.equals(payment.amount) ||
+            currentPayment.customerId !== payment.customerId ||
+            currentPayment.currency !== payment.currency
+          ) {
+            throw new AppError("Group purchase payment identity mismatch", 409);
+          }
+
+          // =================================================
+          // 3.2 VERIFY ORIGINAL PURCHASE CURRENCY
+          // =================================================
+
+          // Resolve historical currency using the original
+          // purchase, payment and appointment snapshots.
+          // Never substitute the current Brand currency.
+
+          const purchaseCurrency = await getPurchaseCurrency(tx, purchase.id);
+
+          if (
+            currentPayment.currency !== purchaseCurrency ||
+            payment.currency !== purchaseCurrency ||
+            (purchase.currency !== null &&
+              purchase.currency !== purchaseCurrency) ||
+            purchase.appointments.some(
+              (item) => item.currency !== purchaseCurrency,
+            )
+          ) {
+            throw new AppError(
+              "Group purchase settlement currency requires reconciliation",
+              409,
+            );
+          }
+
+          // =================================================
+          // 3.3 VALIDATE BOOKING METHOD AND AMOUNT
+          // =================================================
 
           const isBookNow =
             purchase.purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK;
@@ -2326,6 +3095,7 @@ async function handleGroupPurchaseStripeEvent(
           const initialAppointments = purchase.appointments.filter(
             (item) => item.bookingMethod === purchase.bookingMethod,
           );
+
           const appointment = isBookNow ? initialAppointments[0] : null;
 
           if (
@@ -2343,7 +3113,13 @@ async function handleGroupPurchaseStripeEvent(
 
           const now = new Date();
 
-          // A duplicate payment must never change which payment settled this purchase.
+          // =================================================
+          // 4. DUPLICATE SETTLEMENT PROTECTION
+          // =================================================
+
+          // A duplicate payment must never change which
+          // payment originally settled this purchase.
+
           if (
             purchase.purchasedAt &&
             [
@@ -2353,11 +3129,13 @@ async function handleGroupPurchaseStripeEvent(
               PaymentStatus.PARTIALLY_REFUNDED,
             ].some((status) => status === purchase.paymentStatus)
           ) {
-            if (!purchase.settledPaymentId)
+            if (!purchase.settledPaymentId) {
               throw new AppError(
                 "Legacy group settlement identity requires manual reconciliation",
                 503,
               );
+            }
+
             if (purchase.settledPaymentId === currentPayment.id) {
               if (
                 ![
@@ -2365,26 +3143,34 @@ async function handleGroupPurchaseStripeEvent(
                   PaymentStatus.REFUNDED,
                   PaymentStatus.PARTIALLY_REFUNDED,
                 ].some((status) => status === currentPayment.status)
-              )
+              ) {
                 throw new AppError(
                   "Group settlement payment state requires reconciliation",
                   503,
                 );
+              }
+
               await tx.stripeWebhookEvent.create({
-                data: { id: event.id, type: event.type },
+                data: {
+                  id: event.id,
+                  type: event.type,
+                },
               });
+
               return "ALREADY_SETTLED";
             }
           }
+
           if (
             [PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED].includes(
               currentPayment.status as "REFUNDED" | "PARTIALLY_REFUNDED",
             )
-          )
+          ) {
             return "REFUND_REQUIRED";
+          }
 
           // =================================================
-          // 4. CHECK ACTIVE RESERVATION
+          // 5. CHECK ACTIVE RESERVATION
           // =================================================
 
           const activeReservation =
@@ -2397,14 +3183,18 @@ async function handleGroupPurchaseStripeEvent(
               groupPurchaseId: purchase.id,
               purpose: PaymentPurpose.GROUP_PURCHASE,
               status: PaymentStatus.PAID,
-              id: { not: currentPayment.id },
+              id: {
+                not: currentPayment.id,
+              },
             },
           });
 
           if (!activeReservation || otherPaidPayments > 0) {
             if (currentPayment.status !== PaymentStatus.REFUNDED) {
               await tx.payment.update({
-                where: { id: currentPayment.id },
+                where: {
+                  id: currentPayment.id,
+                },
                 data: {
                   status: PaymentStatus.PAID,
                   paidAt: currentPayment.paidAt ?? now,
@@ -2412,6 +3202,8 @@ async function handleGroupPurchaseStripeEvent(
                 },
               });
             }
+
+            // Expire an unpaid reservation and release inventory.
 
             if (
               purchase.paymentStatus === PaymentStatus.PENDING &&
@@ -2481,7 +3273,7 @@ async function handleGroupPurchaseStripeEvent(
           }
 
           // =================================================
-          // 5. VALIDATE APPOINTMENT
+          // 6. VALIDATE INITIAL APPOINTMENT
           // =================================================
 
           if (isBookNow && appointment) {
@@ -2498,14 +3290,16 @@ async function handleGroupPurchaseStripeEvent(
           }
 
           // =================================================
-          // 6. SETTLE PURCHASE
+          // 7. SETTLE GROUP PURCHASE
           // =================================================
 
           const updatedPurchase = await tx.groupPurchase.updateMany({
             where: {
               id: purchase.id,
               paymentStatus: PaymentStatus.PENDING,
-              reservationExpiresAt: { gt: now },
+              reservationExpiresAt: {
+                gt: now,
+              },
             },
             data: {
               paymentStatus: expectedPurchaseStatus,
@@ -2519,6 +3313,10 @@ async function handleGroupPurchaseStripeEvent(
           if (updatedPurchase.count !== 1) {
             throw new AppError("Purchase settlement conflict", 409);
           }
+
+          // =================================================
+          // 8. SETTLE PACKAGE INVENTORY
+          // =================================================
 
           const updatedPackage = await tx.package.updateMany({
             where: {
@@ -2542,7 +3340,7 @@ async function handleGroupPurchaseStripeEvent(
           }
 
           // =================================================
-          // 7. UPDATE BOOK NOW APPOINTMENT
+          // 9. UPDATE DIRECT BOOK APPOINTMENT
           // =================================================
 
           if (isBookNow && appointment) {
@@ -2577,17 +3375,23 @@ async function handleGroupPurchaseStripeEvent(
           }
 
           // =================================================
-          // 8. MARK PAYMENT PAID
+          // 10. MARK PAYMENT PAID
           // =================================================
 
           await tx.payment.update({
-            where: { id: currentPayment.id },
+            where: {
+              id: currentPayment.id,
+            },
             data: {
               status: PaymentStatus.PAID,
               paidAt: now,
               failedAt: null,
             },
           });
+
+          // =================================================
+          // 11. CUSTOMER NOTIFICATION
+          // =================================================
 
           const translations = notificationTemplates.GROUP_PURCHASE_SUCCESSFUL(
             Number(currentPayment.amount),
@@ -2604,6 +3408,10 @@ async function handleGroupPurchaseStripeEvent(
             },
             tx,
           );
+
+          // =================================================
+          // 12. MARK WEBHOOK PROCESSED
+          // =================================================
 
           await tx.stripeWebhookEvent.create({
             data: {
@@ -2632,12 +3440,18 @@ async function handleGroupPurchaseStripeEvent(
     }
   }
 
+  // =====================================================
+  // 13. HANDLE SETTLEMENT RESULT
+  // =====================================================
+
   if (
     settlementResult === "SETTLED" ||
     settlementResult === "ALREADY_SETTLED" ||
     settlementResult === "EVENT_PROCESSED"
   ) {
-    return { received: true as const };
+    return {
+      received: true as const,
+    };
   }
 
   if (settlementResult !== "REFUND_REQUIRED") {
@@ -2645,7 +3459,7 @@ async function handleGroupPurchaseStripeEvent(
   }
 
   // =====================================================
-  // 9. LATE / DUPLICATE PAYMENT REFUND
+  // 14. LATE / DUPLICATE PAYMENT REFUND
   // =====================================================
 
   const localRefund = await getOrCreateLateGroupPurchaseRefund(
@@ -2654,8 +3468,10 @@ async function handleGroupPurchaseStripeEvent(
   );
 
   let providerRefundId: string | null;
+
   try {
     const result = await ensureLateGroupPurchaseRefund(localRefund.id);
+
     if (
       result.requiresInvestigation ||
       result.status !== RefundStatus.SUCCEEDED ||
@@ -2666,12 +3482,15 @@ async function handleGroupPurchaseStripeEvent(
         503,
       );
     }
+
     providerRefundId = result.providerRefundId;
   } catch (error) {
     logUnexpectedError(error, {
       source: "handleGroupPurchaseStripeEvent:lateRefund",
     });
+
     if (error instanceof AppError) throw error;
+
     throw new AppError(
       "Stripe refund outcome is uncertain; reconciliation required",
       503,
@@ -2679,14 +3498,20 @@ async function handleGroupPurchaseStripeEvent(
   }
 
   // =====================================================
-  // 11. FINALIZE REFUND LOCALLY
+  // 15. FINALIZE REFUND LOCALLY
   // =====================================================
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       await prisma.$transaction(
         async (tx) => {
-          await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${payment.id} FOR UPDATE`;
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "Payment"
+            WHERE "id" = ${payment.id}
+            FOR UPDATE
+          `;
+
           const currentRefund = await tx.refund.findUnique({
             where: {
               id: localRefund.id,
@@ -2721,9 +3546,9 @@ async function handleGroupPurchaseStripeEvent(
           const refundedAt = currentRefund.refundedAt ?? new Date();
 
           if (!alreadyFinalized) {
-            // ---------------------------------------------
-            // 11.1 REFUND -> SUCCEEDED
-            // ---------------------------------------------
+            // =============================================
+            // 15.1 REFUND -> SUCCEEDED
+            // =============================================
 
             await tx.refund.update({
               where: {
@@ -2736,9 +3561,9 @@ async function handleGroupPurchaseStripeEvent(
               },
             });
 
-            // ---------------------------------------------
-            // 11.2 PAYMENT -> REFUNDED
-            // ---------------------------------------------
+            // =============================================
+            // 15.2 PAYMENT -> REFUNDED
+            // =============================================
 
             await tx.payment.update({
               where: {
@@ -2749,6 +3574,10 @@ async function handleGroupPurchaseStripeEvent(
                 refundedAt,
               },
             });
+
+            // =============================================
+            // 15.3 AUDIT LOG
+            // =============================================
 
             await auditLogService.createAuditLog(
               {
@@ -2766,9 +3595,9 @@ async function handleGroupPurchaseStripeEvent(
               tx,
             );
 
-            // ---------------------------------------------
-            // 11.3 CUSTOMER NOTIFICATION
-            // ---------------------------------------------
+            // =============================================
+            // 15.4 CUSTOMER NOTIFICATION
+            // =============================================
 
             const translations = notificationTemplates.LATE_GROUP_REFUND(
               Number(payment.amount),
@@ -2788,9 +3617,9 @@ async function handleGroupPurchaseStripeEvent(
             );
           }
 
-          // -----------------------------------------------
-          // 11.4 MARK WEBHOOK PROCESSED
-          // -----------------------------------------------
+          // ===============================================
+          // 15.5 MARK WEBHOOK PROCESSED
+          // ===============================================
 
           await tx.stripeWebhookEvent.upsert({
             where: {
@@ -2853,7 +3682,7 @@ const handleGroupPurchaseRemainingStripeEvent = async (
   }
 
   // =====================================================
-  // 2. VERIFY PAYMENT IDENTITY
+  // 2. VERIFY STRIPE PAYMENT IDENTITY
   // =====================================================
 
   const expectedCents = stripeAmount(payment.amount, payment.currency);
@@ -2864,6 +3693,8 @@ const handleGroupPurchaseRemainingStripeEvent = async (
     paymentIntent.metadata?.groupPurchaseId !== payment.groupPurchaseId ||
     paymentIntent.metadata?.customerId !== payment.customerId ||
     paymentIntent.metadata?.purpose !== PaymentPurpose.GROUP_PURCHASE ||
+    paymentIntent.metadata?.bookingMethod !== BookingMethod.DEPOSIT ||
+    paymentIntent.metadata?.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK ||
     paymentIntent.currency.toLowerCase() !== payment.currency.toLowerCase() ||
     paymentIntent.amount !== expectedCents
   ) {
@@ -2877,7 +3708,9 @@ const handleGroupPurchaseRemainingStripeEvent = async (
   if (event.type === "payment_intent.payment_failed") {
     await prisma.$transaction(async (tx) => {
       const existingEvent = await tx.stripeWebhookEvent.findUnique({
-        where: { id: event.id },
+        where: {
+          id: event.id,
+        },
       });
 
       if (existingEvent) return;
@@ -2901,11 +3734,15 @@ const handleGroupPurchaseRemainingStripeEvent = async (
       });
     });
 
-    return { received: true as const };
+    return {
+      received: true as const,
+    };
   }
 
   if (event.type !== "payment_intent.succeeded") {
-    return { received: true as const };
+    return {
+      received: true as const,
+    };
   }
 
   if (
@@ -2923,6 +3760,7 @@ const handleGroupPurchaseRemainingStripeEvent = async (
     try {
       const settlement = await prisma.$transaction(
         async (tx) => {
+          // Serialize settlement for this purchase.
           await tx.$queryRaw`
             SELECT "id"
             FROM "GroupPurchase"
@@ -2930,13 +3768,25 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             FOR UPDATE
           `;
 
+          // =================================================
+          // 4.1 WEBHOOK IDEMPOTENCY
+          // =================================================
+
           const existingEvent = await tx.stripeWebhookEvent.findUnique({
-            where: { id: event.id },
+            where: {
+              id: event.id,
+            },
           });
 
           if (existingEvent) {
-            return { received: true as const };
+            return {
+              received: true as const,
+            };
           }
+
+          // =================================================
+          // 4.2 FETCH CURRENT PURCHASE AND PAYMENT
+          // =================================================
 
           const purchase = await tx.groupPurchase.findUnique({
             where: {
@@ -2951,6 +3801,7 @@ const handleGroupPurchaseRemainingStripeEvent = async (
                   appointmentStatus: true,
                   paymentStatus: true,
                   qrVerifiedAt: true,
+                  currency: true,
                 },
               },
             },
@@ -2966,45 +3817,150 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             throw new AppError("Payment or purchase not found", 404);
           }
 
+          // =================================================
+          // 4.3 VERIFY CURRENT PAYMENT IDENTITY
+          // =================================================
+
+          if (
+            currentPayment.customerId !== payment.customerId ||
+            currentPayment.groupPurchaseId !== purchase.id ||
+            currentPayment.purpose !== PaymentPurpose.GROUP_PURCHASE ||
+            currentPayment.provider !== PaymentProvider.STRIPE ||
+            currentPayment.providerPaymentId !== paymentIntent.id ||
+            !currentPayment.amount.equals(payment.amount) ||
+            currentPayment.currency !== payment.currency
+          ) {
+            throw new AppError(
+              "Group remaining payment identity mismatch",
+              409,
+            );
+          }
+
+          // =================================================
+          // 4.4 VERIFY ORIGINAL PURCHASE CURRENCY
+          // =================================================
+
+          // Resolve historical purchase currency using
+          // existing currency evidence.
+          // Do not use current Brand currency as fallback.
+
+          const purchaseCurrency = await getPurchaseCurrency(tx, purchase.id);
+
+          if (
+            currentPayment.currency !== purchaseCurrency ||
+            payment.currency !== purchaseCurrency ||
+            (purchase.currency !== null &&
+              purchase.currency !== purchaseCurrency) ||
+            purchase.appointments.some(
+              (item) => item.currency !== purchaseCurrency,
+            )
+          ) {
+            // Stripe has already captured the payment.
+            // Do not silently settle or change currency.
+            // Leave this event retryable for reconciliation.
+            throw new AppError(
+              "Group remaining payment currency conflict; reconciliation required",
+              503,
+            );
+          }
+
+          // =================================================
+          // 4.5 CHECK EXISTING LATE REFUND
+          // =================================================
+
           const captureRefund = await tx.refund.findFirst({
             where: {
               paymentId: currentPayment.id,
               reason: "LATE_GROUP_PURCHASE_PAYMENT",
             },
           });
-          if (captureRefund)
-            return { received: true as const, refundRequired: true };
+
+          if (captureRefund) {
+            return {
+              received: true as const,
+              refundRequired: true,
+            };
+          }
+
+          // =================================================
+          // 4.6 ALREADY PROCESSED PAYMENT
+          // =================================================
+
           if (
-            ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(
-              currentPayment.status,
+            [
+              PaymentStatus.PAID,
+              PaymentStatus.PARTIALLY_REFUNDED,
+              PaymentStatus.REFUNDED,
+            ].includes(
+              currentPayment.status as
+                | "PAID"
+                | "PARTIALLY_REFUNDED"
+                | "REFUNDED",
             )
           ) {
+            // Only treat as idempotent if the purchase
+            // and appointment have actually been settled.
+            if (
+              currentPayment.status === PaymentStatus.PAID &&
+              purchase.paymentStatus !== PaymentStatus.PAID
+            ) {
+              throw new AppError(
+                "Paid remaining payment requires reconciliation",
+                503,
+              );
+            }
+
             await tx.stripeWebhookEvent.create({
-              data: { id: event.id, type: event.type },
+              data: {
+                id: event.id,
+                type: event.type,
+              },
             });
-            return { received: true as const };
+
+            return {
+              received: true as const,
+            };
           }
+
+          // =================================================
+          // 4.7 REJECT CAPTURE AND PREPARE REFUND
+          // =================================================
+
           const rejectCapture = async () => {
             await getOrCreateLateGroupPurchaseRefund(
               currentPayment.id,
               currentPayment.amount,
               tx,
             );
+
             await tx.payment.update({
-              where: { id: currentPayment.id },
-              data: { status: "PAID", paidAt: new Date(), failedAt: null },
+              where: {
+                id: currentPayment.id,
+              },
+              data: {
+                status: PaymentStatus.PAID,
+                paidAt: new Date(),
+                failedAt: null,
+              },
             });
-            return { received: true as const, refundRequired: true };
+
+            return {
+              received: true as const,
+              refundRequired: true,
+            };
           };
-          // =================================================
-          // 5. VALIDATE PURCHASE
-          // =================================================
+
+          // =====================================================
+          // 5. VALIDATE PURCHASE AND REMAINING AMOUNT
+          // =====================================================
 
           if (
             purchase.customerId !== payment.customerId ||
             purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK ||
             purchase.bookingMethod !== BookingMethod.DEPOSIT ||
             !purchase.depositAmount ||
+            purchase.depositAmount.lte(0) ||
+            purchase.depositAmount.gte(purchase.amount) ||
             !purchase.amount
               .minus(purchase.depositAmount)
               .equals(currentPayment.amount)
@@ -3020,14 +3976,16 @@ const handleGroupPurchaseRemainingStripeEvent = async (
 
           if (
             appointment.customerId !== purchase.customerId ||
-            appointment.bookingMethod !== BookingMethod.DEPOSIT
+            appointment.bookingMethod !== BookingMethod.DEPOSIT ||
+            appointment.currency !== purchaseCurrency ||
+            paymentIntent.metadata?.appointmentId !== appointment.id
           ) {
             return rejectCapture();
           }
 
-          // =================================================
-          // 6. CHECK INITIAL DEPOSIT
-          // =================================================
+          // =====================================================
+          // 6. VERIFY ORIGINAL DEPOSIT PAYMENT
+          // =====================================================
 
           const depositPayment = await tx.payment.findUnique({
             where: {
@@ -3039,15 +3997,26 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             !depositPayment ||
             depositPayment.id === currentPayment.id ||
             depositPayment.groupPurchaseId !== purchase.id ||
+            depositPayment.customerId !== purchase.customerId ||
+            depositPayment.purpose !== PaymentPurpose.GROUP_PURCHASE ||
             depositPayment.status !== PaymentStatus.PAID ||
             !depositPayment.amount.equals(purchase.depositAmount)
           ) {
             return rejectCapture();
           }
 
-          // =================================================
+          // Currency conflicts are reconciliation issues,
+          // not ordinary invalid-booking refunds.
+          if (depositPayment.currency !== purchaseCurrency) {
+            throw new AppError(
+              "Original group deposit currency mismatch; reconciliation required",
+              503,
+            );
+          }
+
+          // =====================================================
           // 7. IDEMPOTENT ALREADY-PAID CHECK
-          // =================================================
+          // =====================================================
 
           if (
             purchase.paymentStatus === PaymentStatus.PAID &&
@@ -3061,12 +4030,14 @@ const handleGroupPurchaseRemainingStripeEvent = async (
               },
             });
 
-            return { received: true as const };
+            return {
+              received: true as const,
+            };
           }
 
-          // =================================================
-          // 8. REQUIRE VERIFIED APPOINTMENT
-          // =================================================
+          // =====================================================
+          // 8. REQUIRE QR-VERIFIED APPOINTMENT
+          // =====================================================
 
           if (
             purchase.paymentStatus !== PaymentStatus.PARTIALLY_PAID ||
@@ -3077,9 +4048,9 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             return rejectCapture();
           }
 
-          // =================================================
+          // =====================================================
           // 9. PREVENT DUPLICATE REMAINING SETTLEMENT
-          // =================================================
+          // =====================================================
 
           const otherSettled = await tx.payment.findFirst({
             where: {
@@ -3098,9 +4069,9 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             return rejectCapture();
           }
 
-          // =================================================
+          // =====================================================
           // 10. SETTLE GROUP PURCHASE
-          // =================================================
+          // =====================================================
 
           const updatedPurchase = await tx.groupPurchase.updateMany({
             where: {
@@ -3119,9 +4090,9 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             );
           }
 
-          // =================================================
+          // =====================================================
           // 11. SETTLE APPOINTMENT
-          // =================================================
+          // =====================================================
 
           const updatedAppointment = await tx.appointment.updateMany({
             where: {
@@ -3145,9 +4116,9 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             );
           }
 
-          // =================================================
+          // =====================================================
           // 12. MARK PAYMENT PAID
-          // =================================================
+          // =====================================================
 
           await tx.payment.update({
             where: {
@@ -3160,9 +4131,9 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             },
           });
 
-          // =================================================
+          // =====================================================
           // 13. AUDIT LOG
-          // =================================================
+          // =====================================================
 
           await auditLogService.createAuditLog(
             {
@@ -3182,9 +4153,9 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             tx,
           );
 
-          // =================================================
+          // =====================================================
           // 14. MARK WEBHOOK PROCESSED
-          // =================================================
+          // =====================================================
 
           await tx.stripeWebhookEvent.create({
             data: {
@@ -3193,7 +4164,9 @@ const handleGroupPurchaseRemainingStripeEvent = async (
             },
           });
 
-          return { received: true as const };
+          return {
+            received: true as const,
+          };
         },
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -3201,8 +4174,15 @@ const handleGroupPurchaseRemainingStripeEvent = async (
           timeout: 15000,
         },
       );
-      if ("refundRequired" in settlement && settlement.refundRequired)
+
+      // =====================================================
+      // 15. REFUND RECONCILIATION
+      // =====================================================
+
+      if ("refundRequired" in settlement && settlement.refundRequired) {
         return reconcileUnappliedCapture(payment.id, event);
+      }
+
       return settlement;
     } catch (error) {
       if (
@@ -3219,6 +4199,7 @@ const handleGroupPurchaseRemainingStripeEvent = async (
 
   throw new AppError("Group remaining payment settlement retry failed", 503);
 };
+
 const getPaymentById = async (
   paymentId: string,
   userId: string,
@@ -4029,7 +5010,10 @@ const createAppointmentRemainingStripeIntent = async (
 
   const amountInCents = stripeAmount(remainingAmount, appointment.currency);
 
-  if (!Number.isSafeInteger(amountInCents) || amountInCents < (appointment.currency === "HKD" ? 400 : 1)) {
+  if (
+    !Number.isSafeInteger(amountInCents) ||
+    amountInCents < (appointment.currency === "HKD" ? 400 : 1)
+  ) {
     throw new AppError(
       "Remaining amount is below the supported Stripe minimum",
       422,

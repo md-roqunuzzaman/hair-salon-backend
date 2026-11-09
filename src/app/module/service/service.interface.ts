@@ -1,4 +1,7 @@
-import { ServiceStatus } from "../../../../generated/prisma/client.js";
+import {
+  DayOfWeek,
+  ServiceStatus,
+} from "../../../../generated/prisma/client.js";
 
 // =====================================================
 // SERVICE TRANSLATIONS
@@ -71,4 +74,15 @@ export interface IUpdateServiceStatusPayload {
 
 export interface IAssignServiceBranchesPayload {
   branchIds: string[];
+}
+
+export interface IServiceBookingWindowPayload {
+  day: DayOfWeek;
+  startTime: string;
+  endTime: string;
+}
+
+export interface IUpdateServiceBookingSchedulePayload {
+  bookingHoursEnabled: boolean;
+  bookingWindows: IServiceBookingWindowPayload[];
 }

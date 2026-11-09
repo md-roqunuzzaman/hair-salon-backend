@@ -16,6 +16,7 @@ import { uploadService } from "../upload/upload.service.js";
 import {
   IAssignServiceBranchesPayload,
   ICreateServicePayload,
+  IUpdateServiceBookingSchedulePayload,
   IUpdateServicePayload,
   IUpdateServiceStatusPayload,
 } from "./service.interface.js";
@@ -1187,6 +1188,10 @@ const assignServiceToBranches = async (
   serviceId: string,
   payload: IAssignServiceBranchesPayload,
 ) => {
+  // =====================================================
+  // 1. CHECK SERVICE EXISTS
+  // =====================================================
+
   const service = await prisma.service.findUnique({
     where: {
       id: serviceId,
@@ -1197,11 +1202,19 @@ const assignServiceToBranches = async (
     throw new AppError("Service not found", 404);
   }
 
+  // =====================================================
+  // 2. VALIDATE DUPLICATE BRANCH IDS
+  // =====================================================
+
   const uniqueBranchIds = [...new Set(payload.branchIds)];
 
   if (uniqueBranchIds.length !== payload.branchIds.length) {
     throw new AppError("Duplicate branch IDs are not allowed", 400);
   }
+
+  // =====================================================
+  // 3. VALIDATE SELECTED BRANCHES
+  // =====================================================
 
   const branches = await prisma.branch.findMany({
     where: {
@@ -1220,30 +1233,144 @@ const assignServiceToBranches = async (
     throw new AppError("One or more branches do not exist", 404);
   }
 
-  const inactiveBranch = branches.find((branch) => branch.status !== "ACTIVE");
+  const inactiveBranch = branches.find(
+    (branch) => branch.status !== BranchStatus.ACTIVE,
+  );
 
   if (inactiveBranch) {
     throw new AppError("Service cannot be assigned to an inactive branch", 400);
   }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.serviceBranch.deleteMany({
+  // =====================================================
+  // 4. UPDATE BRANCH ASSIGNMENTS TRANSACTIONALLY
+  // =====================================================
+
+  const result = await prisma.$transaction(async (tx) => {
+    // ===================================================
+    // 4.1 FETCH EXISTING SERVICE BRANCHES
+    // ===================================================
+
+    const existingAssignments = await tx.serviceBranch.findMany({
       where: {
         serviceId,
       },
+
+      select: {
+        branchId: true,
+      },
     });
 
-    await tx.serviceBranch.createMany({
-      data: uniqueBranchIds.map((branchId) => ({
+    const existingBranchIds = new Set(
+      existingAssignments.map((item) => item.branchId),
+    );
+
+    const requestedBranchIds = new Set(uniqueBranchIds);
+
+    // ===================================================
+    // 4.2 IDENTIFY NEW BRANCHES
+    // ===================================================
+
+    const branchIdsToAdd = uniqueBranchIds.filter(
+      (branchId) => !existingBranchIds.has(branchId),
+    );
+
+    // ===================================================
+    // 4.3 IDENTIFY REMOVED BRANCHES
+    // ===================================================
+
+    const branchIdsToRemove = [...existingBranchIds].filter(
+      (branchId) => !requestedBranchIds.has(branchId),
+    );
+
+    // ===================================================
+    // 4.4 REMOVE ONLY UNASSIGNED BRANCHES
+    // ===================================================
+
+    if (branchIdsToRemove.length > 0) {
+      await tx.serviceBranch.deleteMany({
+        where: {
+          serviceId,
+
+          branchId: {
+            in: branchIdsToRemove,
+          },
+        },
+      });
+    }
+
+    // ===================================================
+    // 4.5 ADD ONLY NEW BRANCHES
+    // ===================================================
+
+    if (branchIdsToAdd.length > 0) {
+      await tx.serviceBranch.createMany({
+        data: branchIdsToAdd.map((branchId) => ({
+          serviceId,
+          branchId,
+
+          // New branches use normal staff schedule
+          // until custom booking hours are configured.
+          bookingHoursEnabled: false,
+        })),
+      });
+    }
+
+    // ===================================================
+    // 4.6 FETCH FINAL BRANCH ASSIGNMENTS
+    // ===================================================
+
+    const finalAssignments = await tx.serviceBranch.findMany({
+      where: {
         serviceId,
-        branchId,
-      })),
+      },
+
+      select: {
+        branchId: true,
+        bookingHoursEnabled: true,
+        bookingWindows: {
+          select: {
+            id: true,
+            day: true,
+            startTime: true,
+            endTime: true,
+          },
+          orderBy: [{ day: "asc" }, { startTime: "asc" }],
+        },
+      },
     });
+
+    return {
+      branchIdsToAdd,
+      branchIdsToRemove,
+      finalAssignments,
+    };
   });
+
+  // =====================================================
+  // 5. FINAL RESPONSE
+  // =====================================================
 
   return {
     serviceId,
+
     branchIds: uniqueBranchIds,
+
+    addedBranchIds: result.branchIdsToAdd,
+
+    removedBranchIds: result.branchIdsToRemove,
+
+    branches: result.finalAssignments.map((item) => ({
+      branchId: item.branchId,
+
+      bookingHoursEnabled: item.bookingHoursEnabled,
+
+      bookingWindows: item.bookingWindows.map((window) => ({
+        id: window.id,
+        day: window.day,
+        startTime: window.startTime,
+        endTime: window.endTime,
+      })),
+    })),
   };
 };
 
@@ -1442,6 +1569,399 @@ const getBranchServices = async (
   };
 };
 
+// =====================================================
+// UPDATE SERVICE-SPECIFIC BOOKING SCHEDULE
+// =====================================================
+
+const updateServiceBookingSchedule = async (
+  serviceId: string,
+  branchId: string,
+  payload: IUpdateServiceBookingSchedulePayload,
+) => {
+  // =====================================================
+  // 1. VALIDATE SERVICE-BRANCH ASSIGNMENT
+  // =====================================================
+
+  const serviceBranch = await prisma.serviceBranch.findUnique({
+    where: {
+      serviceId_branchId: {
+        serviceId,
+        branchId,
+      },
+    },
+
+    select: {
+      serviceId: true,
+      branchId: true,
+    },
+  });
+
+  if (!serviceBranch) {
+    throw new AppError("Service is not assigned to this branch", 404);
+  }
+
+  // =====================================================
+  // 2. VALIDATE BOOKING WINDOWS
+  // =====================================================
+
+  const timeToBookingMinutes = (value: string): number => {
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+      throw new AppError("Invalid booking window time. Expected HH:mm", 400);
+    }
+
+    const [hours, minutes] = value.split(":").map(Number);
+
+    return hours * 60 + minutes;
+  };
+
+  const validDays = new Set([
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+    "SUNDAY",
+  ]);
+
+  const windowsByDay = new Map<
+    string,
+    Array<{
+      start: number;
+      end: number;
+    }>
+  >();
+
+  for (const window of payload.bookingWindows) {
+    // ===================================================
+    // 2.1 VALIDATE DAY
+    // ===================================================
+
+    if (!validDays.has(window.day)) {
+      throw new AppError("Invalid booking window day", 400);
+    }
+
+    // ===================================================
+    // 2.2 VALIDATE TIME RANGE
+    // ===================================================
+
+    const start = timeToBookingMinutes(window.startTime);
+    const end = timeToBookingMinutes(window.endTime);
+
+    if (start >= end) {
+      throw new AppError(
+        "Booking window end time must be after start time",
+        400,
+      );
+    }
+
+    // ===================================================
+    // 2.3 GROUP WINDOWS BY DAY
+    // ===================================================
+
+    const dayWindows = windowsByDay.get(window.day) ?? [];
+
+    dayWindows.push({
+      start,
+      end,
+    });
+
+    windowsByDay.set(window.day, dayWindows);
+  }
+
+  // =====================================================
+  // 3. VALIDATE OVERLAPPING WINDOWS
+  // =====================================================
+
+  for (const [, windows] of windowsByDay) {
+    windows.sort((a, b) => a.start - b.start);
+
+    for (let index = 1; index < windows.length; index++) {
+      const previous = windows[index - 1];
+      const current = windows[index];
+
+      if (current.start < previous.end) {
+        throw new AppError(
+          "Booking windows cannot overlap on the same day",
+          400,
+        );
+      }
+    }
+  }
+
+  // =====================================================
+  // 4. VALIDATE ENABLED CONFIGURATION
+  // =====================================================
+
+  if (payload.bookingHoursEnabled && payload.bookingWindows.length === 0) {
+    throw new AppError(
+      "At least one booking window is required when custom booking hours are enabled",
+      400,
+    );
+  }
+
+  // =====================================================
+  // 5. PREPARE BOOKING WINDOWS
+  // =====================================================
+
+  const bookingWindows = payload.bookingWindows.map((window) => ({
+    serviceId,
+    branchId,
+    day: window.day,
+    startTime: window.startTime,
+    endTime: window.endTime,
+  }));
+
+  // =====================================================
+  // 6. SERIALIZABLE TRANSACTION WITH RETRY
+  // =====================================================
+
+  const MAX_SCHEDULE_TRANSACTION_RETRIES = 3;
+
+  for (
+    let attempt = 1;
+    attempt <= MAX_SCHEDULE_TRANSACTION_RETRIES;
+    attempt++
+  ) {
+    try {
+      const result = await prisma.$transaction(
+        async (tx) => {
+          // =============================================
+          // 6.1 RECHECK SERVICE-BRANCH ASSIGNMENT
+          // =============================================
+
+          const currentAssignment = await tx.serviceBranch.findUnique({
+            where: {
+              serviceId_branchId: {
+                serviceId,
+                branchId,
+              },
+            },
+
+            select: {
+              serviceId: true,
+              branchId: true,
+            },
+          });
+
+          if (!currentAssignment) {
+            throw new AppError("Service is not assigned to this branch", 404);
+          }
+
+          // =============================================
+          // 6.2 UPDATE SERVICE-BRANCH BOOKING SETTINGS
+          // =============================================
+          // Update the parent assignment first so that
+          // concurrent schedule writes contend on the
+          // same ServiceBranch record.
+
+          await tx.serviceBranch.update({
+            where: {
+              serviceId_branchId: {
+                serviceId,
+                branchId,
+              },
+            },
+
+            data: {
+              bookingHoursEnabled: payload.bookingHoursEnabled,
+            },
+          });
+
+          // =============================================
+          // 6.3 REMOVE PREVIOUS BOOKING WINDOWS
+          // =============================================
+
+          await tx.serviceBookingWindow.deleteMany({
+            where: {
+              serviceId,
+              branchId,
+            },
+          });
+
+          // =============================================
+          // 6.4 INSERT NEW BOOKING WINDOWS
+          // =============================================
+
+          if (bookingWindows.length > 0) {
+            await tx.serviceBookingWindow.createMany({
+              data: bookingWindows,
+            });
+          }
+
+          // =============================================
+          // 6.5 FETCH FINAL CONFIGURATION
+          // =============================================
+
+          return tx.serviceBranch.findUniqueOrThrow({
+            where: {
+              serviceId_branchId: {
+                serviceId,
+                branchId,
+              },
+            },
+
+            include: {
+              bookingWindows: {
+                orderBy: [{ day: "asc" }, { startTime: "asc" }],
+
+                select: {
+                  id: true,
+                  day: true,
+                  startTime: true,
+                  endTime: true,
+                },
+              },
+            },
+          });
+        },
+
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+
+          maxWait: 5000,
+          timeout: 10000,
+        },
+      );
+
+      // =====================================================
+      // 7. FINAL RESPONSE
+      // =====================================================
+
+      return {
+        serviceId: result.serviceId,
+        branchId: result.branchId,
+
+        bookingHoursEnabled: result.bookingHoursEnabled,
+
+        bookingWindows: result.bookingWindows.map((window) => ({
+          id: window.id,
+          day: window.day,
+          startTime: window.startTime,
+          endTime: window.endTime,
+        })),
+      };
+    } catch (error) {
+      // =====================================================
+      // 8. SERIALIZABLE CONFLICT RETRY
+      // =====================================================
+
+      const isSerializableConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+
+      if (
+        isSerializableConflict &&
+        attempt < MAX_SCHEDULE_TRANSACTION_RETRIES
+      ) {
+        console.warn(
+          `[SERVICE_BOOKING_SCHEDULE] Serializable conflict. Retrying attempt ${attempt + 1}`,
+        );
+
+        continue;
+      }
+
+      if (isSerializableConflict) {
+        throw new AppError(
+          "Booking schedule was updated concurrently. Please try again",
+          409,
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError("Could not update service booking schedule", 409);
+};
+
+// =====================================================
+// GET SERVICE-SPECIFIC BOOKING SCHEDULE
+// =====================================================
+
+const getServiceBookingSchedule = async (
+  serviceId: string,
+  branchId: string,
+) => {
+  // =====================================================
+  // 1. FIND SERVICE-BRANCH ASSIGNMENT
+  // =====================================================
+
+  const serviceBranch = await prisma.serviceBranch.findUnique({
+    where: {
+      serviceId_branchId: {
+        serviceId,
+        branchId,
+      },
+    },
+
+    include: {
+      service: {
+        select: {
+          id: true,
+          name: true,
+          durationMinutes: true,
+          status: true,
+        },
+      },
+
+      branch: {
+        select: {
+          id: true,
+          name: true,
+          status: true,
+        },
+      },
+
+      bookingWindows: {
+        orderBy: [{ day: "asc" }, { startTime: "asc" }],
+
+        select: {
+          id: true,
+          day: true,
+          startTime: true,
+          endTime: true,
+        },
+      },
+    },
+  });
+
+  // =====================================================
+  // 2. VALIDATE SERVICE-BRANCH ASSIGNMENT
+  // =====================================================
+
+  if (!serviceBranch) {
+    throw new AppError("Service is not assigned to this branch", 404);
+  }
+
+  // =====================================================
+  // 3. FINAL RESPONSE
+  // =====================================================
+
+  return {
+    service: {
+      id: serviceBranch.service.id,
+      name: serviceBranch.service.name,
+      durationMinutes: serviceBranch.service.durationMinutes,
+      status: serviceBranch.service.status,
+    },
+
+    branch: {
+      id: serviceBranch.branch.id,
+      name: serviceBranch.branch.name,
+      status: serviceBranch.branch.status,
+    },
+
+    bookingHoursEnabled: serviceBranch.bookingHoursEnabled,
+
+    bookingWindows: serviceBranch.bookingWindows.map((window) => ({
+      id: window.id,
+      day: window.day,
+      startTime: window.startTime,
+      endTime: window.endTime,
+    })),
+  };
+};
 export const serviceService = {
   createService,
   getServices,
@@ -1450,4 +1970,6 @@ export const serviceService = {
   updateServiceStatus,
   assignServiceToBranches,
   getBranchServices,
+  updateServiceBookingSchedule,
+  getServiceBookingSchedule,
 };

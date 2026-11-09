@@ -18,11 +18,22 @@ test('reports reject mixed currencies instead of adding them', async () => {
   const { state, client } = fixture(); state.payments.push('GBP');
   await assert.rejects(reportingCurrency(client), /Mixed-currency/);
 });
-test('legacy purchase currency needs persisted evidence, never current Brand inference', async () => {
+test('required purchase snapshots reject missing currency even when legacy linked evidence exists', async () => {
   const { state, client } = fixture(); state.purchases = [null]; state.unknown = 1;
   await assert.rejects(reportingCurrency(client), /reconciliation/);
   state.unknown = 0;
+  await assert.rejects(reportingCurrency(client), /reconciliation/);
+  state.purchases = ['HKD'];
   assert.equal(await reportingCurrency(client), 'HKD');
+});
+
+test('all required financial currencies reject null or empty storage values', async () => {
+  for (const bucket of ['payments','wallets','appointments','purchases']) {
+    for (const invalid of [null,'']) {
+      const { state, client } = fixture(); state[bucket] = [invalid];
+      await assert.rejects(reportingCurrency(client), /reconciliation/);
+    }
+  }
 });
 test('final currency fence detects initial settings changed during report calculation', async () => {
   const { state, client } = fixture(); state.payments = []; state.wallets = []; state.appointments = []; state.purchases = [];

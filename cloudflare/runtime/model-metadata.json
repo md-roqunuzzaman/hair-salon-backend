@@ -1006,13 +1006,32 @@
     "money": {},
     "relations": {
       "service": "Service",
-      "branch": "Branch"
+      "branch": "Branch",
+      "bookingWindows": "ServiceBookingWindow"
     },
     "arrays": [],
     "scalars": {
       "serviceId": "String",
       "branchId": "String",
+      "bookingHoursEnabled": "Boolean",
       "createdAt": "DateTime"
+    }
+  },
+  "ServiceBookingWindow": {
+    "money": {},
+    "relations": {
+      "serviceBranch": "ServiceBranch"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "serviceId": "String",
+      "branchId": "String",
+      "day": "DayOfWeek",
+      "startTime": "String",
+      "endTime": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
     }
   },
   "Staff": {

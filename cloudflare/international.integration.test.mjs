@@ -13,6 +13,15 @@ for (const settings of regions) test(`real Worker ${settings.currency}/${setting
   assert.deepEqual((await api('/api/v1/brand/international-settings', { roleToken: ownerToken })).data, settings);
   assert.equal((await api('/api/v1/brand')).data.currency, settings.currency);
   await api('/api/v1/brand/international-settings', { method: 'PATCH', body: { countryCode: settings.countryCode }, roleToken: managerToken, status: 403 });
+  await t.test('unpaid Buy Later purchase snapshots currency and cannot block financial reports', async () => {
+    const before = (await api('/api/v1/reports/payments', { roleToken: ownerToken })).data;
+    const created = (await api('/api/v1/group-purchases', { status: 201, body: { packageId: fixture.packageId, branchId: fixture.branchId, quantity: 1 } })).data;
+    const persisted = await state();
+    assert.equal(persisted.purchases.find(p => p.id === created.purchaseId).currency, settings.currency);
+    assert.equal(persisted.payments.some(p => p.groupPurchaseId === created.purchaseId), false);
+    assert.equal(persisted.appointments.some(a => a.groupPurchaseId === created.purchaseId), false);
+    assert.deepEqual((await api('/api/v1/reports/payments', { roleToken: ownerToken })).data, before);
+  });
   for (const [index, method] of ['pay-now', 'deposit', 'reserve'].entries()) await t.test(method, async () => {
     const booking = (await api(`/api/v1/appointments/${method}`, { status: 201, body: {
       branchId: fixture.branchId, serviceId: fixture.serviceId, staffId: fixture.staffId, date: fixture.date, startTime: `${10 + index}:00`,

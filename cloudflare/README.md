@@ -1,5 +1,9 @@
 # Cloudflare deployment
 
+## Required GroupPurchase currency (v37) — local candidate, 2026-11-07
+
+The Cloudflare schema now matches the required `GroupPurchase.currency` field. Pending SQLite v37 rejects existing NULLs and installs INSERT/UPDATE required-field triggers without backfilling data or rebuilding the referenced table. SELECT-only staging preflight passed at 2026-11-07T03:23:41.760Z: 59 purchases, zero NULL/empty currencies, and all applied v1–36 checksums match. This supersedes the earlier connection failures. Revalidate if deployment is delayed and retain a usable recovery point plus a v37-compatible recovery Worker before a separately approved upgrade. See [the preparation results and release conditions](../docs/group-purchase-currency-required-cloudflare.md). No live migration or deployment was performed by this preparation task.
+
 ## Tencent moderation and S6 follow-up — locally verified, 2026-11-05
 
 The normal production Worker now uses a fixed-endpoint TC3-signed fetch adapter instead of the Tencent SDK's unsupported readline import chain. It boots in disposable Miniflare without a diagnostic stub. Actual Tencent Pass/Review/Block contract tests retain fail-closed review/reply persistence, authorization and generic errors. Final checks pass: 445 full-regression cases, 86 Node security cases, eight Worker security cases and one exact production-artifact boot case, with zero failed/skipped/cancelled. TypeScript, Prisma validation, v36 schema/migration/isolation checks, staging preparation and upload dry-run pass. See [the exact changed files, test results and remaining limits](../docs/tencent-moderation-release.md).

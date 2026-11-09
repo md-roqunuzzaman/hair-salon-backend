@@ -424,78 +424,85 @@ const updateBrandInternationalSettings = async (
   // 3. FIND BRAND
   // =====================================================
 
-  return prisma.$transaction(async tx => {
-  const brand = await tx.brand.findFirst({
-    select: {
-      id: true,
-      countryCode: true,
-      currency: true,
-      timezone: true,
+  return prisma.$transaction(
+    async (tx) => {
+      const brand = await tx.brand.findFirst({
+        select: {
+          id: true,
+          countryCode: true,
+          currency: true,
+          timezone: true,
+        },
+      });
+
+      if (!brand) {
+        throw new AppError("Brand not found", 404);
+      }
+
+      // =====================================================
+      // 4. RESOLVE NEXT CONFIGURATION
+      // =====================================================
+
+      const nextCountryCode = countryCode ?? brand.countryCode;
+
+      const nextCurrency = currency ?? brand.currency;
+
+      const nextTimezone = timezone ?? brand.timezone;
+
+      // =====================================================
+      // 5. CURRENCY CHANGE SAFETY
+      // =====================================================
+
+      if (
+        nextCurrency !== brand.currency &&
+        ((await tx.payment.count()) ||
+          (await tx.wallet.count()) ||
+          (await tx.groupPurchase.count()) ||
+          (await tx.appointment.count()))
+      ) {
+        throw new AppError(
+          "Currency changes require an empty financial history; existing wallets and transactions cannot be redenominated",
+          409,
+        );
+      }
+
+      // =====================================================
+      // 6. TIMEZONE CHANGE SAFETY
+      // =====================================================
+
+      if (nextTimezone !== brand.timezone && (await tx.appointment.count())) {
+        throw new AppError(
+          "Timezone changes require appointment history reconciliation; existing calendar keys must not be reinterpreted",
+          409,
+        );
+      }
+
+      // =====================================================
+      // 7. UPDATE BRAND
+      // =====================================================
+
+      const updatedBrand = await tx.brand.update({
+        where: {
+          id: brand.id,
+        },
+
+        data: {
+          countryCode: nextCountryCode,
+          currency: nextCurrency,
+          timezone: nextTimezone,
+        },
+
+        select: {
+          countryCode: true,
+          currency: true,
+          timezone: true,
+        },
+      });
+
+      return updatedBrand;
     },
-  });
-
-  if (!brand) {
-    throw new AppError("Brand not found", 404);
-  }
-
-  // =====================================================
-  // 4. RESOLVE NEXT CONFIGURATION
-  // =====================================================
-
-  const nextCountryCode = countryCode ?? brand.countryCode;
-
-  const nextCurrency = currency ?? brand.currency;
-
-  const nextTimezone = timezone ?? brand.timezone;
-
-  // =====================================================
-  // 5. CURRENCY CHANGE SAFETY
-  // =====================================================
-
-  if (nextCurrency !== brand.currency && (
-    await tx.payment.count() || await tx.wallet.count() || await tx.groupPurchase.count() || await tx.appointment.count()
-  )) {
-    throw new AppError(
-      "Currency changes require an empty financial history; existing wallets and transactions cannot be redenominated",
-      409,
-    );
-  }
-
-  // =====================================================
-  // 6. TIMEZONE CHANGE SAFETY
-  // =====================================================
-
-  if (nextTimezone !== brand.timezone && await tx.appointment.count()) {
-    throw new AppError(
-      "Timezone changes require appointment history reconciliation; existing calendar keys must not be reinterpreted",
-      409,
-    );
-  }
-
-  // =====================================================
-  // 7. UPDATE BRAND
-  // =====================================================
-
-  const updatedBrand = await tx.brand.update({
-    where: {
-      id: brand.id,
-    },
-
-    data: {
-      countryCode: nextCountryCode,
-      currency: nextCurrency,
-      timezone: nextTimezone,
-    },
-
-    select: {
-      countryCode: true,
-      currency: true,
-      timezone: true,
-    },
-  });
-
-  return updatedBrand;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
 };
 
 export const brandService = {

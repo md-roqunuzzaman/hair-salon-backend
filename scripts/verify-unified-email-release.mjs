@@ -18,7 +18,13 @@ const config = JSON.parse(await readFile('wrangler.jsonc','utf8'));
 assert.equal(config.vars.EMAIL_OUTBOX_ENABLED,'false');
 assert.ok(['false','true'].includes(config.env.staging.vars.EMAIL_OUTBOX_ENABLED));
 assert.equal(config.main,'cloudflare/.build/worker.mjs');
-assert.equal(migrations.length,36);
+assert.equal(migrations.length,37);
+assert.match(migrations[36].sql,/CREATE TRIGGER "required_GroupPurchase_currency_INSERT"/);
+assert.match(migrations[36].sql,/CREATE TRIGGER "required_GroupPurchase_currency_UPDATE"/);
+assert.match(migrations[36].sql,/CHECK \("nullCount" = 0\)/);
+assert.ok(!/UPDATE\s+"GroupPurchase"\s+SET/i.test(migrations[36].sql),'Required-currency migration must not backfill purchases');
+const sqliteSchema = await readFile('cloudflare/prisma/schema.prisma','utf8');
+assert.match(sqliteSchema.match(/model GroupPurchase\s*\{([\s\S]*?)\n\}/)[1],/\n\s+currency\s+String\s*\n/);
 assert.match(migrations[35].sql, /ALTER TABLE "Appointment" ADD COLUMN "timezone" TEXT/);
 assert.match(migrations[35].sql, /ALTER TABLE "GroupPurchase" ADD COLUMN "currency" TEXT/);
 assert.match(migrations[34].sql, /ADD COLUMN "countryCode"/);
@@ -50,6 +56,7 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
     if(name==='0034_branch_portfolio.sql'||['20261103082916_add_branch_portfolio','20261103084502_add_staff_portfolio_branch_relation'].includes(name))continue;
     if(name==='0035_brand_international_settings.sql'||name==='20261105023508_add_brand_international_settings')continue;
     if(name==='0036_international_transaction_snapshots.sql'||name==='20261105060000_international_transaction_snapshots')continue;
+    if(name==='0037_group_purchase_currency_required.sql'||name==='20261106100703_group_purchase_currency_required')continue;
     // Current PostgreSQL index candidates are retained verbatim; Workers use v32 SQLite.
     if(directory==='prisma/migrations'&&['20261102082512_email_outbox_stale_lock_index','20261102083831_email_outbox_stale_lock_index'].includes(name))continue;
     const file = `${directory}/${name}${directory.startsWith('prisma')?'/migration.sql':''}`;

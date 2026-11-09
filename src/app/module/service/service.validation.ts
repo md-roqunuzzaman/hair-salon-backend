@@ -127,9 +127,131 @@ const assignServiceBranchesValidationSchema = z.object({
   }),
 });
 
+// =====================================================
+// SERVICE BOOKING SCHEDULE VALIDATION
+// =====================================================
+
+const serviceBookingDaySchema = z.enum([
+  "MONDAY",
+  "TUESDAY",
+  "WEDNESDAY",
+  "THURSDAY",
+  "FRIDAY",
+  "SATURDAY",
+  "SUNDAY",
+]);
+
+// =====================================================
+// TIME FORMAT VALIDATION (HH:mm)
+// =====================================================
+
+const serviceBookingTimeSchema = z
+  .string()
+  .regex(
+    /^([01]\d|2[0-3]):[0-5]\d$/,
+    "Time must be in HH:mm format (00:00-23:59)",
+  );
+
+// =====================================================
+// SINGLE BOOKING WINDOW VALIDATION
+// =====================================================
+
+const serviceBookingWindowSchema = z
+  .object({
+    day: serviceBookingDaySchema,
+
+    startTime: serviceBookingTimeSchema,
+
+    endTime: serviceBookingTimeSchema,
+  })
+  .strict()
+  .refine((window) => window.startTime < window.endTime, {
+    message: "Start time must be before end time",
+    path: ["endTime"],
+  });
+
+// =====================================================
+// UPDATE SERVICE BOOKING SCHEDULE
+// =====================================================
+
+const updateServiceBookingScheduleValidationSchema = z.object({
+  params: z.object({
+    serviceId: z.uuid("Invalid service ID"),
+    branchId: z.uuid("Invalid branch ID"),
+  }),
+
+  body: z
+    .object({
+      bookingHoursEnabled: z.boolean(),
+
+      bookingWindows: z.array(serviceBookingWindowSchema).default([]),
+    })
+    .strict()
+    .superRefine((data, ctx) => {
+      // ===============================================
+      // 1. REQUIRE WINDOWS WHEN ENABLED
+      // ===============================================
+
+      if (data.bookingHoursEnabled && data.bookingWindows.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["bookingWindows"],
+          message:
+            "At least one booking window is required when booking hours are enabled",
+        });
+      }
+
+      // ===============================================
+      // 2. GROUP WINDOWS BY DAY
+      // ===============================================
+
+      const windowsByDay = new Map<
+        string,
+        Array<{
+          startTime: string;
+          endTime: string;
+        }>
+      >();
+
+      for (const window of data.bookingWindows) {
+        const existingWindows = windowsByDay.get(window.day) ?? [];
+
+        existingWindows.push({
+          startTime: window.startTime,
+          endTime: window.endTime,
+        });
+
+        windowsByDay.set(window.day, existingWindows);
+      }
+
+      // ===============================================
+      // 3. CHECK OVERLAPPING WINDOWS
+      // ===============================================
+
+      for (const [day, windows] of windowsByDay) {
+        const sortedWindows = [...windows].sort((a, b) =>
+          a.startTime.localeCompare(b.startTime),
+        );
+
+        for (let i = 1; i < sortedWindows.length; i++) {
+          const previous = sortedWindows[i - 1];
+          const current = sortedWindows[i];
+
+          if (current.startTime < previous.endTime) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["bookingWindows"],
+              message: `Overlapping booking windows are not allowed on ${day}`,
+            });
+          }
+        }
+      }
+    }),
+});
 export const serviceValidation = {
   createServiceValidationSchema,
   updateServiceValidationSchema,
   updateServiceStatusValidationSchema,
   assignServiceBranchesValidationSchema,
+  updateServiceBookingScheduleValidationSchema,
 };

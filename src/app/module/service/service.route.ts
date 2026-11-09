@@ -45,4 +45,25 @@ router.put(
 );
 
 router.get("/:branchId/services", serviceController.getBranchServices);
+
+// =====================================================
+// SERVICE-SPECIFIC BOOKING SCHEDULE
+// =====================================================
+
+// GET — Retrieve service booking schedule
+router.get(
+  "/:serviceId/branches/:branchId/booking-schedule",
+  auth("BRAND_OWNER"),
+  serviceController.getServiceBookingSchedule,
+);
+
+// PUT — Create / Replace service booking schedule
+router.put(
+  "/:serviceId/branches/:branchId/booking-schedule",
+  auth("BRAND_OWNER"),
+  validateRequest(
+    serviceValidation.updateServiceBookingScheduleValidationSchema,
+  ),
+  serviceController.updateServiceBookingSchedule,
+);
 export const ServiceRoutes = router;
