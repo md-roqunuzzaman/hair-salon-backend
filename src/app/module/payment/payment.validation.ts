@@ -21,6 +21,10 @@ const getMyPaymentsValidationSchema = z.object({
     status: z
       .enum(["PENDING", "PAID", "FAILED", "REFUNDED", "PARTIALLY_REFUNDED"])
       .optional(),
+
+    category: z
+      .enum(["ALL", "GROUP_PURCHASE", "REGULAR_PURCHASE", "WALLET_TOPUP"])
+      .optional(),
   }),
 });
 

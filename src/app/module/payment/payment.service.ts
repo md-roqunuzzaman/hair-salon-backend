@@ -54,6 +54,8 @@ import {
   getPaymentRefundEligibility,
   getPaymentsRefundEligibilityBatch,
 } from "../cancellation-refund/cancellation-refund.service.js";
+import { getLocalizedContent } from "../../utils/localization.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 
 const createStripeIntent = async (
   customerId: string,
@@ -4271,7 +4273,11 @@ const getPaymentById = async (
   };
 };
 
-const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
+const getMyPayments = async (
+  customerId: string,
+  query: IMyPaymentsQuery,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
   // =====================================================
   // 1. PAGINATION
   // =====================================================
@@ -4290,8 +4296,38 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 2. FILTER
+  // 2. CATEGORY FILTER
   // =====================================================
+
+  const category = query.category ?? "ALL";
+
+  const categoryWhere =
+    category === "GROUP_PURCHASE"
+      ? {
+          purpose: PaymentPurpose.GROUP_PURCHASE,
+          groupPurchaseId: { not: null },
+        }
+      : category === "WALLET_TOPUP"
+        ? {
+            purpose: PaymentPurpose.WALLET_TOP_UP,
+          }
+        : category === "REGULAR_PURCHASE"
+          ? {
+              purpose: {
+                in: [
+                  PaymentPurpose.APPOINTMENT,
+                  PaymentPurpose.APPOINTMENT_DEPOSIT,
+                  PaymentPurpose.APPOINTMENT_REMAINING,
+                ],
+              },
+              groupPurchaseId: null,
+              appointment: {
+                is: {
+                  groupPurchaseId: null,
+                },
+              },
+            }
+          : {};
 
   const where = {
     customerId,
@@ -4301,10 +4337,12 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
           status: query.status as PaymentStatus,
         }
       : {}),
+
+    ...categoryWhere,
   };
 
   // =====================================================
-  // 3. FETCH PAYMENTS + TOTAL COUNT
+  // 3. FETCH PAYMENTS + TOTAL
   // =====================================================
 
   const [payments, total] = await prisma.$transaction([
@@ -4314,9 +4352,7 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
       skip,
       take: limit,
 
-      orderBy: {
-        createdAt: "desc",
-      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 
       select: {
         id: true,
@@ -4327,16 +4363,46 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
         status: true,
         provider: true,
         providerPaymentId: true,
+
         appointmentId: true,
+        groupPurchaseId: true,
+        walletTopupId: true,
 
         createdAt: true,
         purpose: true,
-        groupPurchaseId: true,
 
-        // Fallback order number from appointment
         appointment: {
           select: {
             orderNumber: true,
+            itemName: true,
+            itemNameTranslations: true,
+            groupPurchaseId: true,
+          },
+        },
+
+        groupPurchase: {
+          select: {
+            id: true,
+
+            package: {
+              select: {
+                id: true,
+                name: true,
+                translations: true,
+
+                services: {
+                  select: {
+                    service: {
+                      select: {
+                        id: true,
+                        name: true,
+                        translations: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -4348,7 +4414,7 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   ]);
 
   // =====================================================
-  // 4. FETCH SUCCESSFUL REFUND TOTALS
+  // 4. SUCCESSFUL REFUND TOTALS
   // =====================================================
 
   const paymentIds = payments.map((payment) => payment.id);
@@ -4362,7 +4428,6 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
             paymentId: {
               in: paymentIds,
             },
-
             status: RefundStatus.SUCCEEDED,
           },
 
@@ -4372,10 +4437,6 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
         })
       : [];
 
-  // =====================================================
-  // 5. REFUNDED AMOUNT MAP
-  // =====================================================
-
   const refundedAmountMap = new Map<string, number>();
 
   for (const refund of refundTotals) {
@@ -4383,7 +4444,7 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   }
 
   // =====================================================
-  // 6. PAYMENT LABELS
+  // 5. PAYMENT LABELS
   // =====================================================
 
   const paymentLabels: Record<PaymentPurpose, string> = {
@@ -4395,7 +4456,7 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   };
 
   // =====================================================
-  // 7. BATCH REFUND ELIGIBILITY
+  // 6. BATCH REFUND ELIGIBILITY
   // =====================================================
 
   const eligibilityMap = await getPaymentsRefundEligibilityBatch(
@@ -4410,7 +4471,7 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
   );
 
   // =====================================================
-  // 8. BUILD PAYMENT HISTORY
+  // 7. BUILD PAYMENT HISTORY
   // =====================================================
 
   const items: IMyPaymentItem[] = payments.map((payment) => {
@@ -4420,44 +4481,132 @@ const getMyPayments = async (customerId: string, query: IMyPaymentsQuery) => {
       throw new AppError("PAYMENT_REFUND_ELIGIBILITY_MISSING", 500);
     }
 
+    // =================================================
+    // CATEGORY
+    // =================================================
+
+    const paymentCategory:
+      | "GROUP_PURCHASE"
+      | "REGULAR_PURCHASE"
+      | "WALLET_TOPUP" =
+      payment.purpose === PaymentPurpose.WALLET_TOP_UP
+        ? "WALLET_TOPUP"
+        : payment.purpose === PaymentPurpose.GROUP_PURCHASE ||
+            payment.groupPurchaseId !== null ||
+            payment.appointment?.groupPurchaseId != null
+          ? "GROUP_PURCHASE"
+          : "REGULAR_PURCHASE";
+
+    // =================================================
+    // LOCALIZED GROUP PURCHASE PACKAGE
+    // =================================================
+
+    const groupPackage = payment.groupPurchase?.package;
+
+    const localizedPackage = groupPackage
+      ? getLocalizedContent(groupPackage.translations, language, {
+          name: groupPackage.name,
+        })
+      : null;
+
+    // =================================================
+    // LOCALIZED SERVICES
+    // =================================================
+
+    const services =
+      groupPackage?.services.map((entry) => {
+        const localizedService = getLocalizedContent(
+          entry.service.translations,
+          language,
+          {
+            name: entry.service.name,
+          },
+        );
+
+        return {
+          id: entry.service.id,
+          name: localizedService.name,
+        };
+      }) ?? [];
+
+    // =================================================
+    // LOCALIZED APPOINTMENT NAME
+    // =================================================
+
+    const appointmentName = payment.appointment
+      ? getLocalizedContent(
+          payment.appointment.itemNameTranslations,
+          language,
+          {
+            name: payment.appointment.itemName,
+          },
+        ).name
+      : null;
+
+    // =================================================
+    // DISPLAY NAME
+    // =================================================
+
+    const itemName =
+      localizedPackage?.name ??
+      appointmentName ??
+      (paymentCategory === "WALLET_TOPUP" ? "Wallet Top-up" : null);
+
+    // =================================================
+    // ORDER ID
+    // =================================================
+
+    const orderId =
+      paymentCategory === "GROUP_PURCHASE"
+        ? (payment.groupPurchaseId ??
+          payment.appointment?.groupPurchaseId ??
+          payment.id)
+        : paymentCategory === "WALLET_TOPUP"
+          ? (payment.walletTopupId ?? payment.id)
+          : (payment.appointmentId ?? payment.id);
+
+    // =================================================
+    // RESPONSE
+    // =================================================
+
     return {
       id: payment.id,
 
-      // Prefer Payment order number.
-      // Fallback to linked Appointment order number.
       orderNumber:
         payment.orderNumber ?? payment.appointment?.orderNumber ?? null,
 
-      amount: Number(payment.amount),
+      orderId,
+      category: paymentCategory,
 
+      itemName,
+      services,
+
+      amount: Number(payment.amount),
       currency: payment.currency,
 
       paymentStatus: payment.status,
 
       provider: payment.provider,
-
       providerPaymentId: payment.providerPaymentId,
 
       appointmentId: payment.appointmentId,
+      groupPurchaseId: payment.groupPurchaseId,
+      walletTopupId: payment.walletTopupId,
 
       createdAt: payment.createdAt,
-
       purpose: payment.purpose,
-
-      groupPurchaseId: payment.groupPurchaseId,
 
       label: paymentLabels[payment.purpose] ?? "Payment",
 
       refundedAmount: refundedAmountMap.get(payment.id) ?? 0,
 
       canRefund: refundEligibility.canRefund,
-
       refundBlockedReason: refundEligibility.refundBlockedReason,
     };
   });
 
   // =====================================================
-  // 9. PAGINATION RESPONSE
+  // 8. PAGINATION RESPONSE
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);

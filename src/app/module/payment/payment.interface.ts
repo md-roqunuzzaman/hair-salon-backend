@@ -43,17 +43,20 @@ export interface IPaymentDetailsResponse {
 // 4. CUSTOMER PAYMENT HISTORY QUERY
 // =====================================================
 
+export type MyPaymentCategory =
+  | "ALL"
+  | "GROUP_PURCHASE"
+  | "REGULAR_PURCHASE"
+  | "WALLET_TOPUP";
+
 export interface IMyPaymentsQuery {
   page?: string;
   limit?: string;
 
   status?: "PENDING" | "PAID" | "FAILED" | "REFUNDED" | "PARTIALLY_REFUNDED";
+
+  category?: MyPaymentCategory;
 }
-
-// =====================================================
-// 5. CUSTOMER PAYMENT HISTORY ITEM
-// =====================================================
-
 export interface IMyPaymentItem {
   id: string;
 
@@ -79,7 +82,24 @@ export interface IMyPaymentItem {
   // G7 - Refund Eligibility
   canRefund: boolean;
   refundBlockedReason: string | null;
+
+  // My Orders - Tester Requirements
+  category?: "GROUP_PURCHASE" | "REGULAR_PURCHASE" | "WALLET_TOPUP";
+
+  orderId?: string;
+
+  itemName?: string | null;
+
+  services?: {
+    id: string;
+    name: string;
+  }[];
+
+  walletTopupId?: string | null;
 }
+// =====================================================
+// 5. CUSTOMER PAYMENT HISTORY ITEM
+// =====================================================
 
 // =====================================================
 // 6. REFUND PAYMENT

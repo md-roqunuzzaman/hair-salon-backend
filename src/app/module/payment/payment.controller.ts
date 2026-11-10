@@ -6,6 +6,7 @@ import { sendResponse } from "../../utils/sendResponse.js";
 import { paymentService } from "./payment.service.js";
 import { AppError } from "../../utils/app-error.js";
 import { walletService } from "../wallet/wallet.service.js";
+import { Language } from "../../utils/language.js";
 
 const createStripeIntent = catchAsync(async (req: Request, res: Response) => {
   const customerId = req.user!.userId;
@@ -57,9 +58,40 @@ const getPaymentById = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getMyPayments = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. AUTHENTICATED CUSTOMER
+  // =====================================================
+
   const customerId = req.user!.userId;
 
-  const result = await paymentService.getMyPayments(customerId, req.body);
+  // =====================================================
+  // 2. RESOLVE LANGUAGE
+  // =====================================================
+
+  const acceptLanguage = req.headers["accept-language"] ?? "";
+
+  const requestedLanguage = acceptLanguage.split(",")[0]?.trim().toLowerCase();
+
+  const language: Language =
+    requestedLanguage === "zh-cn"
+      ? "zh-CN"
+      : requestedLanguage === "zh-hk"
+        ? "zh-HK"
+        : "en";
+
+  // =====================================================
+  // 3. FETCH CUSTOMER PAYMENTS
+  // =====================================================
+
+  const result = await paymentService.getMyPayments(
+    customerId,
+    req.body,
+    language,
+  );
+
+  // =====================================================
+  // 4. RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
