@@ -548,6 +548,7 @@
       "customerId": "String",
       "packageId": "String",
       "purchaseBranchId": "String",
+      "orderNumber": "String",
       "quantity": "Int",
       "unitPrice": "Decimal",
       "amount": "Decimal",

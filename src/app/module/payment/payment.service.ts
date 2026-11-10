@@ -4384,6 +4384,9 @@ const getMyPayments = async (
           select: {
             id: true,
 
+            // NEW: Canonical Group Purchase order number
+            orderNumber: true,
+
             package: {
               select: {
                 id: true,
@@ -4566,15 +4569,35 @@ const getMyPayments = async (
           : (payment.appointmentId ?? payment.id);
 
     // =================================================
+    // CANONICAL ORDER NUMBER
+    // =================================================
+
+    // GROUP_PURCHASE:
+    //   Prefer GroupPurchase.orderNumber.
+    //   Fall back to legacy Payment / Appointment values.
+    //
+    // REGULAR_PURCHASE:
+    //   Preserve existing Payment / Appointment fallback.
+    //
+    // WALLET_TOPUP:
+    //   Preserve existing Payment.orderNumber behavior.
+
+    const orderNumber =
+      paymentCategory === "GROUP_PURCHASE"
+        ? (payment.groupPurchase?.orderNumber ??
+          payment.orderNumber ??
+          payment.appointment?.orderNumber ??
+          null)
+        : (payment.orderNumber ?? payment.appointment?.orderNumber ?? null);
+
+    // =================================================
     // RESPONSE
     // =================================================
 
     return {
       id: payment.id,
 
-      orderNumber:
-        payment.orderNumber ?? payment.appointment?.orderNumber ?? null,
-
+      orderNumber,
       orderId,
       category: paymentCategory,
 

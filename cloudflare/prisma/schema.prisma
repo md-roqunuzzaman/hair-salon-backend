@@ -798,12 +798,12 @@ model GroupPurchase {
   packageId                String
   purchaseBranchId         String?
   purchaseBranch           Branch?   @relation("PurchasePolicyBranch", fields: [purchaseBranchId], references: [id], onDelete: Restrict)
-
-  quantity          Int
-  unitPrice         BigInt
-  amount            BigInt
-  currency          String
-  validDaysSnapshot Int?
+  orderNumber              String?   @unique
+  quantity                 Int
+  unitPrice                BigInt
+  amount                   BigInt
+  currency                 String
+  validDaysSnapshot        Int?
 
   paymentStatus PaymentStatus @default(PENDING)
 

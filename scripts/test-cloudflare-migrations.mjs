@@ -7,5 +7,5 @@ try {
   const response = await mf.dispatchFetch('https://test/');
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { preserved: true, repeatable: true, foreignKey: true, checksumProtected: true, currencyRequired: true });
-  console.log('Existing databases upgrade to v37: unreconciled currency rejection, atomic trigger/ledger rollback, unchanged financial rows and referenced table, required currency enforcement, retained HKD/GBP/JPY, money/FK guards and repeated startup pass; every prior migration check remains included.');
+  console.log('Existing databases upgrade to v39: nullable unique group purchase order numbers, preserved purchases and repeated startup pass; every prior migration check remains included.');
 } finally { await mf.dispose(); }

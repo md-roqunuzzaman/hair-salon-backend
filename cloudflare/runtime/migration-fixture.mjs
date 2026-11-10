@@ -390,8 +390,19 @@ export class MigrationFixture {
     ]){let rejected=false;try{storage.sql.exec(statement);}catch{rejected=true;}if(!rejected||currencyRows()!==beforeRequiredCurrency)throw new Error('Required currency, existing money or FK enforcement failed');}
     storage.sql.exec("INSERT INTO GroupPurchase (id,customerId,packageId,quantity,unitPrice,amount,currency,updatedAt) VALUES ('currency-jpy','customer','legacy-package',1,10000,10000,'JPY',1)");
     const currencyState=currencyRows();
-    applyMigrations(storage,migrations);
+    applyMigrations(storage,migrations.slice(0,38));
     if(currencyRows()!==currencyState||currencyTriggerCount()!==2||storage.sql.exec('SELECT COUNT(*) AS n FROM _Migrations WHERE version=37').one().n!==1||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('v37 repeat startup changed currency snapshots or foreign keys');
+    const purchasesBeforeOrderNumber=JSON.stringify(storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray());
+    applyMigrations(storage,migrations);
+    const upgradedPurchases=storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray();
+    if(upgradedPurchases.some(row=>row.orderNumber!==null)||JSON.stringify(upgradedPurchases.map(({orderNumber,...row})=>row))!==purchasesBeforeOrderNumber)throw new Error('v39 changed existing purchases');
+    storage.sql.exec("UPDATE GroupPurchase SET orderNumber='123456' WHERE id='legacy-direct'");
+    let duplicatePurchaseOrderNumber=false;
+    try{storage.sql.exec("UPDATE GroupPurchase SET orderNumber='123456' WHERE id='currency-jpy'");}catch{duplicatePurchaseOrderNumber=true;}
+    if(!duplicatePurchaseOrderNumber)throw new Error('Group purchase order number uniqueness missing');
+    const purchasesAfterOrderNumber=JSON.stringify(storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray());
+    applyMigrations(storage,migrations);
+    if(JSON.stringify(storage.sql.exec('SELECT * FROM GroupPurchase ORDER BY id').toArray())!==purchasesAfterOrderNumber||storage.sql.exec('SELECT COUNT(*) AS n FROM _Migrations WHERE version=39').one().n!==1)throw new Error('v39 repeat startup changed purchase order numbers');
     if(JSON.stringify(['BranchBookingPolicy','BranchCancellationPolicy','GroupPurchaseCancellationPolicy','GroupPurchaseRefundPolicy'].map(table=>storage.sql.exec(`SELECT * FROM "${table}" ORDER BY id`).toArray()))!==minuteState)throw new Error('Minute migration multiplied thresholds twice');
     const legacyVerification=storage.sql.exec("SELECT emailVerified,emailVerifiedAt FROM User WHERE id='customer'").one();
     if(legacyVerification.emailVerified!==1||legacyVerification.emailVerifiedAt!==null)throw new Error('Existing customer lost access or received an invented verification timestamp');

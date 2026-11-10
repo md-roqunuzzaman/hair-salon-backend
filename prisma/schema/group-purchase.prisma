@@ -5,12 +5,12 @@ model GroupPurchase {
   packageId                String
   purchaseBranchId         String?
   purchaseBranch           Branch?   @relation("PurchasePolicyBranch", fields: [purchaseBranchId], references: [id], onDelete: Restrict)
-
-  quantity          Int
-  unitPrice         Decimal @db.Decimal(10, 2)
-  amount            Decimal @db.Decimal(10, 2)
-  currency          String
-  validDaysSnapshot Int?
+  orderNumber              String?   @unique @db.VarChar(6)
+  quantity                 Int
+  unitPrice                Decimal   @db.Decimal(10, 2)
+  amount                   Decimal   @db.Decimal(10, 2)
+  currency                 String
+  validDaysSnapshot        Int?
 
   paymentStatus PaymentStatus @default(PENDING)
 

@@ -170,7 +170,9 @@ const createGroupPurchase = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const orderNumber = isBookNow ? generateOrderNumber() : null;
+    // Every Group Purchase receives its own stable order number.
+    // For DIRECT_BOOK, the initial appointment uses the same number.
+    const orderNumber = generateOrderNumber();
 
     try {
       return await prisma.$transaction(
@@ -398,7 +400,6 @@ const createGroupPurchase = async (
               );
             }
 
-            // Date-only key, not local midnight UTC instant.
             appointmentDate = new Date(`${payload.date}T00:00:00.000Z`);
 
             if (Number.isNaN(appointmentDate.getTime())) {
@@ -687,6 +688,9 @@ const createGroupPurchase = async (
 
           const groupPurchase = await tx.groupPurchase.create({
             data: {
+              // New: stable purchase-level order number
+              orderNumber,
+
               purchaseBranchId,
 
               ...(purchaseSnapshot && {
@@ -746,7 +750,10 @@ const createGroupPurchase = async (
                 ...(await snapshotData(tx, payload.branchId!, "GROUP_CANCEL")),
 
                 customerId,
-                orderNumber: orderNumber!,
+
+                // Same number as the parent Group Purchase.
+                orderNumber,
+
                 branchId: payload.branchId!,
                 staffId: selectedStaffId,
                 packageId: packageData.id,
@@ -765,7 +772,6 @@ const createGroupPurchase = async (
                 // Initial appointment is covered by the purchase.
                 price: new Prisma.Decimal(0),
 
-                // Immutable international settings snapshot.
                 currency: bookingCurrency,
                 timezone: bookingTimezone,
 
@@ -799,6 +805,10 @@ const createGroupPurchase = async (
             ...presentGroupPurchase(groupPurchase),
 
             purchaseId: groupPurchase.id,
+
+            // Explicitly expose the canonical purchase order number.
+            orderNumber: groupPurchase.orderNumber,
+
             packageId: groupPurchase.packageId,
             purchaseFlow: groupPurchase.purchaseFlow,
             bookingMethod: groupPurchase.bookingMethod,
@@ -840,18 +850,25 @@ const createGroupPurchase = async (
         },
       );
     } catch (error) {
-      const isConflict =
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2034";
+      const isKnownPrismaError =
+        error instanceof Prisma.PrismaClientKnownRequestError;
 
+      const isConflict = isKnownPrismaError && error.code === "P2034";
+
+      const collisionTarget =
+        isKnownPrismaError && error.code === "P2002"
+          ? error.meta?.target
+          : undefined;
+
+      // Handle unique orderNumber collisions for both purchase flows.
+      // A collision can originate from GroupPurchase or Appointment.
       const isOrderNumberCollision =
-        isBookNow &&
-        error instanceof Prisma.PrismaClientKnownRequestError &&
+        isKnownPrismaError &&
         error.code === "P2002" &&
-        ((Array.isArray(error.meta?.target) &&
-          error.meta.target.includes("orderNumber")) ||
-          (typeof error.meta?.target === "string" &&
-            error.meta.target.includes("orderNumber")));
+        ((Array.isArray(collisionTarget) &&
+          collisionTarget.includes("orderNumber")) ||
+          (typeof collisionTarget === "string" &&
+            collisionTarget.includes("orderNumber")));
 
       if (isOrderNumberCollision && attempt < maxRetries) {
         console.warn("[GROUP_PURCHASE] Order number collision. Retrying...");
@@ -1302,7 +1319,7 @@ const getMyGroupPurchases = async (
             item.qrVerifiedAt !== null,
         ),
       ),
-
+      orderNumber: purchase.orderNumber,
       firstAppointment: presentInitialAppointment(
         purchase.appointments,
         purchase.bookingMethod,
