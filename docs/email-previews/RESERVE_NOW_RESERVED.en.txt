@@ -1,0 +1,30 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: SAMPLE · KIN1 Hair · Your booking has been reserved
+
+SAMPLE · KIN1 Hair
+
+Your booking has been reserved!
+
+Hello SAMPLE Customer,
+
+Your appointment has been successfully reserved.
+
+Appointment details
+Service / package: Sample haircut package
+Branch: Sample Central Branch
+Booking number: QQ5SC9
+Stylist: Sample Stylist
+Appointment date and time: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+Booking status: Reserved
+
+Payment summary
+Total amount: HK$1,000.00
+Amount paid: HK$0.00
+Amount due at salon: HK$1,000.00
+Payment status: Unpaid
+
+Please arrive at the salon at your scheduled appointment time.
+
+SAMPLE · KIN1 Hair
+
+sample-support@example.com

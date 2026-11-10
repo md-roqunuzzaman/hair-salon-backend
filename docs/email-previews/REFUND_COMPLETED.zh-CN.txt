@@ -1,0 +1,29 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: 示例 · KIN1 Hair · 您的退款已完成
+
+示例 · KIN1 Hair
+
+您的退款已完成！
+
+SAMPLE Customer，您好：
+
+您的退款已成功处理。所列金额仅代表本次退款，可能是原付款的一部分。
+
+购买详情
+服务 / 套餐: 示例剪发套餐
+分店: 示例中环分店
+
+退款摘要
+原支付金额: HK$1,000.00
+退款金额: HK$176.40
+退款方式: 钱包
+退回钱包本金余额: HK$120.00
+退回钱包赠金余额: HK$56.40
+退款完成日期: 2026-11-09 13:53 (Asia/Hong_Kong)
+退款状态: 已完成
+
+Stripe 退款的到账时间由原支付服务商决定。如有钱包入账记录，将显示在下方。
+
+示例 · KIN1 Hair
+
+sample-support@example.com

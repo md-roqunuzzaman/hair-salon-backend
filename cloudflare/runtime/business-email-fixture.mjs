@@ -4,6 +4,19 @@ import { enqueueAppointmentEmail, enqueueRefundEmail, collectBusinessEmailEvents
 import { setEmailMockOnData } from './email-test-fixture.mjs';
 
 export async function businessEmailTestControl(db, storage, body) {
+  if (body.seedLegacyRefundRegression) return db.$transaction(async tx => {
+    const source = await tx.refund.findUniqueOrThrow({ where: { id: body.seedLegacyRefundRegression }, include: { payment: true } });
+    await tx.walletTransaction.updateMany({ where: { referenceId: source.id, type: 'REFUND' }, data: { paymentId: null, ledgerKey: null } });
+    const payment = await tx.payment.create({ data: { customerId: source.payment.customerId, appointmentId: source.payment.appointmentId, groupPurchaseId: source.payment.groupPurchaseId, purpose: source.payment.purpose, provider: 'STRIPE', amount: source.amount, currency: source.payment.currency, status: 'REFUNDED', paidAt: new Date() } });
+    const refund = await tx.refund.create({ data: { paymentId: payment.id, amount: source.amount, reason: 'Synthetic collector regression', status: 'SUCCEEDED', refundedAt: new Date() } });
+    await tx.emailEventCursor.update({ where: { id: 'REFUNDS' }, data: { afterAt: null, afterId: null } });
+    return { refundId: refund.id };
+  });
+  if (body.refundCursor) return db.emailEventCursor.findUnique({ where: { id: 'REFUNDS' } });
+  if (body.brandPatch) {
+    const brand = await db.brand.findFirstOrThrow();
+    await db.brand.update({ where: { id: brand.id }, data: body.brandPatch });
+  }
   if (body.collect) return collectBusinessEmailEvents();
   if (body.failSettingRead !== undefined) storage.sql.exec(body.failSettingRead
     ? 'ALTER TABLE BrandEmailSetting RENAME TO _TestUnavailableBrandEmailSetting'

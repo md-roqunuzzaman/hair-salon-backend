@@ -281,7 +281,32 @@ const getStaffSchedule = catchAsync(async (req: Request, res: Response) => {
     : DEFAULT_LANGUAGE;
 
   // =====================================================
-  // 3. SERVICE
+  // 3. FILTERS
+  // =====================================================
+
+  const parseOptionalQuery = (
+    value: unknown,
+    fieldName: string,
+  ): string | undefined => {
+    if (value === undefined) {
+      return undefined;
+    }
+
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new AppError(`${fieldName} must be a non-empty string`, 400);
+    }
+
+    return value.trim();
+  };
+
+  const branchId = parseOptionalQuery(req.query.branchId, "branchId");
+
+  const startDate = parseOptionalQuery(req.query.startDate, "startDate");
+
+  const endDate = parseOptionalQuery(req.query.endDate, "endDate");
+
+  // =====================================================
+  // 4. SERVICE
   // =====================================================
 
   const result = await staffService.getStaffSchedule(
@@ -291,10 +316,15 @@ const getStaffSchedule = catchAsync(async (req: Request, res: Response) => {
       role: req.user.role,
     },
     language,
+    {
+      branchId,
+      startDate,
+      endDate,
+    },
   );
 
   // =====================================================
-  // 4. RESPONSE
+  // 5. RESPONSE
   // =====================================================
 
   sendResponse(res, {

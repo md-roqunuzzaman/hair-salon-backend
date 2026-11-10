@@ -1,0 +1,31 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: 示例 · KIN1 Hair · 您的訂金已收到
+
+示例 · KIN1 Hair
+
+您的訂金已收到！
+
+SAMPLE Customer，您好：
+
+我們已成功收到您的訂金，並為您保留預約。
+
+預約詳情
+服務 / 套餐: 示例剪髮套餐
+分店: 示例中環分店
+預約編號: QQ5SC9
+髮型師: Sample Stylist
+預約日期及時間: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+預約狀態: 已保留
+
+付款摘要
+總額: HK$1,000.00
+訂金比例: 10%
+已付訂金: HK$100.00
+待付餘額: HK$900.00
+付款狀態: 部分付款
+
+請根據預約付款安排繳付餘額。
+
+示例 · KIN1 Hair
+
+sample-support@example.com

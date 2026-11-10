@@ -1,0 +1,29 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: 示例 · KIN1 Hair · 您的預約已確認
+
+示例 · KIN1 Hair
+
+您的預約已確認！
+
+SAMPLE Customer，您好：
+
+您的付款已成功，預約已確認。
+
+預約詳情
+服務 / 套餐: 示例剪髮套餐
+分店: 示例中環分店
+預約編號: QQ5SC9
+髮型師: Sample Stylist
+預約日期及時間: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+預約狀態: 已確認
+
+付款摘要
+總額: HK$1,000.00
+已付金額: HK$1,000.00
+付款狀態: 已付款
+
+期待您的光臨！
+
+示例 · KIN1 Hair
+
+sample-support@example.com

@@ -52,6 +52,7 @@ function fixture(t) {
       allowedBookingMethods: ['PAY_NOW', 'DEPOSIT', 'RESERVE_NOW'], depositPercentage: 30,
     } },
     service: { name: 'Haircut', translations: { en: { name: 'Haircut' } }, price: new Prisma.Decimal('125.55'), status: 'ACTIVE', durationMinutes: 60, branches: [{ branchId }] },
+    serviceBranch: { bookingHoursEnabled: false, bookingWindows: [] },
     package: { name: 'Package', translations: { en: { name: 'Package' } }, packagePrice: new Prisma.Decimal('200.50'), status: 'ACTIVE', durationMinutes: 90, branches: [{ branchId }] },
     hours: { isClosed: false, openTime: '10:00', closeTime: '13:00', breaks: [] },
     capacity: { maxBookingsPerHour: 2 },
@@ -61,7 +62,7 @@ function fixture(t) {
     leave: [], staffBookings: [], branchBookings: [],
   };
   for (const [model, method, key] of [
-    ['branch', 'findUnique', 'branch'], ['service', 'findUnique', 'service'],
+    ['branch', 'findUnique', 'branch'], ['service', 'findUnique', 'service'], ['serviceBranch', 'findUnique', 'serviceBranch'],
     ['package', 'findUnique', 'package'], ['branchBusinessHour', 'findFirst', 'hours'],
     ['branchHourlyCapacity', 'findUnique', 'capacity'], ['staff', 'findUnique', 'staff'],
     ['staff', 'findMany', 'eligible'], ['staffSchedule', 'findMany', 'schedules'],
@@ -91,6 +92,7 @@ function transactionFixture(t) {
     staffSchedule: { findMany: async () => data.schedules },
     staffUnavailability: { findMany: async () => data.leave },
     service: { findUnique: async () => data.service },
+    serviceBranch: { findUnique: async () => data.serviceBranch },
     package: { findUnique: async () => data.package },
     appointment: {
       findMany: async args => args.where.staffId ? data.staffBookings : data.branchBookings,

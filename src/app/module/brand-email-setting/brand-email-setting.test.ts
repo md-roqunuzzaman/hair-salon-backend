@@ -68,14 +68,14 @@ test('network, TLS and authentication failures are distinct and secret safe', ()
 
 test('all approved templates have escaped HTML, plain text, default language, money and Hong Kong calendar time', () => {
   for (const language of ['en','zh-CN','zh-HK']) for (const event of EMAIL_EVENTS) {
-    const result = renderBusinessEmail(event, language, '<script>&Customer', [[0,'REF234'],[2,'<img src=x>'],[5,'CONFIRMED']]);
-    assert.match(result.subject,/ABC Hair Salon/);
+    const result = renderBusinessEmail(event, language, '<script>&Customer', [{title:'appointment',rows:[{label:'bookingNumber',value:'REF234'},{label:'item',value:'<img src=x>'},{label:'bookingStatus',value:'CONFIRMED'}]}], {name:'Synthetic Salon'});
+    assert.match(result.subject,/Synthetic Salon/);
     assert.ok(result.text.includes('REF234'));
     assert.match(result.html,/&lt;script&gt;&amp;Customer/);
     assert.match(result.html,/&lt;img src=x&gt;/);
     assert.doesNotMatch(result.html,/<script>|<img src=x>/);
   }
-  assert.match(renderBusinessEmail('BOOKING_CANCELLED','unsupported','Customer',[]).subject,/Booking cancelled/);
+  assert.match(renderBusinessEmail('BOOKING_CANCELLED','unsupported','Customer',[],{name:'Synthetic Salon'}).subject,/Your booking has been cancelled/);
   assert.match(emailMoney('1234.56','HKD','en'),/1,234\.56/);
   assert.equal(emailAppointmentTime(new Date('2026-10-28T00:00:00Z'),'00:30','01:00'),'2026-10-28 00:30–01:00 (Asia/Hong_Kong)');
 });

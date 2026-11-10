@@ -1,0 +1,29 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: SAMPLE · KIN1 Hair · Your refund has been completed
+
+SAMPLE · KIN1 Hair
+
+Your refund has been completed!
+
+Hello SAMPLE Customer,
+
+Your refund has been successfully processed. The amount shown is for this refund only and may be part of the original payment.
+
+Purchase details
+Service / package: Sample haircut package
+Branch: Sample Central Branch
+
+Refund summary
+Original payment amount: HK$1,000.00
+Refund amount: HK$176.40
+Refund method: Wallet
+Refund to wallet paid balance: HK$120.00
+Refund to wallet bonus balance: HK$56.40
+Refund completion date: 2026-11-09 13:53 (Asia/Hong_Kong)
+Refund status: Completed
+
+For Stripe refunds, the original payment provider determines when funds become available. Wallet credits are shown below when recorded.
+
+SAMPLE · KIN1 Hair
+
+sample-support@example.com

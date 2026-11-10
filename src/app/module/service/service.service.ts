@@ -367,109 +367,455 @@ const getServices = async (
   // 1. PAGINATION
   // =====================================================
 
-  const limit = query.limit ? Number(query.limit) : 20;
-  const page = query.page ? Number(query.page) : 1;
+  const parsePositiveInteger = (
+    value: unknown,
+    fallback: number,
+    max: number,
+  ): number => {
+    if (value === undefined || value === null || value === "") {
+      return fallback;
+    }
+
+    const parsed = Number(value);
+
+    if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > max) {
+      throw new AppError("Invalid pagination parameter", 400);
+    }
+
+    return parsed;
+  };
+
+  const limit = parsePositiveInteger(query.limit, 20, 100);
+  const page = parsePositiveInteger(query.page, 1, 100000);
+
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 2. FILTERS
+  // 2. SEARCH NORMALIZATION
+  // =====================================================
+
+  const rawSearch: unknown = query.q ?? query.search;
+
+  if (rawSearch !== undefined && typeof rawSearch !== "string") {
+    throw new AppError("Invalid search query", 400);
+  }
+
+  const searchTerm: string = (rawSearch ?? "")
+    .toString()
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ");
+
+  const searchKeywords: string[] = searchTerm
+    ? searchTerm.split(" ").slice(0, 10)
+    : [];
+
+  // =====================================================
+  // 3. FILTER VALIDATION
   // =====================================================
 
   const status = query.status as ServiceStatus | undefined;
-  const searchTerm = query.q as string | undefined;
+
+  if (status && !Object.values(ServiceStatus).includes(status)) {
+    throw new AppError("Invalid service status", 400);
+  }
+
+  const branchId =
+    typeof query.branchId === "string" ? query.branchId.trim() : undefined;
+
+  if (
+    query.branchId !== undefined &&
+    (!branchId ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        branchId,
+      ))
+  ) {
+    throw new AppError("Invalid branchId", 400);
+  }
+
+  const parsePrice = (value: unknown): number | undefined => {
+    if (value === undefined || value === null || value === "") {
+      return undefined;
+    }
+
+    if (typeof value !== "string" && typeof value !== "number") {
+      throw new AppError("Invalid price filter", 400);
+    }
+
+    const parsed = Number(value);
+
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new AppError("Invalid price filter", 400);
+    }
+
+    return parsed;
+  };
+
+  const minPrice = parsePrice(query.minPrice);
+  const maxPrice = parsePrice(query.maxPrice);
+
+  if (minPrice !== undefined && maxPrice !== undefined && minPrice > maxPrice) {
+    throw new AppError("Minimum price cannot exceed maximum price", 400);
+  }
+
+  // =====================================================
+  // 4. BUILD FILTERS
+  // =====================================================
 
   const andConditions: Prisma.ServiceWhereInput[] = [];
 
   if (status) {
+    andConditions.push({ status });
+  }
+
+  if (branchId) {
     andConditions.push({
-      status,
+      branches: {
+        some: {
+          branchId,
+        },
+      },
+    });
+  }
+
+  if (minPrice !== undefined || maxPrice !== undefined) {
+    andConditions.push({
+      price: {
+        ...(minPrice !== undefined ? { gte: minPrice } : {}),
+        ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
+      },
     });
   }
 
   // =====================================================
-  // 3. SEARCH
+  // 5. MULTILINGUAL SEARCH
   // =====================================================
 
-  if (searchTerm) {
+  const supportedLanguages = ["en", "zh-CN", "zh-HK"] as const;
+
+  const createKeywordConditions = (
+    keyword: string,
+  ): Prisma.ServiceWhereInput[] => {
+    const conditions: Prisma.ServiceWhereInput[] = [
+      {
+        name: {
+          contains: keyword,
+          mode: "insensitive",
+        },
+      },
+      {
+        description: {
+          contains: keyword,
+          mode: "insensitive",
+        },
+      },
+    ];
+
+    for (const locale of supportedLanguages) {
+      conditions.push({
+        translations: {
+          path: [locale, "name"],
+          string_contains: keyword,
+          mode: "insensitive",
+        },
+      });
+
+      conditions.push({
+        translations: {
+          path: [locale, "description"],
+          string_contains: keyword,
+          mode: "insensitive",
+        },
+      });
+    }
+
+    return conditions;
+  };
+
+  // Every keyword must match at least one searchable field.
+  // Example: "hair spa" can match across name/description
+  // and across any supported language.
+
+  for (const keyword of searchKeywords) {
     andConditions.push({
-      OR: [
-        {
-          name: {
-            contains: searchTerm,
-            mode: "insensitive",
-          },
-        },
-        {
-          description: {
-            contains: searchTerm,
-            mode: "insensitive",
-          },
-        },
-      ],
+      OR: createKeywordConditions(keyword),
     });
   }
 
+  const where: Prisma.ServiceWhereInput =
+    andConditions.length > 0 ? { AND: andConditions } : {};
+
   // =====================================================
-  // 4. FETCH SERVICES + TOTAL COUNT
+  // 6. SORTING
   // =====================================================
 
-  const [services, totalServiceCount] = await Promise.all([
-    prisma.service.findMany({
-      where: {
-        AND: andConditions,
-      },
+  const allowedSorts = [
+    "relevance",
+    "newest",
+    "oldest",
+    "price_asc",
+    "price_desc",
+    "popular",
+  ] as const;
 
-      take: limit,
-      skip,
+  type ServiceSort = (typeof allowedSorts)[number];
 
-      orderBy: {
-        createdAt: "desc",
-      },
+  const requestedSort = query.sortBy ?? (searchTerm ? "relevance" : "newest");
 
-      include: {
-        images: {
-          where: {
-            isPrimary: true,
-          },
+  if (
+    typeof requestedSort !== "string" ||
+    !allowedSorts.includes(requestedSort as ServiceSort)
+  ) {
+    throw new AppError("Invalid service sort option", 400);
+  }
 
-          take: 1,
+  const sortBy = requestedSort as ServiceSort;
 
+  // =====================================================
+  // 7. RELEVANCE RANKING
+  // =====================================================
+
+  // Prisma findMany cannot directly order by a calculated
+  // score across multiple JSON translation paths.
+  //
+  // For relevance searches, we first collect matching IDs,
+  // calculate ranking in PostgreSQL-compatible application
+  // logic, and then paginate.
+  //
+  // This preserves the existing Prisma architecture.
+  //
+  // IMPORTANT:
+  // This approach is suitable for a bounded salon catalog.
+  // For very large catalogs, use indexed SQL ranking.
+
+  const getSearchScore = (service: {
+    name: string;
+    description: string | null;
+    translations: Prisma.JsonValue | null;
+    isPopular: boolean;
+  }): number => {
+    if (!searchTerm) {
+      return 0;
+    }
+
+    const normalize = (value: unknown): string =>
+      typeof value === "string"
+        ? value.normalize("NFKC").toLocaleLowerCase().trim()
+        : "";
+
+    const names: string[] = [service.name];
+    const descriptions: string[] = [service.description ?? ""];
+
+    if (
+      service.translations &&
+      typeof service.translations === "object" &&
+      !Array.isArray(service.translations)
+    ) {
+      const translations = service.translations as Record<string, unknown>;
+
+      for (const locale of supportedLanguages) {
+        const localized = translations[locale];
+
+        if (
+          localized &&
+          typeof localized === "object" &&
+          !Array.isArray(localized)
+        ) {
+          const data = localized as Record<string, unknown>;
+
+          if (typeof data.name === "string") {
+            names.push(data.name);
+          }
+
+          if (typeof data.description === "string") {
+            descriptions.push(data.description);
+          }
+        }
+      }
+    }
+
+    const normalizedQuery = normalize(searchTerm);
+
+    let score = 0;
+
+    for (const name of names) {
+      const value = normalize(name);
+
+      if (value === normalizedQuery) {
+        score = Math.max(score, 1000);
+      } else if (value.startsWith(normalizedQuery)) {
+        score = Math.max(score, 700);
+      } else if (value.includes(normalizedQuery)) {
+        score = Math.max(score, 500);
+      }
+    }
+
+    for (const description of descriptions) {
+      if (normalize(description).includes(normalizedQuery)) {
+        score = Math.max(score, 200);
+      }
+    }
+
+    // Multi-keyword matches where the full query is not
+    // a continuous substring.
+
+    if (score === 0 && searchKeywords.length > 1) {
+      const allNames = names.map(normalize).join(" ");
+      const allDescriptions = descriptions.map(normalize).join(" ");
+
+      const allInNames = searchKeywords.every((keyword) =>
+        allNames.includes(normalize(keyword)),
+      );
+
+      const allInDescriptions = searchKeywords.every((keyword) =>
+        `${allNames} ${allDescriptions}`.includes(normalize(keyword)),
+      );
+
+      if (allInNames) {
+        score = 350;
+      } else if (allInDescriptions) {
+        score = 100;
+      }
+    }
+
+    if (service.isPopular) {
+      score += 10;
+    }
+
+    return score;
+  };
+
+  // =====================================================
+  // 8. FETCH SERVICES
+  // =====================================================
+
+  let services: Awaited<
+    ReturnType<
+      typeof prisma.service.findMany<{
+        include: {
+          images: {
+            where: { isPrimary: true };
+            take: 1;
+            select: { objectKey: true };
+          };
+          branches: {
+            select: {
+              branch: {
+                select: {
+                  id: true;
+                  name: true;
+                  translations: true;
+                };
+              };
+            };
+          };
+        };
+      }>
+    >
+  >;
+
+  let totalServiceCount: number;
+
+  const include = {
+    images: {
+      where: { isPrimary: true },
+      take: 1,
+      select: { objectKey: true },
+    },
+    branches: {
+      select: {
+        branch: {
           select: {
-            objectKey: true,
+            id: true,
+            name: true,
+            translations: true,
           },
         },
-
-        branches: {
-          select: {
-            branch: {
-              select: {
-                id: true,
-                name: true,
-                translations: true,
-              },
-            },
-          },
-        },
       },
-    }),
+    },
+  } satisfies Prisma.ServiceInclude;
 
-    prisma.service.count({
+  if (searchTerm && sortBy === "relevance") {
+    // -----------------------------------------------
+    // Relevance mode
+    // -----------------------------------------------
+
+    const matchingServices = await prisma.service.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        translations: true,
+        isPopular: true,
+        createdAt: true,
+      },
+    });
+
+    totalServiceCount = matchingServices.length;
+
+    const rankedIds = matchingServices
+      .map((service) => ({
+        id: service.id,
+        score: getSearchScore(service),
+        createdAt: service.createdAt,
+      }))
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          b.createdAt.getTime() - a.createdAt.getTime() ||
+          a.id.localeCompare(b.id),
+      )
+      .slice(skip, skip + limit)
+      .map((item) => item.id);
+
+    const fetchedServices = await prisma.service.findMany({
       where: {
-        AND: andConditions,
+        id: { in: rankedIds },
       },
-    }),
-  ]);
+      include,
+    });
+
+    const position = new Map(rankedIds.map((id, index) => [id, index]));
+
+    services = fetchedServices.sort(
+      (a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0),
+    );
+  } else {
+    // -----------------------------------------------
+    // Standard database pagination
+    // -----------------------------------------------
+
+    const orderBy: Prisma.ServiceOrderByWithRelationInput[] =
+      sortBy === "oldest"
+        ? [{ createdAt: "asc" }, { id: "asc" }]
+        : sortBy === "price_asc"
+          ? [{ price: "asc" }, { id: "asc" }]
+          : sortBy === "price_desc"
+            ? [{ price: "desc" }, { id: "asc" }]
+            : sortBy === "popular"
+              ? [{ isPopular: "desc" }, { createdAt: "desc" }, { id: "asc" }]
+              : [{ createdAt: "desc" }, { id: "asc" }];
+
+    [services, totalServiceCount] = await Promise.all([
+      prisma.service.findMany({
+        where,
+        take: limit,
+        skip,
+        orderBy,
+        include,
+      }),
+
+      prisma.service.count({ where }),
+    ]);
+  }
 
   // =====================================================
-  // 5. LOCALIZE SERVICES + GENERATE IMAGE URLS
+  // 9. LOCALIZE SERVICES + GENERATE IMAGE URLS
   // =====================================================
 
   const items = await Promise.all(
     services.map(async (service) => {
-      // ===============================================
-      // LOCALIZE SERVICE INFORMATION
-      // ===============================================
-
       const localizedService = getLocalizedContent(
         service.translations,
         language,
@@ -481,19 +827,11 @@ const getServices = async (
         },
       );
 
-      // ===============================================
-      // GENERATE PRIMARY IMAGE URL
-      // ===============================================
-
       const primaryImageObjectKey = service.images[0]?.objectKey ?? null;
 
       const primaryImageUrl = primaryImageObjectKey
         ? await uploadService.getImageUrl(primaryImageObjectKey)
         : null;
-
-      // ===============================================
-      // LOCALIZE BRANCH NAMES
-      // ===============================================
 
       const localizedBranches = service.branches.map((item) => {
         const localizedBranch = getLocalizedContent(
@@ -510,36 +848,19 @@ const getServices = async (
         };
       });
 
-      // ===============================================
-      // FINAL SERVICE RESPONSE
-      // ===============================================
-
       return {
         id: service.id,
 
         name: localizedService.name,
-
         description: localizedService.description,
 
         price: Number(service.price),
-
         durationMinutes: service.durationMinutes,
-
         status: service.status,
 
-        // =============================================
-        // SERVICE DISPLAY INFORMATION
-        // =============================================
-
         isPopular: service.isPopular,
-
         processSteps: localizedService.processSteps,
-
         bookingNotes: localizedService.bookingNotes,
-
-        // =============================================
-        // PRIMARY IMAGE
-        // =============================================
 
         primaryImage: primaryImageObjectKey
           ? {
@@ -548,23 +869,19 @@ const getServices = async (
             }
           : null,
 
-        // =============================================
-        // BRANCHES
-        // =============================================
-
         branches: localizedBranches,
       };
     }),
   );
 
   // =====================================================
-  // 6. PAGINATION
+  // 10. PAGINATION
   // =====================================================
 
   const totalPages = Math.ceil(totalServiceCount / limit);
 
   // =====================================================
-  // 7. FINAL RESPONSE
+  // 11. FINAL RESPONSE
   // =====================================================
 
   return {
@@ -1383,8 +1700,26 @@ const getBranchServices = async (
   // 1. PAGINATION
   // =====================================================
 
-  const limit = query.limit ? Number(query.limit) : 20;
-  const page = query.page ? Number(query.page) : 1;
+  const parsePositiveInteger = (
+    value: unknown,
+    fallback: number,
+    max: number,
+  ): number => {
+    if (value === undefined || value === null || value === "") {
+      return fallback;
+    }
+
+    const parsed = Number(value);
+
+    if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > max) {
+      throw new AppError("Invalid pagination parameter", 400);
+    }
+
+    return parsed;
+  };
+
+  const limit = parsePositiveInteger(query.limit, 20, 100);
+  const page = parsePositiveInteger(query.page, 1, 100000);
   const skip = (page - 1) * limit;
 
   // =====================================================
@@ -1392,8 +1727,10 @@ const getBranchServices = async (
   // =====================================================
 
   const branch = await prisma.branch.findUnique({
-    where: {
-      id: branchId,
+    where: { id: branchId },
+    select: {
+      id: true,
+      status: true,
     },
   });
 
@@ -1409,88 +1746,370 @@ const getBranchServices = async (
   // 3. STATUS
   // =====================================================
 
-  const status = query.status
-    ? (query.status as ServiceStatus)
-    : ServiceStatus.ACTIVE;
+  const status: ServiceStatus = query.status ?? ServiceStatus.ACTIVE;
+
+  if (!Object.values(ServiceStatus).includes(status)) {
+    throw new AppError("Invalid service status", 400);
+  }
 
   // =====================================================
-  // 4. FETCH SERVICES + COUNT
+  // 4. NORMALIZE SEARCH
   // =====================================================
 
-  const [services, totalServiceCount] = await Promise.all([
-    prisma.service.findMany({
+  const rawSearch: unknown = query.q ?? query.search;
+
+  if (rawSearch !== undefined && typeof rawSearch !== "string") {
+    throw new AppError("Invalid search query", 400);
+  }
+
+  const searchTerm: string = (rawSearch ?? "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ");
+
+  if (searchTerm.length > 100) {
+    throw new AppError("Search query must not exceed 100 characters", 400);
+  }
+
+  const searchKeywords: string[] = searchTerm
+    ? searchTerm.split(" ").slice(0, 10)
+    : [];
+
+  // =====================================================
+  // 5. PRICE FILTERS
+  // =====================================================
+
+  const parsePrice = (value: unknown): number | undefined => {
+    if (value === undefined || value === null || value === "") {
+      return undefined;
+    }
+
+    if (typeof value !== "string" && typeof value !== "number") {
+      throw new AppError("Invalid price filter", 400);
+    }
+
+    const parsed = Number(value);
+
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new AppError("Invalid price filter", 400);
+    }
+
+    return parsed;
+  };
+
+  const minPrice = parsePrice(query.minPrice);
+  const maxPrice = parsePrice(query.maxPrice);
+
+  if (minPrice !== undefined && maxPrice !== undefined && minPrice > maxPrice) {
+    throw new AppError("Minimum price cannot exceed maximum price", 400);
+  }
+
+  // =====================================================
+  // 6. SORT VALIDATION
+  // =====================================================
+
+  const allowedSorts = [
+    "relevance",
+    "newest",
+    "oldest",
+    "price_asc",
+    "price_desc",
+    "popular",
+  ] as const;
+
+  type ServiceSort = (typeof allowedSorts)[number];
+
+  const requestedSort: unknown =
+    query.sortBy ?? (searchTerm ? "relevance" : "newest");
+
+  if (
+    typeof requestedSort !== "string" ||
+    !allowedSorts.some((sort) => sort === requestedSort)
+  ) {
+    throw new AppError("Invalid sort option", 400);
+  }
+
+  const sortBy = requestedSort as ServiceSort;
+
+  // =====================================================
+  // 7. BUILD BRANCH + STATUS FILTERS
+  // =====================================================
+
+  const andConditions: Prisma.ServiceWhereInput[] = [
+    { status },
+    {
+      branches: {
+        some: { branchId },
+      },
+    },
+  ];
+
+  if (minPrice !== undefined || maxPrice !== undefined) {
+    andConditions.push({
+      price: {
+        ...(minPrice !== undefined ? { gte: minPrice } : {}),
+        ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
+      },
+    });
+  }
+
+  // =====================================================
+  // 8. MULTILINGUAL SEARCH
+  // =====================================================
+
+  const supportedLanguages = ["en", "zh-CN", "zh-HK"] as const;
+
+  for (const keyword of searchKeywords) {
+    const orConditions: Prisma.ServiceWhereInput[] = [
+      {
+        name: {
+          contains: keyword,
+          mode: "insensitive",
+        },
+      },
+      {
+        description: {
+          contains: keyword,
+          mode: "insensitive",
+        },
+      },
+    ];
+
+    for (const locale of supportedLanguages) {
+      orConditions.push({
+        translations: {
+          path: [locale, "name"],
+          string_contains: keyword,
+          mode: "insensitive",
+        },
+      });
+
+      orConditions.push({
+        translations: {
+          path: [locale, "description"],
+          string_contains: keyword,
+          mode: "insensitive",
+        },
+      });
+    }
+
+    andConditions.push({
+      OR: orConditions,
+    });
+  }
+
+  const where: Prisma.ServiceWhereInput = {
+    AND: andConditions,
+  };
+
+  // =====================================================
+  // 9. SEARCH RELEVANCE SCORE
+  // =====================================================
+
+  const normalizeText = (value: unknown): string =>
+    typeof value === "string"
+      ? value.normalize("NFKC").toLocaleLowerCase().trim()
+      : "";
+
+  const getSearchScore = (service: {
+    name: string;
+    description: string | null;
+    translations: Prisma.JsonValue;
+    isPopular: boolean;
+  }): number => {
+    const names: string[] = [service.name];
+    const descriptions: string[] = [service.description ?? ""];
+
+    if (
+      service.translations &&
+      typeof service.translations === "object" &&
+      !Array.isArray(service.translations)
+    ) {
+      const translations = service.translations as Record<string, unknown>;
+
+      for (const locale of supportedLanguages) {
+        const localized = translations[locale];
+
+        if (
+          localized &&
+          typeof localized === "object" &&
+          !Array.isArray(localized)
+        ) {
+          const data = localized as Record<string, unknown>;
+
+          if (typeof data.name === "string") {
+            names.push(data.name);
+          }
+
+          if (typeof data.description === "string") {
+            descriptions.push(data.description);
+          }
+        }
+      }
+    }
+
+    const normalizedQuery = normalizeText(searchTerm);
+
+    let score = 0;
+
+    for (const name of names) {
+      const value = normalizeText(name);
+
+      if (value === normalizedQuery) {
+        score = Math.max(score, 1000);
+      } else if (value.startsWith(normalizedQuery)) {
+        score = Math.max(score, 700);
+      } else if (value.includes(normalizedQuery)) {
+        score = Math.max(score, 500);
+      }
+    }
+
+    for (const description of descriptions) {
+      if (normalizeText(description).includes(normalizedQuery)) {
+        score = Math.max(score, 200);
+      }
+    }
+
+    if (score === 0 && searchKeywords.length > 1) {
+      const combinedNames = names.map(normalizeText).join(" ");
+      const combinedText = [...names, ...descriptions]
+        .map(normalizeText)
+        .join(" ");
+
+      if (
+        searchKeywords.every((keyword: string) =>
+          combinedNames.includes(normalizeText(keyword)),
+        )
+      ) {
+        score = 350;
+      } else if (
+        searchKeywords.every((keyword: string) =>
+          combinedText.includes(normalizeText(keyword)),
+        )
+      ) {
+        score = 100;
+      }
+    }
+
+    if (service.isPopular) {
+      score += 10;
+    }
+
+    return score;
+  };
+
+  // =====================================================
+  // 10. INCLUDE PRIMARY IMAGE
+  // =====================================================
+
+  const include = {
+    images: {
+      where: { isPrimary: true },
+      take: 1,
+      select: { objectKey: true },
+    },
+  } satisfies Prisma.ServiceInclude;
+
+  // =====================================================
+  // 11. FETCH SERVICES + COUNT
+  // =====================================================
+
+  let services: Awaited<
+    ReturnType<
+      typeof prisma.service.findMany<{
+        include: typeof include;
+      }>
+    >
+  >;
+
+  let totalServiceCount: number;
+
+  if (searchTerm && sortBy === "relevance") {
+    // Rank matching services before pagination.
+    // Suitable for a reasonably sized branch catalog.
+
+    const matchingServices = await prisma.service.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        translations: true,
+        isPopular: true,
+        createdAt: true,
+      },
+    });
+
+    totalServiceCount = matchingServices.length;
+
+    const rankedIds = matchingServices
+      .map((service) => ({
+        id: service.id,
+        score: getSearchScore(service),
+        createdAt: service.createdAt,
+      }))
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          b.createdAt.getTime() - a.createdAt.getTime() ||
+          a.id.localeCompare(b.id),
+      )
+      .slice(skip, skip + limit)
+      .map((item) => item.id);
+
+    const fetchedServices = await prisma.service.findMany({
       where: {
-        status,
-
-        branches: {
-          some: {
-            branchId,
-          },
-        },
+        AND: [where, { id: { in: rankedIds } }],
       },
+      include,
+    });
 
-      take: limit,
-      skip,
+    const positions = new Map(rankedIds.map((id, index) => [id, index]));
 
-      orderBy: {
-        createdAt: "desc",
-      },
+    services = fetchedServices.sort(
+      (a, b) => (positions.get(a.id) ?? 0) - (positions.get(b.id) ?? 0),
+    );
+  } else {
+    const orderBy: Prisma.ServiceOrderByWithRelationInput[] =
+      sortBy === "oldest"
+        ? [{ createdAt: "asc" }, { id: "asc" }]
+        : sortBy === "price_asc"
+          ? [{ price: "asc" }, { id: "asc" }]
+          : sortBy === "price_desc"
+            ? [{ price: "desc" }, { id: "asc" }]
+            : sortBy === "popular"
+              ? [{ isPopular: "desc" }, { createdAt: "desc" }, { id: "asc" }]
+              : [{ createdAt: "desc" }, { id: "asc" }];
 
-      include: {
-        images: {
-          where: {
-            isPrimary: true,
-          },
+    [services, totalServiceCount] = await Promise.all([
+      prisma.service.findMany({
+        where,
+        take: limit,
+        skip,
+        orderBy,
+        include,
+      }),
 
-          take: 1,
-
-          select: {
-            objectKey: true,
-          },
-        },
-      },
-    }),
-
-    prisma.service.count({
-      where: {
-        status,
-
-        branches: {
-          some: {
-            branchId,
-          },
-        },
-      },
-    }),
-  ]);
+      prisma.service.count({ where }),
+    ]);
+  }
 
   // =====================================================
-  // 5. LOCALIZE SERVICES + GENERATE IMAGE URLS
+  // 12. LOCALIZE SERVICES + GENERATE IMAGE URLS
   // =====================================================
 
   const items = await Promise.all(
     services.map(async (service) => {
-      // ===============================================
-      // LOCALIZE SERVICE INFORMATION
-      // ===============================================
-
       const localizedService = getLocalizedContent(
         service.translations,
         language,
         {
           name: service.name,
-
           description: service.description,
-
           processSteps: service.processSteps,
-
           bookingNotes: service.bookingNotes,
         },
       );
-
-      // ===============================================
-      // GENERATE PRIMARY IMAGE URL
-      // ===============================================
 
       const primaryImageObjectKey = service.images[0]?.objectKey ?? null;
 
@@ -1498,42 +2117,18 @@ const getBranchServices = async (
         ? await uploadService.getImageUrl(primaryImageObjectKey)
         : null;
 
-      // ===============================================
-      // FINAL SERVICE RESPONSE
-      // ===============================================
-
       return {
         id: service.id,
 
-        // =============================================
-        // LOCALIZED INFORMATION
-        // =============================================
-
         name: localizedService.name,
-
         description: localizedService.description,
 
-        // =============================================
-        // PRICE + DURATION
-        // =============================================
-
         price: Number(service.price),
-
         durationMinutes: service.durationMinutes,
 
-        // =============================================
-        // SERVICE DISPLAY INFORMATION
-        // =============================================
-
         isPopular: service.isPopular,
-
         processSteps: localizedService.processSteps,
-
         bookingNotes: localizedService.bookingNotes,
-
-        // =============================================
-        // PRIMARY IMAGE
-        // =============================================
 
         primaryImage: primaryImageObjectKey
           ? {
@@ -1546,13 +2141,13 @@ const getBranchServices = async (
   );
 
   // =====================================================
-  // 6. PAGINATION
+  // 13. PAGINATION
   // =====================================================
 
   const totalPages = Math.ceil(totalServiceCount / limit);
 
   // =====================================================
-  // 7. FINAL RESPONSE
+  // 14. FINAL RESPONSE
   // =====================================================
 
   return {

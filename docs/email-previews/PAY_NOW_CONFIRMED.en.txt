@@ -1,0 +1,29 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: SAMPLE · KIN1 Hair · Your booking is confirmed
+
+SAMPLE · KIN1 Hair
+
+Your booking is confirmed!
+
+Hello SAMPLE Customer,
+
+Your payment was successful and your appointment has been confirmed.
+
+Appointment details
+Service / package: Sample haircut package
+Branch: Sample Central Branch
+Booking number: QQ5SC9
+Stylist: Sample Stylist
+Appointment date and time: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+Booking status: Confirmed
+
+Payment summary
+Total amount: HK$1,000.00
+Amount paid: HK$1,000.00
+Payment status: Paid
+
+We look forward to welcoming you!
+
+SAMPLE · KIN1 Hair
+
+sample-support@example.com

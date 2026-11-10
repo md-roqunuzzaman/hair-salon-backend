@@ -17,6 +17,48 @@ async function merchantFixture(t, flag = 'true') {
  return {...ctx,root,owner,provider,control,jobs,book};
 }
 
+test('admin branding changes affect new receipts; retry preserves the original queued brand snapshot',async t=>{
+ const {book,control,jobs,provider}=await merchantFixture(t);
+ const originalId=await book('reserve','09:00');await control({collect:true});
+ const original=(await jobs()).find(j=>j.appointmentId===originalId);
+ await control({brandPatch:{name:'Updated Synthetic Salon',translations:null}});
+ await provider({mode:{smtp:'connect'}});assert.equal((await control({one:original.id}))[0].status,'PENDING');
+ await provider({mode:{}});await control({patch:{id:original.id,ready:true}});
+ assert.equal((await control({one:original.id}))[0].status,'SENT');
+ const retained=(await jobs()).find(j=>j.id===original.id);
+ assert.equal(retained.subject,original.subject);assert.equal(retained.html,original.html);assert.equal(retained.text,original.text);
+ const nextId=await book('reserve','11:00');await control({collect:true});await control({collect:true});
+ const next=(await jobs()).find(j=>j.appointmentId===nextId);
+ assert.match(next.subject,/^Updated Synthetic Salon · /);assert.match(next.html,/Updated Synthetic Salon/);
+ assert.doesNotMatch(next.subject+next.html+next.text,/ABC Hair Salon|[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}/);
+});
+
+test('a legacy wallet refund already SENT cannot roll back discovery of a later Stripe refund',async t=>{
+ const {api,book,state,ownerToken,control,jobs}=await merchantFixture(t);
+ const appointmentId=await book('pay-now','14:00');
+ await api('/api/v1/appointments/'+appointmentId+'/pay-with-wallet',{body:{useBonus:true}});
+ const payment=(await state()).payments.find(p=>p.appointmentId===appointmentId);
+ const request=(await api('/api/v1/refund-requests',{body:{paymentId:payment.id,reason:'Synthetic legacy refund regression'},status:201})).data;
+ await api('/api/v1/refund-requests/'+request.id+'/review',{method:'PATCH',body:{decision:'APPROVE'},roleToken:ownerToken});
+ await api('/api/v1/refund-requests/'+request.id+'/process',{body:{},roleToken:ownerToken});
+ const refund=(await state()).refunds.find(r=>r.paymentId===payment.id);
+ await control({batch:10});
+ const original=(await jobs()).find(j=>j.eventType==='REFUND_COMPLETED'&&j.validationData.id===refund.id);
+ assert.equal(original.status,'SENT');
+ const next=await control({seedLegacyRefundRegression:refund.id});
+ await control({collect:true});
+ let queued=await jobs();
+ assert.deepEqual(queued.find(j=>j.id===original.id),original);
+ const receipt=queued.find(j=>j.eventType==='REFUND_COMPLETED'&&j.validationData.id===next.refundId);
+ assert.ok(receipt,'New successful Stripe refund must be discovered in the same scan');
+ assert.equal(receipt.status,'PENDING');
+ assert.equal((await control({refundCursor:true})).afterId,next.refundId);
+ await control({collect:true});await control({collect:true});
+ assert.equal((await jobs()).filter(j=>j.validationData?.id===next.refundId).length,1);
+ assert.equal((await control({one:receipt.id}))[0].status,'SENT');
+ assert.deepEqual((await jobs()).find(j=>j.id===original.id),original);
+});
+
 test('all seven merchant events reconcile after commit; signed webhook replay and repeated scans do not duplicate',async t=>{
  const{api,fixture,state,webhook,control,jobs,book,ownerToken}=await merchantFixture(t);
  const pay=async id=>{

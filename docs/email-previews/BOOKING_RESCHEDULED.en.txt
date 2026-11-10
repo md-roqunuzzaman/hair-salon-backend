@@ -1,0 +1,30 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: SAMPLE · KIN1 Hair · Your booking has been rescheduled
+
+SAMPLE · KIN1 Hair
+
+Your booking has been rescheduled!
+
+Hello SAMPLE Customer,
+
+Your appointment has been successfully rescheduled. Please review your updated appointment details.
+
+Appointment details
+Service / package: Sample haircut package
+Branch: Sample Central Branch
+Booking number: QQ5SC9
+
+Previous appointment
+Appointment date and time: 2026-11-10 09:00–10:00 (Asia/Hong_Kong)
+Stylist: Sample Previous Stylist
+
+Updated appointment
+Appointment date and time: 2026-11-10 11:00–12:00 (Asia/Hong_Kong)
+Stylist: Sample New Stylist
+Booking status: Reserved
+
+We look forward to welcoming you at your updated appointment time!
+
+SAMPLE · KIN1 Hair
+
+sample-support@example.com

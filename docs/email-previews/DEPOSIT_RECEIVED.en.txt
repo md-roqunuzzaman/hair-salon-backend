@@ -1,0 +1,31 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: SAMPLE · KIN1 Hair · Your deposit has been received
+
+SAMPLE · KIN1 Hair
+
+Your deposit has been received!
+
+Hello SAMPLE Customer,
+
+We have successfully received your deposit and reserved your appointment.
+
+Appointment details
+Service / package: Sample haircut package
+Branch: Sample Central Branch
+Booking number: QQ5SC9
+Stylist: Sample Stylist
+Appointment date and time: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+Booking status: Reserved
+
+Payment summary
+Total amount: HK$1,000.00
+Deposit percentage: 10%
+Deposit paid: HK$100.00
+Remaining balance: HK$900.00
+Payment status: Partially paid
+
+Please settle the remaining balance according to your booking payment arrangements.
+
+SAMPLE · KIN1 Hair
+
+sample-support@example.com

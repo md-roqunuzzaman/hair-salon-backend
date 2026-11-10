@@ -1,0 +1,28 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: SAMPLE · KIN1 Hair · Your booking has been cancelled
+
+SAMPLE · KIN1 Hair
+
+Your booking has been cancelled
+
+Hello SAMPLE Customer,
+
+Your appointment has been cancelled.
+
+Appointment details
+Service / package: Sample haircut package
+Branch: Sample Central Branch
+Booking number: QQ5SC9
+Stylist: Sample Stylist
+Appointment date and time: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+Booking status: Cancelled
+
+Refund summary
+Refund amount: HK$100.00
+Refund status: Pending
+
+Cancellation and refund completion are separate. Please refer to the refund status below, when applicable.
+
+SAMPLE · KIN1 Hair
+
+sample-support@example.com

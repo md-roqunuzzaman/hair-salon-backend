@@ -1,0 +1,42 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: 示例 · KIN1 Hair · 您的团购已成功
+
+示例 · KIN1 Hair
+
+您的团购已成功！
+
+SAMPLE Customer，您好：
+
+感谢您的购买！您的团购已成功处理。
+
+购买详情
+服务 / 套餐: 示例剪发套餐
+购买日期: 2026-11-09 10:00 (Asia/Hong_Kong)
+购买数量: 2
+单价: HK$500.00
+总额: HK$1,000.00
+已付金额: HK$100.00
+待付余额: HK$900.00
+支付状态: 部分支付
+
+券信息
+券总数量: 2
+可用券数量: 1
+已分配券数量: 1
+已使用券数量: 0
+有效期（天）: 30
+券到期日期: 2026-12-09 10:00 (Asia/Hong_Kong)
+
+预约详情
+服务 / 套餐: 示例剪发套餐
+分店: 示例中环分店
+预约编号: QQ5SC9
+预约日期及时间: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+发型师: Sample Stylist
+预约状态: 已保留
+
+安排到店前，请查看支付状态和券信息。
+
+示例 · KIN1 Hair
+
+sample-support@example.com

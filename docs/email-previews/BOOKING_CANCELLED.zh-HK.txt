@@ -1,0 +1,28 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: 示例 · KIN1 Hair · 您的預約已取消
+
+示例 · KIN1 Hair
+
+您的預約已取消
+
+SAMPLE Customer，您好：
+
+您的預約已取消。
+
+預約詳情
+服務 / 套餐: 示例剪髮套餐
+分店: 示例中環分店
+預約編號: QQ5SC9
+髮型師: Sample Stylist
+預約日期及時間: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+預約狀態: 已取消
+
+退款摘要
+退款金額: HK$100.00
+退款狀態: 待處理
+
+取消預約與退款完成是不同的事項。如適用，請查看下方退款狀態。
+
+示例 · KIN1 Hair
+
+sample-support@example.com

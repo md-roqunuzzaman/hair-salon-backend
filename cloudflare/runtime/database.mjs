@@ -58,7 +58,8 @@ function input(model, value, storage) {
   if (primitive(value) || value instanceof Prisma.Decimal) return value;
   if (Array.isArray(value)) return value.map(item => input(model, item, storage));
   const info = metadata[model];
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+  const jsonPredicates = [];
+  const result = Object.fromEntries(Object.entries(value).map(([key, item]) => {
     if (item === undefined) return [key, item];
     if (['orderBy', 'distinct', 'by', '_count', '_sum', '_avg', '_min', '_max'].includes(key)) return [key, item];
     if (key === 'select' || key === 'include') return [key, Object.fromEntries(Object.entries(item).map(([field, selection]) =>
@@ -66,6 +67,36 @@ function input(model, value, storage) {
     if (info.money[key]) return [key, minor(item)];
     if (info.arrays.includes(key)) return [key, item?.set ?? item];
     if (info.relations[key]) return [key, input(info.relations[key], item, storage)];
+    if (item?.mode === 'insensitive' && info.scalars[key] === 'Json') {
+      // PostgreSQL JSON path arrays/mode are not accepted by Prisma SQLite.
+      // Resolve Unicode string matches in this same storage transaction, then
+      // hand SQLite supported JSON equality predicates. Keep existing AND/OR
+      // structure intact, including multi-keyword searches and empty matches.
+      if (!Array.isArray(item.path) || !item.path.length || item.path.some(part => typeof part !== 'string')) throw new Error('Unsupported JSON search path');
+      const supported = ['string_contains', 'string_starts_with', 'string_ends_with', 'equals'];
+      for (const [operator, operand] of Object.entries(item)) {
+        if (operator === 'path' || operator === 'mode') continue;
+        if (!supported.includes(operator) || typeof operand !== 'string') throw new Error('Unsupported case insensitive JSON predicate');
+      }
+      const matches = [];
+      for (const row of storage.sql.exec(`SELECT DISTINCT "${key}" AS value FROM "${model}"`).toArray()) {
+        let document;
+        try { document = typeof row.value === 'string' ? JSON.parse(row.value) : row.value; } catch { continue; }
+        const candidate = item.path.reduce((current, part) => current && typeof current === 'object' && Object.hasOwn(current, part) ? current[part] : undefined, document);
+        if (typeof candidate !== 'string') continue;
+        const text = candidate.toLowerCase();
+        if (Object.entries(item).every(([operator, operand]) => {
+          if (operator === 'path' || operator === 'mode') return true;
+          const needle = operand.toLowerCase();
+          if (operator === 'string_contains') return text.includes(needle);
+          if (operator === 'string_starts_with') return text.startsWith(needle);
+          if (operator === 'string_ends_with') return text.endsWith(needle);
+          return text === needle;
+        })) matches.push({ [key]: { equals: document } });
+      }
+      jsonPredicates.push({ OR: matches });
+      return null;
+    }
     if (item?.mode === 'insensitive') {
       // Resolve the requested string predicate inside the same storage
       // transaction. SQLite's default collation does not fold Unicode.
@@ -88,7 +119,9 @@ function input(model, value, storage) {
     }
     if (info.scalars[key]) return [key, item];
     return [key, input(model, item, storage)];
-  }));
+  }).filter(entry => entry !== null));
+  if (jsonPredicates.length) result.AND = [...(result.AND ? Array.isArray(result.AND) ? result.AND : [result.AND] : []), ...jsonPredicates];
+  return result;
 }
 
 function output(model, value, aggregate = false) {

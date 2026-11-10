@@ -3300,9 +3300,56 @@ const getStaffSchedule = async (
     role: Role;
   },
   language: Language = DEFAULT_LANGUAGE,
+  filters: {
+    branchId?: string;
+    startDate?: string;
+    endDate?: string;
+  } = {},
 ) => {
+  const { branchId, startDate, endDate } = filters;
+
   // =====================================================
-  // 1. FIND STAFF
+  // 1. VALIDATE DATE RANGE
+  // =====================================================
+
+  if ((startDate && !endDate) || (!startDate && endDate)) {
+    throw new AppError(
+      "Both startDate and endDate are required for date range filtering",
+      400,
+    );
+  }
+
+  const parseDateOnly = (value: string): Date => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new AppError("Date must be in YYYY-MM-DD format", 400);
+    }
+
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.toISOString().slice(0, 10) !== value
+    ) {
+      throw new AppError("Invalid calendar date", 400);
+    }
+
+    return parsed;
+  };
+
+  let rangeStart: Date | null = null;
+  let rangeEnd: Date | null = null;
+
+  if (startDate && endDate) {
+    rangeStart = parseDateOnly(startDate);
+    rangeEnd = parseDateOnly(endDate);
+
+    if (rangeStart.getTime() > rangeEnd.getTime()) {
+      throw new AppError("startDate cannot be later than endDate", 400);
+    }
+  }
+
+  // =====================================================
+  // 2. FIND STAFF
   // =====================================================
 
   const staff = await prisma.staff.findUnique({
@@ -3324,10 +3371,9 @@ const getStaffSchedule = async (
   }
 
   // =====================================================
-  // 2. STAFF ACCESS CONTROL
+  // 3. STAFF ACCESS CONTROL
   // =====================================================
 
-  // STAFF can only view own schedule
   if (requester.role === Role.STAFF) {
     if (staff.userId !== requester.userId) {
       throw new AppError(
@@ -3338,10 +3384,11 @@ const getStaffSchedule = async (
   }
 
   // =====================================================
-  // 3. BRANCH MANAGER ACCESS CONTROL
+  // 4. BRANCH MANAGER ACCESS CONTROL
   // =====================================================
 
-  // BRANCH_MANAGER can only view staff inside managed branch scope
+  let allowedBranchIds: string[] | undefined;
+
   if (requester.role === Role.BRANCH_MANAGER) {
     const managerBranches = await prisma.branchManagerBranch.findMany({
       where: {
@@ -3353,30 +3400,69 @@ const getStaffSchedule = async (
       },
     });
 
-    const allowedBranchIds = new Set(
+    const managedBranchIds = new Set(
       managerBranches.map((item) => item.branchId),
     );
 
-    const hasAccess = staff.branches.some((item) =>
-      allowedBranchIds.has(item.branchId),
-    );
+    allowedBranchIds = staff.branches
+      .map((item) => item.branchId)
+      .filter((id) => managedBranchIds.has(id));
 
-    if (!hasAccess) {
+    if (allowedBranchIds.length === 0) {
       throw new AppError(
         "You are not allowed to view this staff schedule",
+        403,
+      );
+    }
+
+    if (branchId && !allowedBranchIds.includes(branchId)) {
+      throw new AppError(
+        "You are not allowed to view this branch schedule",
         403,
       );
     }
   }
 
   // =====================================================
-  // 4. FETCH STAFF SCHEDULE
+  // 5. VALIDATE BRANCH FILTER
+  // =====================================================
+
+  if (branchId) {
+    const assignedToBranch = staff.branches.some(
+      (item) => item.branchId === branchId,
+    );
+
+    if (!assignedToBranch) {
+      throw new AppError("Staff is not assigned to this branch", 400);
+    }
+  }
+
+  // =====================================================
+  // 6. BUILD BRANCH FILTER
+  // =====================================================
+
+  const scheduleWhere: Prisma.StaffScheduleWhereInput = {
+    staffId,
+
+    ...(branchId
+      ? {
+          branchId,
+        }
+      : allowedBranchIds
+        ? {
+            branchId: {
+              in: allowedBranchIds,
+            },
+          }
+        : {}),
+  };
+
+  // =====================================================
+  // 7. FETCH WEEKLY STAFF SCHEDULE
   // =====================================================
 
   const schedule = await prisma.staffSchedule.findMany({
-    where: {
-      staffId,
-    },
+    where: scheduleWhere,
 
     include: {
       branch: {
@@ -3399,13 +3485,60 @@ const getStaffSchedule = async (
   });
 
   // =====================================================
-  // 5. LOCALIZED RESPONSE
+  // 8. DATE RANGE FILTER
+  // =====================================================
+
+  // StaffSchedule stores recurring weekdays, not calendar dates.
+  // Therefore, date range filtering matches weekdays occurring
+  // within the requested inclusive date range.
+  //
+  // This assumes StaffSchedule.day uses:
+  // MONDAY, TUESDAY, WEDNESDAY, THURSDAY,
+  // FRIDAY, SATURDAY, SUNDAY.
+
+  const weekdayNames = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+  ];
+
+  let allowedWeekdays: Set<string> | null = null;
+
+  if (rangeStart && rangeEnd) {
+    allowedWeekdays = new Set<string>();
+
+    const daysInRange =
+      Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / 86400000) + 1;
+
+    // Every range of seven or more consecutive days
+    // contains all seven weekdays.
+    const daysToInspect = Math.min(daysInRange, 7);
+
+    for (let offset = 0; offset < daysToInspect; offset++) {
+      const currentDate = new Date(rangeStart.getTime() + offset * 86400000);
+
+      allowedWeekdays.add(weekdayNames[currentDate.getUTCDay()]);
+    }
+  }
+
+  const filteredSchedule = allowedWeekdays
+    ? schedule.filter((item) =>
+        allowedWeekdays.has(String(item.day).toUpperCase()),
+      )
+    : schedule;
+
+  // =====================================================
+  // 9. LOCALIZED RESPONSE
   // =====================================================
 
   return {
     staffId: staff.id,
 
-    schedule: schedule.map((item) => {
+    schedule: filteredSchedule.map((item) => {
       const localizedBranch = getLocalizedContent(
         item.branch.translations,
         language,
@@ -3430,6 +3563,7 @@ const getStaffSchedule = async (
     }),
   };
 };
+
 const getDayOfWeekFromDate = (date: string): DayOfWeek => {
   const jsDay = new Date(`${date}T00:00:00Z`).getUTCDay();
 

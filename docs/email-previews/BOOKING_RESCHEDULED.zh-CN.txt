@@ -1,0 +1,30 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: 示例 · KIN1 Hair · 您的预约已改期
+
+示例 · KIN1 Hair
+
+您的预约已改期！
+
+SAMPLE Customer，您好：
+
+您的预约已成功改期，请查看更新后的预约详情。
+
+预约详情
+服务 / 套餐: 示例剪发套餐
+分店: 示例中环分店
+预约编号: QQ5SC9
+
+原预约
+预约日期及时间: 2026-11-10 09:00–10:00 (Asia/Hong_Kong)
+发型师: Sample Previous Stylist
+
+更新后的预约
+预约日期及时间: 2026-11-10 11:00–12:00 (Asia/Hong_Kong)
+发型师: Sample New Stylist
+预约状态: 已保留
+
+期待您在新的预约时间光临！
+
+示例 · KIN1 Hair
+
+sample-support@example.com

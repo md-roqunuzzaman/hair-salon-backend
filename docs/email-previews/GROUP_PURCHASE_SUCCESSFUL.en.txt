@@ -1,0 +1,42 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: SAMPLE · KIN1 Hair · Your group purchase was successful
+
+SAMPLE · KIN1 Hair
+
+Your group purchase was successful!
+
+Hello SAMPLE Customer,
+
+Thank you for your purchase! Your group purchase has been successfully processed.
+
+Purchase details
+Service / package: Sample haircut package
+Purchase date: 2026-11-09 10:00 (Asia/Hong_Kong)
+Quantity purchased: 2
+Unit price: HK$500.00
+Total amount: HK$1,000.00
+Amount paid: HK$100.00
+Remaining balance: HK$900.00
+Payment status: Partially paid
+
+Voucher information
+Total vouchers: 2
+Available vouchers: 1
+Allocated vouchers: 1
+Used vouchers: 0
+Validity (days): 30
+Voucher expiry date: 2026-12-09 10:00 (Asia/Hong_Kong)
+
+Appointment details
+Service / package: Sample haircut package
+Branch: Sample Central Branch
+Booking number: QQ5SC9
+Appointment date and time: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+Stylist: Sample Stylist
+Booking status: Reserved
+
+Please review your payment status and voucher information before arranging your visit.
+
+SAMPLE · KIN1 Hair
+
+sample-support@example.com

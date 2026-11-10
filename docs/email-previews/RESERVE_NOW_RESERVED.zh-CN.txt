@@ -1,0 +1,30 @@
+SYNTHETIC PREVIEW — NOT A REAL TRANSACTION
+Subject: 示例 · KIN1 Hair · 您的预约已保留
+
+示例 · KIN1 Hair
+
+您的预约已保留！
+
+SAMPLE Customer，您好：
+
+您的预约已成功保留。
+
+预约详情
+服务 / 套餐: 示例剪发套餐
+分店: 示例中环分店
+预约编号: QQ5SC9
+发型师: Sample Stylist
+预约日期及时间: 2026-11-10 10:00–11:00 (Asia/Hong_Kong)
+预约状态: 已保留
+
+支付摘要
+总额: HK$1,000.00
+已付金额: HK$0.00
+到店待付金额: HK$1,000.00
+支付状态: 未支付
+
+请按照预约时间到店。
+
+示例 · KIN1 Hair
+
+sample-support@example.com
