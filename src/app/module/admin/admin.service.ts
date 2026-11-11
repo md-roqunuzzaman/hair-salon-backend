@@ -260,7 +260,9 @@ const getAdminUserById = async (userId: string) => {
             paidBalance,
             bonusBalance,
             totalBalance: paidBalance + bonusBalance,
-            currency: user.wallet?.currency ?? (await getBrandInternationalSettings()).currency,
+            currency:
+              user.wallet?.currency ??
+              (await getBrandInternationalSettings()).currency,
           }
         : null,
 
@@ -306,8 +308,47 @@ const updateAdminUserStatus = async (
   return updatedUser;
 };
 
+const getAdminUserCounts = async () => {
+  // =====================================================
+  // 1. COUNT USERS BY ROLE
+  // =====================================================
+
+  const counts = await prisma.user.groupBy({
+    by: ["role"],
+    _count: {
+      _all: true,
+    },
+  });
+
+  // =====================================================
+  // 2. GET COUNT FOR EACH ROLE
+  // =====================================================
+
+  const getCount = (role: Role): number => {
+    return counts.find((item) => item.role === role)?._count._all ?? 0;
+  };
+
+  const customers = getCount(Role.CUSTOMER);
+  const staff = getCount(Role.STAFF);
+  const branchManagers = getCount(Role.BRANCH_MANAGER);
+  const administrators = getCount(Role.BRAND_OWNER);
+
+  // =====================================================
+  // 3. RETURN DASHBOARD COUNTS
+  // =====================================================
+
+  return {
+    totalUsers: customers + staff + branchManagers + administrators,
+    customers,
+    staff,
+    branchManagers,
+    administrators,
+  };
+};
+
 export const adminUserService = {
   getAdminUsers,
   getAdminUserById,
   updateAdminUserStatus,
+  getAdminUserCounts,
 };

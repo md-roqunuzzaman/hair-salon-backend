@@ -8,7 +8,25 @@ const targets = {
 } as const;
 export const TENCENT_MODERATION_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-const unavailable = () => new Error("TENCENT_MODERATION_UNAVAILABLE");
+type FailureStage = "CONFIG" | "FETCH" | "HTTP" | "BODY" | "ENVELOPE" | "PROVIDER" | "TIMEOUT";
+class ModerationUnavailable extends Error {
+  readonly code: string;
+  constructor(readonly stage: FailureStage, readonly httpStatus?: number, readonly providerCode?: string) {
+    super("TENCENT_MODERATION_UNAVAILABLE");
+    this.code = `TENCENT_MODERATION_${stage}_FAILED`;
+  }
+}
+const unavailable = (stage: FailureStage = "CONFIG", httpStatus?: number, providerCode?: string) =>
+  new ModerationUnavailable(stage, httpStatus, providerCode);
+// Only known, fixed error families cross the provider boundary. Never emit
+// arbitrary provider strings, messages, request content or credentials.
+const providerErrorFamily = (error: unknown): string | undefined => {
+  if (!error || typeof error !== "object" || !("Code" in error) || typeof error.Code !== "string") return undefined;
+  const family = error.Code.split(".")[0];
+  return ["AuthFailure", "UnauthorizedOperation", "InvalidParameter", "InvalidParameterValue", "MissingParameter",
+    "UnknownParameter", "RequestLimitExceeded", "ResourceUnavailable", "ResourceNotFound", "FailedOperation",
+    "InternalError", "UnsupportedOperation", "LimitExceeded", "RequestExpired"].includes(family) ? family : undefined;
+};
 const sha = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 const hmac = (key: string | Buffer, value: string) => createHmac("sha256", key).update(value, "utf8").digest();
 
@@ -41,7 +59,7 @@ export function signTencentModerationRequest(action: Action, payload: Record<str
 async function readResponse(response: Response): Promise<unknown> {
   if (!response.ok || !response.body) {
     void response.body?.cancel().catch(() => {});
-    throw unavailable();
+    throw unavailable(response.ok ? "BODY" : "HTTP", response.status);
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -51,7 +69,7 @@ async function readResponse(response: Response): Promise<unknown> {
       const chunk = await reader.read();
       if (chunk.done) { complete = true; break; }
       size += chunk.value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) throw unavailable();
+      if (size > MAX_RESPONSE_BYTES) throw unavailable("BODY", response.status);
       text += decoder.decode(chunk.value, { stream: true });
     }
     return JSON.parse(text + decoder.decode());
@@ -62,25 +80,39 @@ async function readResponse(response: Response): Promise<unknown> {
 }
 
 export async function tencentModerationRequest(action: Action, payload: Record<string, string>, credentials: Credentials): Promise<unknown> {
-  const request = signTencentModerationRequest(action, payload, credentials);
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => { controller.abort(); reject(unavailable()); }, TENCENT_MODERATION_TIMEOUT_MS);
-  });
+  let stage: FailureStage = "CONFIG";
+  let httpStatus: number | undefined;
   try {
+    const request = signTencentModerationRequest(action, payload, credentials);
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(unavailable("TIMEOUT", httpStatus)); }, TENCENT_MODERATION_TIMEOUT_MS);
+    });
     const operation = async () => {
-      const response = await fetch(request.url, { method: "POST", headers: request.headers, body: request.body, redirect: "error", signal: controller.signal });
+      stage = "FETCH";
+      // Workers rejects redirect:"error" before sending the request. Manual
+      // mode never forwards signed credentials; readResponse rejects all 3xx.
+      const response = await fetch(request.url, { method: "POST", headers: request.headers, body: request.body, redirect: "manual", signal: controller.signal });
+      httpStatus = response.status;
+      stage = "BODY";
       const envelope = await readResponse(response);
-      if (!envelope || typeof envelope !== "object" || Array.isArray(envelope) || "Error" in envelope) throw unavailable();
+      stage = "ENVELOPE";
+      if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) throw unavailable("ENVELOPE", httpStatus);
+      if ("Error" in envelope) throw unavailable("PROVIDER", httpStatus, providerErrorFamily(envelope.Error));
       const data = (envelope as Record<string, unknown>).Response;
-      if (!data || typeof data !== "object" || Array.isArray(data) || "Error" in data) throw unavailable();
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw unavailable("ENVELOPE", httpStatus);
+      if ("Error" in data) throw unavailable("PROVIDER", httpStatus, providerErrorFamily(data.Error));
       return data;
     };
     return await Promise.race([operation(), deadline]);
-  } catch {
+  } catch (error) {
     // No raw fetch/provider error, request, response or cause crosses this boundary.
-    throw unavailable();
+    const failure = error instanceof ModerationUnavailable ? error : unavailable(stage, httpStatus);
+    console.error("Tencent moderation unavailable", {
+      stage: failure.stage, code: failure.code, httpStatus: failure.httpStatus, providerCode: failure.providerCode,
+    });
+    throw failure;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     controller.abort();

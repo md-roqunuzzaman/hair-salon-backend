@@ -102,6 +102,7 @@ assert.ok(!bundle.includes('INTERNATIONAL_TEST_TENCENT_STUB'),'International tes
 assert.ok(!bundle.includes('__login-rate-test'),'Login test control leaked into production Worker');
 assert.ok(!bundle.includes('__auth-session-test'),'Session test control leaked into production Worker');
 const map = JSON.parse(await readFile(`${config.main}.map`,'utf8'));
+assert.ok(!map.sources.some(source=>source.endsWith('runtime/my-orders-fixture.mjs')), 'My Orders fixture leaked into production Worker');
 assert.ok(map.sources.some(source=>source.includes('libphonenumber-js/')&&source.endsWith('metadata.min.json.js')),'International phone metadata missing from production Worker');
 for(const required of ['module/auth/auth.service.ts','module/auth/auth.validation.ts','module/user/user.service.ts','module/user/user.validation.ts'])assert.ok(map.sources.some(source=>source.endsWith(required)),`Phone runtime source missing: ${required}`);
 assert.ok(!map.sources.some(source=>source.includes('libphonenumber-js/examples')),'Synthetic phone example data leaked into production Worker');

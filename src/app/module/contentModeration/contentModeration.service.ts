@@ -39,20 +39,25 @@ const extractModerationResult = (response: unknown): IModerationResult => {
     response === null ||
     Array.isArray(response)
   ) {
-    throw new Error("MODERATION_RESPONSE_INVALID");
+    throw Object.assign(new Error("MODERATION_RESPONSE_INVALID"), { code: "MODERATION_RESPONSE_INVALID" });
   }
 
   const data = response as Record<string, unknown>;
 
-  const invalid = () => new Error("MODERATION_RESPONSE_INVALID");
+  const invalid = () => Object.assign(new Error("MODERATION_RESPONSE_INVALID"), { code: "MODERATION_RESPONSE_INVALID" });
   const rank = (value: unknown): number => value === "Pass" ? 0 : value === "Review" ? 1 : value === "Block" ? 2 : -1;
   const label = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= 128;
-  const validate = (value: unknown, nullableSubLabel = false): Record<string, unknown> => {
+  const validate = (value: unknown, detail = false): Record<string, unknown> => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
     const row = value as Record<string, unknown>;
-    if ("Error" in row || rank(row.Suggestion) < 0 || !label(row.Label) ||
+    // Detail labels may be empty, and an unpopulated sub-label may be null.
+    // The authoritative decision and confidence still must be valid.
+    const validLabel = detail
+      ? typeof row.Label === "string" && row.Label.length <= 128
+      : label(row.Label);
+    if ("Error" in row || rank(row.Suggestion) < 0 || !validLabel ||
         typeof row.Score !== "number" || !Number.isInteger(row.Score) || row.Score < 0 || row.Score > 100 ||
-        (row.SubLabel !== undefined && !(nullableSubLabel && row.SubLabel === null) &&
+        (row.SubLabel != null &&
           (typeof row.SubLabel !== "string" || row.SubLabel.length > 128))) throw invalid();
     return row;
   };
@@ -67,7 +72,7 @@ const extractModerationResult = (response: unknown): IModerationResult => {
     if (entries == null) continue;
     if (!Array.isArray(entries)) throw invalid();
     for (const entry of entries) {
-      const detail = validate(entry, field === "LibResults");
+      const detail = validate(entry, true);
       if (rank(detail.Suggestion) > rank(data.Suggestion)) throw invalid();
     }
   }

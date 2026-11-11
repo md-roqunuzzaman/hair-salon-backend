@@ -4304,8 +4304,12 @@ const getMyPayments = async (
   const categoryWhere =
     category === "GROUP_PURCHASE"
       ? {
-          purpose: PaymentPurpose.GROUP_PURCHASE,
-          groupPurchaseId: { not: null },
+          purpose: { not: PaymentPurpose.WALLET_TOP_UP },
+          OR: [
+            { purpose: PaymentPurpose.GROUP_PURCHASE },
+            { groupPurchaseId: { not: null } },
+            { appointment: { is: { groupPurchaseId: { not: null } } } },
+          ],
         }
       : category === "WALLET_TOPUP"
         ? {
@@ -4321,11 +4325,10 @@ const getMyPayments = async (
                 ],
               },
               groupPurchaseId: null,
-              appointment: {
-                is: {
-                  groupPurchaseId: null,
-                },
-              },
+              OR: [
+                { appointment: { is: null } },
+                { appointment: { is: { groupPurchaseId: null } } },
+              ],
             }
           : {};
 
@@ -4344,6 +4347,17 @@ const getMyPayments = async (
   // =====================================================
   // 3. FETCH PAYMENTS + TOTAL
   // =====================================================
+
+  const purchaseSelect = {
+    id: true,
+    orderNumber: true,
+    package: {
+      select: {
+        id: true, name: true, translations: true,
+        services: { select: { service: { select: { id: true, name: true, translations: true } } } },
+      },
+    },
+  } satisfies Prisma.GroupPurchaseSelect;
 
   const [payments, total] = await prisma.$transaction([
     prisma.payment.findMany({
@@ -4380,34 +4394,18 @@ const getMyPayments = async (
           },
         },
 
-        groupPurchase: {
+        walletTopup: {
           select: {
-            id: true,
-
-            // NEW: Canonical Group Purchase order number
-            orderNumber: true,
-
-            package: {
-              select: {
-                id: true,
-                name: true,
-                translations: true,
-
-                services: {
-                  select: {
-                    service: {
-                      select: {
-                        id: true,
-                        name: true,
-                        translations: true,
-                      },
-                    },
-                  },
-                },
-              },
+            payments: {
+              where: { orderNumber: { not: null }, customerId },
+              orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+              take: 1,
+              select: { orderNumber: true },
             },
           },
         },
+
+        groupPurchase: { select: purchaseSelect },
       },
     }),
 
@@ -4415,6 +4413,21 @@ const getMyPayments = async (
       where,
     }),
   ]);
+
+  // Resolve appointment-only historical links once per page, without adding
+  // per-payment queries or loading the same purchase twice on normal records.
+  const missingPurchaseIds = [...new Set(payments.flatMap((payment) =>
+    payment.purpose !== PaymentPurpose.WALLET_TOP_UP && !payment.groupPurchase && payment.appointment?.groupPurchaseId
+      ? [payment.appointment.groupPurchaseId]
+      : [],
+  ))];
+  const linkedPurchases = missingPurchaseIds.length
+    ? await prisma.groupPurchase.findMany({
+        where: { id: { in: missingPurchaseIds }, customerId },
+        select: purchaseSelect,
+      })
+    : [];
+  const linkedPurchaseMap = new Map(linkedPurchases.map((purchase) => [purchase.id, purchase]));
 
   // =====================================================
   // 4. SUCCESSFUL REFUND TOTALS
@@ -4504,7 +4517,8 @@ const getMyPayments = async (
     // LOCALIZED GROUP PURCHASE PACKAGE
     // =================================================
 
-    const groupPackage = payment.groupPurchase?.package;
+    const groupPurchase = payment.groupPurchase ?? linkedPurchaseMap.get(payment.appointment?.groupPurchaseId ?? "");
+    const groupPackage = groupPurchase?.package;
 
     const localizedPackage = groupPackage
       ? getLocalizedContent(groupPackage.translations, language, {
@@ -4577,18 +4591,20 @@ const getMyPayments = async (
     //   Fall back to legacy Payment / Appointment values.
     //
     // REGULAR_PURCHASE:
-    //   Preserve existing Payment / Appointment fallback.
+    //   The appointment identifies the logical order across payment stages.
     //
     // WALLET_TOPUP:
     //   Preserve existing Payment.orderNumber behavior.
 
     const orderNumber =
       paymentCategory === "GROUP_PURCHASE"
-        ? (payment.groupPurchase?.orderNumber ??
+        ? (groupPurchase?.orderNumber ??
           payment.orderNumber ??
           payment.appointment?.orderNumber ??
           null)
-        : (payment.orderNumber ?? payment.appointment?.orderNumber ?? null);
+        : paymentCategory === "REGULAR_PURCHASE"
+          ? (payment.appointment?.orderNumber ?? payment.orderNumber ?? null)
+          : (payment.walletTopup?.payments[0]?.orderNumber ?? payment.orderNumber ?? null);
 
     // =================================================
     // RESPONSE

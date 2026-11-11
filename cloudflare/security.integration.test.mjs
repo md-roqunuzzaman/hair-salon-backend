@@ -106,6 +106,22 @@ test('Worker S6 owner/manager reply failures return safe 503 and never overwrite
   assert.equal((await control(ctx, { reviewId: review.id })).review.replyText, 'Previously moderated reply');
 });
 
+test('Worker S6 nullable Tencent metadata permits approved owner/manager replies and blocks unsafe edits', async t => {
+  const ctx = await setup(t);
+  const review = await completedReview(ctx);
+  for (const roleToken of [ctx.ownerToken, ctx.managerToken]) {
+    await control(ctx, { moderationResponse: valid({ ...safe, SubLabel: null,
+      DetailResults: [{ Label: '', SubLabel: null, Suggestion: 'Pass', Score: 0 }] }), providerFailure: false });
+    await ctx.api(`/api/v1/reviews/${review.id}/reply`, { method: 'PUT', roleToken, body: { reply: 'Approved nullable metadata reply' } });
+    assert.equal((await control(ctx, { reviewId: review.id })).review.replyText, 'Approved nullable metadata reply');
+    for (const Suggestion of ['Review', 'Block']) {
+      await control(ctx, { moderationResponse: valid({ ...safe, SubLabel: null, Suggestion }) });
+      await ctx.api(`/api/v1/reviews/${review.id}/reply`, { method: 'PUT', roleToken, body: { reply: 'Synthetic unsafe replacement' }, status: 422 });
+      assert.equal((await control(ctx, { reviewId: review.id })).review.replyText, 'Approved nullable metadata reply');
+    }
+  }
+});
+
 test('Worker booking-policy PUT remains owner-only under the confirmed permission contract', async t => {
   const ctx = await setup(t);
   const before = await ctx.api(`/api/v1/branches/${ctx.fixture.branchId}/booking-policy`);

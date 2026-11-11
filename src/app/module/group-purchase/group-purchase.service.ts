@@ -40,7 +40,7 @@ import { ICreateGroupPurchasePayload } from "./group-purchase.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { presentGroupPurchase } from "./group-purchase.presentation.js";
-import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
+import { generateAvailableOrderNumber } from "../../utils/generateOrderNumber.js";
 import { getPaymentDisplayStatus } from "../../utils/getPaymentDisplayStatus.js";
 import {
   assertTimezoneDuration,
@@ -172,7 +172,6 @@ const createGroupPurchase = async (
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     // Every Group Purchase receives its own stable order number.
     // For DIRECT_BOOK, the initial appointment uses the same number.
-    const orderNumber = generateOrderNumber();
 
     try {
       return await prisma.$transaction(
@@ -685,6 +684,8 @@ const createGroupPurchase = async (
 
             purchaseSnapshot = snapshot as unknown as Prisma.InputJsonObject;
           }
+
+          const orderNumber = await generateAvailableOrderNumber(tx);
 
           const groupPurchase = await tx.groupPurchase.create({
             data: {
@@ -1811,7 +1812,6 @@ const createGroupPurchaseAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const orderNumber = generateOrderNumber();
 
     try {
       return await prisma.$transaction(
@@ -2128,6 +2128,8 @@ const createGroupPurchaseAppointment = async (
           // =============================================
           // 10. CREATE REDEMPTION APPOINTMENT
           // =============================================
+
+          const orderNumber = await generateAvailableOrderNumber(tx);
 
           const appointment = await tx.appointment.create({
             data: {

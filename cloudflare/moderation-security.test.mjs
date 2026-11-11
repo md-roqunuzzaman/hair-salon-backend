@@ -102,6 +102,9 @@ const malformed = [
   ['invalid SubLabel', valid({ ...safeResult, SubLabel: [] })],
   ['invalid category value', valid({ ...safeResult, LabelResults: [{ ...safeResult, Suggestion: 'false' }] })],
   ['null category entry', valid({ ...safeResult, DetailResults: [null] })],
+  ['null detail decision', valid({ ...safeResult, DetailResults: [{ ...safeResult, Suggestion: null, SubLabel: null }] })],
+  ['null detail label', valid({ ...safeResult, DetailResults: [{ ...safeResult, Label: null, SubLabel: null }] })],
+  ['null detail score', valid({ ...safeResult, DetailResults: [{ ...safeResult, Score: null, SubLabel: null }] })],
   ['object category list', valid({ ...safeResult, LabelResults: { 0: safeResult } })],
   ['later malformed category', valid({ ...safeResult, DetailResults: [safeResult, { ...safeResult, Score: false }] })],
   ['contradictory safe summary', valid({ ...safeResult, DetailResults: [safeResult, flaggedResult] })],
@@ -152,6 +155,25 @@ test('S6 nullable/empty Tencent detail arrays retain valid summary decisions', a
   fixture(t, valid({ ...safeResult, DetailResults: null, LabelResults: [], Keywords: null }));
   assert.equal((await contentModerationService.moderateText('Valid optional fields')).decision, 'PASS');
 });
+
+for (const [suggestion, decision] of [['Pass', 'PASS'], ['Review', 'REVIEW'], ['Block', 'REJECT']]) {
+  test(`S6 nullable Tencent metadata preserves ${decision} for text and images`, async t => {
+    fixture(t, valid({ ...safeResult, Suggestion: suggestion, SubLabel: null,
+      DetailResults: [{ Label: '', Suggestion: suggestion, Score: 0, SubLabel: null }] }));
+    assert.equal((await contentModerationService.moderateText('Synthetic nullable metadata')).decision, decision);
+    assert.equal((await contentModerationService.moderateImage('https://images.example.com/synthetic.jpg')).decision, decision);
+  });
+}
+
+for (const role of ['BRAND_OWNER', 'BRANCH_MANAGER']) {
+  test(`S6 ${role} can publish a reply with documented nullable metadata`, async t => {
+    const f = fixture(t, valid({ ...safeResult, SubLabel: null,
+      DetailResults: [{ Label: 'Porn', Suggestion: 'Pass', Score: 0, SubLabel: null }] }));
+    await reviewService.saveReviewReply('review', 'actor', role, { reply: 'Synthetic approved reply' });
+    assert.equal(f.row().replyText, 'Synthetic approved reply');
+    assert.equal(f.notifications.mock.callCount(), 1);
+  });
+}
 
 test('S6 image library results accept the documented nullable SubLabel without interpreting detail rows as decisions', async t => {
   fixture(t, valid({ ...safeResult, LibResults: [{ ...safeResult, SubLabel: null, Details: [{ Id: 1, Label: 'Normal', Score: 0 }] }] }));

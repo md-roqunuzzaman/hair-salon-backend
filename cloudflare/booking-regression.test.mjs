@@ -56,10 +56,10 @@ function fixture(t) {
     package: { name: 'Package', translations: { en: { name: 'Package' } }, packagePrice: new Prisma.Decimal('200.50'), status: 'ACTIVE', durationMinutes: 90, branches: [{ branchId }] },
     hours: { isClosed: false, openTime: '10:00', closeTime: '13:00', breaks: [] },
     capacity: { maxBookingsPerHour: 2 },
-    staff: { id: staffId, status: 'ACTIVE', branches: [{ branchId }], services: [{ serviceId }], packages: [{ packageId: 'package' }] },
+    staff: { id: staffId, status: 'ACTIVE', branches: [{ branchId }], services: [{ serviceId }], packages: [{ packageId: 'package' }], scheduleOverrides: [] },
     eligible: [{ id: staffId }],
     schedules: [{ staffId, startTime: '10:00', endTime: '13:00' }],
-    leave: [], staffBookings: [], branchBookings: [],
+    leave: [], overrides: [], staffBookings: [], branchBookings: [],
   };
   for (const [model, method, key] of [
     ['branch', 'findUnique', 'branch'], ['service', 'findUnique', 'service'], ['serviceBranch', 'findUnique', 'serviceBranch'],
@@ -67,6 +67,7 @@ function fixture(t) {
     ['branchHourlyCapacity', 'findUnique', 'capacity'], ['staff', 'findUnique', 'staff'],
     ['staff', 'findMany', 'eligible'], ['staffSchedule', 'findMany', 'schedules'],
     ['staffUnavailability', 'findMany', 'leave'],
+    ['staffScheduleOverride', 'findMany', 'overrides'],
   ]) stubDelegate(t, model, method, async () => data[key]);
   const appointments = stubDelegate(t, 'appointment', 'findMany', async args =>
     args.where.staffId ? data.staffBookings : data.branchBookings);
@@ -91,15 +92,18 @@ function transactionFixture(t) {
     staff: { findMany: async () => data.eligible },
     staffSchedule: { findMany: async () => data.schedules },
     staffUnavailability: { findMany: async () => data.leave },
+    staffScheduleOverride: { findMany: async () => data.overrides },
     service: { findUnique: async () => data.service },
     serviceBranch: { findUnique: async () => data.serviceBranch },
     package: { findUnique: async () => data.package },
     appointment: {
       findMany: async args => args.where.staffId ? data.staffBookings : data.branchBookings,
-      findUnique: async () => ({ id: appointmentId, customerId: 'customer', branchId, staffId }),
+      findUnique: async args => args.where.orderNumber ? null : ({ id: appointmentId, customerId: 'customer', branchId, staffId }),
       create,
     },
     user: { findMany: async () => [] },
+    groupPurchase: { findUnique: async () => null },
+    payment: { findUnique: async () => null },
     branchHourlyCapacity: { findUnique: async () => data.capacity },
     notification: { create: notification },
   };
@@ -375,8 +379,9 @@ function autoStaffFixture(t, ids = ['alex','james','saikat']) {
   const queries=[];
   const tx={
     branchBusinessHour:{findFirst:async()=>({isClosed:false,openTime:'10:00',closeTime:'13:00',breaks:[]})},
-    staff:{findMany:async({where})=>data.staff.filter(s=>s.status===where.status&&(!where.id||s.id===where.id)&&s.branches.includes(where.branches.some.branchId)&&(where.services?s.services.includes(where.services.some.serviceId):s.packages.includes(where.packages.some.packageId))).map(({id})=>({id}))},
+    staff:{findMany:async({where})=>data.staff.filter(s=>s.status===where.status&&(!where.id||s.id===where.id)&&s.branches.includes((where.branches ?? where.OR.find(item=>item.branches).branches).some.branchId)&&(where.services?s.services.includes(where.services.some.serviceId):s.packages.includes(where.packages.some.packageId))).map(({id})=>({id}))},
     staffSchedule:{findMany:async()=>data.schedules},staffUnavailability:{findMany:async()=>data.leave},
+    staffScheduleOverride:{findMany:async()=>[]},
     appointment:{findMany:async args=>{
       queries.push(args);
       return data.rows.filter(a=>args.where.staffId.in.includes(a.staffId)&&a.date.getTime()===args.where.date.getTime()&&a.id!==args.where.id?.not&&

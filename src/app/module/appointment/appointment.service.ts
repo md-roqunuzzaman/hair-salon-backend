@@ -62,7 +62,7 @@ import { auditLogService } from "../auditLog/auditLog.service.js";
 import { getLocalizedContent } from "../../utils/localization.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
-import { generateOrderNumber } from "../../utils/generateOrderNumber.js";
+import { generateAvailableOrderNumber } from "../../utils/generateOrderNumber.js";
 import { getPaymentDisplayStatus } from "../../utils/getPaymentDisplayStatus.js";
 import {
   createDateTimeInTimezone,
@@ -1026,7 +1026,6 @@ const createPayNowAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
-    const orderNumber = generateOrderNumber();
 
     try {
       const result = await prisma.$transaction(
@@ -1317,6 +1316,8 @@ const createPayNowAppointment = async (
           // 12. CREATE APPOINTMENT
           // =================================================
 
+          const orderNumber = await generateAvailableOrderNumber(tx);
+
           const appointment = await tx.appointment.create({
             data: {
               ...(await snapshotData(tx, branchId, "SERVICE")),
@@ -1504,7 +1505,6 @@ const createDepositAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
-    const orderNumber = generateOrderNumber();
 
     try {
       const result = await prisma.$transaction(
@@ -1807,6 +1807,8 @@ const createDepositAppointment = async (
           // 13. CREATE DEPOSIT APPOINTMENT
           // =================================================
 
+          const orderNumber = await generateAvailableOrderNumber(tx);
+
           const appointment = await tx.appointment.create({
             data: {
               ...(await snapshotData(tx, branchId, "SERVICE")),
@@ -2032,7 +2034,6 @@ const createReserveAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
-    const orderNumber = generateOrderNumber();
 
     try {
       console.log(`[RESERVE_NOW] Transaction attempt: ${attempt}`);
@@ -2334,6 +2335,8 @@ const createReserveAppointment = async (
           // =================================================
           // 12. CREATE RESERVED APPOINTMENT
           // =================================================
+
+          const orderNumber = await generateAvailableOrderNumber(tx);
 
           const appointment = await tx.appointment.create({
             data: {

@@ -56,8 +56,20 @@ const updateAdminUserStatus = catchAsync(
   },
 );
 
+const getAdminUserCounts = catchAsync(async (req: Request, res: Response) => {
+  const result = await adminUserService.getAdminUserCounts();
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: "User counts fetched successfully",
+    data: result,
+  });
+});
+
 export const adminUserController = {
   getAdminUsers,
   getAdminUserById,
   updateAdminUserStatus,
+  getAdminUserCounts,
 };

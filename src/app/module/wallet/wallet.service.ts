@@ -36,6 +36,7 @@ import {
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { generateAvailableOrderNumber, retryOrderNumberTransaction } from "../../utils/generateOrderNumber.js";
 
 const getMyWallet = async (customerId: string): Promise<IWalletResponse> => {
   let wallet = await prisma.wallet.findUnique({
@@ -742,7 +743,8 @@ const createTopup = async (
   // Store promotion amount and bonus as snapshots.
   // Future promotion edits must not change this top-up.
 
-  const { topup, payment } = await prisma.$transaction(async (tx) => {
+  const { topup, payment } = await retryOrderNumberTransaction(() => prisma.$transaction(async (tx) => {
+    const orderNumber = await generateAvailableOrderNumber(tx);
     const topup = await tx.walletTopup.create({
       data: {
         walletId: wallet.id,
@@ -763,6 +765,8 @@ const createTopup = async (
 
         walletTopupId: topup.id,
 
+        orderNumber,
+
         purpose: PaymentPurpose.WALLET_TOP_UP,
 
         amount: topupAmount,
@@ -777,7 +781,7 @@ const createTopup = async (
       topup,
       payment,
     };
-  });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 
   // =====================================================
   // 5. CREATE STRIPE PAYMENT INTENT

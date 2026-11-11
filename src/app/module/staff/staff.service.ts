@@ -50,6 +50,7 @@ import {
   createDateTimeInTimezone,
   getDateInTimezone,
 } from "../../utils/brand-timezone.utils.js";
+import { AvailabilityService } from "../availability/availability.service.js";
 
 const readStaffTranslations = (value: unknown): IStaffTranslations => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -2661,6 +2662,7 @@ const getBranchStaff = async (
     items,
   };
 };
+
 const getEligibleStaffForService = async (
   branchId: string,
   serviceId: string,
@@ -2771,7 +2773,7 @@ const getEligibleStaffForService = async (
   }
 
   // =====================================================
-  // 4. FETCH ELIGIBLE STAFF
+  // 4. FETCH SERVICE-ELIGIBLE STAFF
   // =====================================================
 
   const staff = await prisma.staff.findMany({
@@ -2821,7 +2823,7 @@ const getEligibleStaffForService = async (
             ],
           }
         : {
-            // Preserve original behavior without date.
+            // Preserve existing behavior without date.
             branches: {
               some: {
                 branchId,
@@ -2845,11 +2847,56 @@ const getEligibleStaffForService = async (
   });
 
   // =====================================================
-  // 5. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
+  // 5. FILTER STAFF BY ACTUAL BOOKING AVAILABILITY
+  // =====================================================
+
+  let availableStaff = staff;
+
+  if (date && staff.length > 0) {
+    // Reuse the existing availability engine.
+    // It already checks:
+    // - Effective staff schedules and overrides
+    // - LEAVE, TIME_OFF, BREAK and BLOCKED intervals
+    // - Existing appointment conflicts
+    // - Branch business hours and breaks
+    // - Service booking windows
+    // - Minimum booking notice
+    // - Branch hourly capacity
+    // - Service duration
+
+    const availabilityResults = await Promise.all(
+      staff.map(async (item) => {
+        const availability = await AvailabilityService.getAvailableSlots({
+          branchId,
+          serviceId,
+          staffId: item.id,
+          date,
+        });
+
+        return {
+          staffId: item.id,
+          hasAvailableSlots: availability.slots.some(
+            (slot) => slot.available === true,
+          ),
+        };
+      }),
+    );
+
+    const availableStaffIds = new Set(
+      availabilityResults
+        .filter((result) => result.hasAvailableSlots)
+        .map((result) => result.staffId),
+    );
+
+    availableStaff = staff.filter((item) => availableStaffIds.has(item.id));
+  }
+
+  // =====================================================
+  // 6. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
   // =====================================================
 
   const items = await Promise.all(
-    staff.map(async (item) => {
+    availableStaff.map(async (item) => {
       const localizedStaff = getLocalizedContent(item.translations, language, {
         roleTitle: item.roleTitle,
         specialization: item.specialization ?? "",
@@ -2876,7 +2923,7 @@ const getEligibleStaffForService = async (
   );
 
   // =====================================================
-  // 6. RESPONSE
+  // 7. RESPONSE
   // =====================================================
 
   return {
@@ -3099,11 +3146,59 @@ const getEligibleStaffForPackage = async (
   });
 
   // =====================================================
-  // 7. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
+  // 7. FILTER BY ACTUAL BOOKING AVAILABILITY
+  // =====================================================
+
+  let availableStaff = eligibleStaff;
+
+  if (date && eligibleStaff.length > 0) {
+    // Reuse the existing booking availability engine.
+    //
+    // This checks:
+    // - Staff schedules and overrides
+    // - LEAVE / TIME_OFF / BREAK / BLOCKED
+    // - Existing appointment conflicts
+    // - Branch business hours and breaks
+    // - Minimum booking notice
+    // - Branch hourly capacity
+    // - Package duration
+
+    const availabilityResults = await Promise.all(
+      eligibleStaff.map(async (staff) => {
+        const availability = await AvailabilityService.getAvailableSlots({
+          branchId,
+          packageId,
+          staffId: staff.id,
+          date,
+        });
+
+        return {
+          staffId: staff.id,
+
+          hasAvailableSlots: availability.slots.some(
+            (slot) => slot.available === true,
+          ),
+        };
+      }),
+    );
+
+    const availableStaffIds = new Set(
+      availabilityResults
+        .filter((result) => result.hasAvailableSlots)
+        .map((result) => result.staffId),
+    );
+
+    availableStaff = eligibleStaff.filter((staff) =>
+      availableStaffIds.has(staff.id),
+    );
+  }
+
+  // =====================================================
+  // 8. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
   // =====================================================
 
   const items = await Promise.all(
-    eligibleStaff.map(async (staff) => {
+    availableStaff.map(async (staff) => {
       const localizedStaff = getLocalizedContent(staff.translations, language, {
         roleTitle: staff.roleTitle,
         specialization: staff.specialization ?? "",
@@ -3130,13 +3225,14 @@ const getEligibleStaffForPackage = async (
   );
 
   // =====================================================
-  // 8. RESPONSE
+  // 9. RESPONSE
   // =====================================================
 
   return {
     items,
   };
 };
+
 const timeToMinutes = (time: string) => {
   const [hour, minute] = time.split(":").map(Number);
 
@@ -6788,6 +6884,324 @@ const updateSingleStaffSchedule = async (
   throw new AppError("Unable to update staff schedule. Please try again.", 409);
 };
 
+const deleteSingleStaffSchedule = async (
+  staffId: string,
+  scheduleId: string,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  // =====================================================
+  // 1. AUTHORIZATION
+  // =====================================================
+
+  if (requester.role !== Role.BRAND_OWNER) {
+    throw new AppError(
+      "Only brand owners can delete individual staff schedules",
+      403,
+    );
+  }
+
+  const MAX_RETRIES = 3;
+
+  const toMinutes = (value: string): number => {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+
+  const dayNames: DayOfWeek[] = [
+    DayOfWeek.SUNDAY,
+    DayOfWeek.MONDAY,
+    DayOfWeek.TUESDAY,
+    DayOfWeek.WEDNESDAY,
+    DayOfWeek.THURSDAY,
+    DayOfWeek.FRIDAY,
+    DayOfWeek.SATURDAY,
+  ];
+
+  // =====================================================
+  // 2. SERIALIZABLE TRANSACTION WITH RETRY
+  // =====================================================
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const result = await prisma.$transaction(
+        async (tx) => {
+          // =================================================
+          // 3. FIND STAFF
+          // =================================================
+
+          const staff = await tx.staff.findUnique({
+            where: { id: staffId },
+            select: {
+              id: true,
+              userId: true,
+              status: true,
+            },
+          });
+
+          if (!staff || staff.status !== StaffStatus.ACTIVE) {
+            throw new AppError("Active staff not found", 404);
+          }
+
+          // =================================================
+          // 4. FIND SELECTED SCHEDULE
+          // =================================================
+
+          const schedule = await tx.staffSchedule.findFirst({
+            where: {
+              id: scheduleId,
+              staffId,
+            },
+          });
+
+          if (!schedule) {
+            throw new AppError("Staff schedule not found", 404);
+          }
+
+          // =================================================
+          // 5. GET BRAND TIMEZONE
+          // =================================================
+
+          const brand = await tx.brand.findFirst({
+            select: {
+              timezone: true,
+            },
+          });
+
+          if (!brand) {
+            throw new AppError("Brand not found", 404);
+          }
+
+          const now = new Date();
+          const todayKey = getDateInTimezone(brand.timezone, now);
+
+          const todayDate = new Date(`${todayKey}T00:00:00.000Z`);
+
+          // =================================================
+          // 6. GET FUTURE ACTIVE APPOINTMENTS
+          // =================================================
+
+          const appointments = await tx.appointment.findMany({
+            where: {
+              staffId,
+              date: {
+                gte: todayDate,
+              },
+              OR: [
+                {
+                  appointmentStatus: {
+                    in: [
+                      AppointmentStatus.RESERVED,
+                      AppointmentStatus.CONFIRMED,
+                    ],
+                  },
+                },
+                {
+                  appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+                  holdExpiresAt: {
+                    gt: now,
+                  },
+                },
+              ],
+            },
+            select: {
+              id: true,
+              orderNumber: true,
+              branchId: true,
+              date: true,
+              startTime: true,
+              endTime: true,
+              timezone: true,
+            },
+          });
+
+          // =================================================
+          // 7. GET TEMPORARY SCHEDULE OVERRIDES
+          // =================================================
+
+          const overrides = await tx.staffScheduleOverride.findMany({
+            where: {
+              staffId,
+              date: {
+                gte: todayDate,
+              },
+            },
+            select: {
+              date: true,
+              branchId: true,
+              startTime: true,
+              endTime: true,
+            },
+          });
+
+          const overrideMap = new Map(
+            overrides.map((override) => [
+              override.date.toISOString().slice(0, 10),
+              override,
+            ]),
+          );
+
+          // =================================================
+          // 8. BUILD REMAINING WEEKLY SCHEDULE
+          // =================================================
+
+          const remainingSchedules = await tx.staffSchedule.findMany({
+            where: {
+              staffId,
+              id: {
+                not: scheduleId,
+              },
+            },
+            select: {
+              branchId: true,
+              day: true,
+              startTime: true,
+              endTime: true,
+            },
+          });
+
+          // =================================================
+          // 9. APPOINTMENT CONFLICT VALIDATION
+          // =================================================
+
+          for (const appointment of appointments) {
+            const appointmentDateKey = appointment.date
+              .toISOString()
+              .slice(0, 10);
+
+            const appointmentTimezone = appointment.timezone ?? brand.timezone;
+
+            const appointmentStartUTC = createDateTimeInTimezone(
+              appointmentDateKey,
+              appointment.startTime,
+              appointmentTimezone,
+            );
+
+            // Ignore appointments already started.
+            if (appointmentStartUTC.getTime() < now.getTime()) {
+              continue;
+            }
+
+            const appointmentStart = toMinutes(appointment.startTime);
+
+            const appointmentEnd = toMinutes(appointment.endTime);
+
+            const override = overrideMap.get(appointmentDateKey);
+
+            let isCovered = false;
+
+            // Temporary override takes priority.
+            if (override) {
+              isCovered =
+                override.branchId === appointment.branchId &&
+                appointmentStart >= toMinutes(override.startTime) &&
+                appointmentEnd <= toMinutes(override.endTime);
+            } else {
+              const appointmentDay = dayNames[appointment.date.getUTCDay()];
+
+              isCovered = remainingSchedules.some(
+                (remaining) =>
+                  remaining.branchId === appointment.branchId &&
+                  remaining.day === appointmentDay &&
+                  appointmentStart >= toMinutes(remaining.startTime) &&
+                  appointmentEnd <= toMinutes(remaining.endTime),
+              );
+            }
+
+            if (!isCovered) {
+              throw new AppError(
+                `Schedule deletion conflicts with existing appointment ${appointment.orderNumber}`,
+                409,
+              );
+            }
+          }
+
+          // =================================================
+          // 10. DELETE ONLY SELECTED SCHEDULE
+          // =================================================
+
+          const deleted = await tx.staffSchedule.deleteMany({
+            where: {
+              id: scheduleId,
+              staffId,
+            },
+          });
+
+          if (deleted.count !== 1) {
+            throw new AppError("Staff schedule not found", 404);
+          }
+
+          return {
+            staffUserId: staff.userId,
+          };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 20000,
+        },
+      );
+
+      // =====================================================
+      // 11. MULTILINGUAL STAFF NOTIFICATION
+      // =====================================================
+
+      if (result.staffUserId) {
+        try {
+          const translations = notificationTemplates.STAFF_SCHEDULE_UPDATED();
+
+          await notificationService.createNotification({
+            userId: result.staffUserId,
+            type: "STAFF_SCHEDULE_UPDATED",
+            title: translations.en!.title!,
+            message: translations.en!.message!,
+            translations,
+          });
+        } catch (error) {
+          logUnexpectedError(error, {
+            source: "staff.service.ts:deleteSingleStaffSchedule",
+          });
+        }
+      }
+
+      // =====================================================
+      // 12. RESPONSE
+      // =====================================================
+
+      return {
+        staffId,
+        scheduleId,
+        deleted: true,
+      };
+    } catch (error) {
+      // =====================================================
+      // 13. RETRY SERIALIZABLE CONFLICT
+      // =====================================================
+
+      const isSerializableConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+
+      if (isSerializableConflict && attempt < MAX_RETRIES) {
+        continue;
+      }
+
+      if (isSerializableConflict) {
+        throw new AppError(
+          "Schedule was modified concurrently. Please try again.",
+          409,
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError("Unable to delete staff schedule. Please try again.", 409);
+};
+
 export const staffService = {
   createStaff,
   getStaff,
@@ -6814,4 +7228,5 @@ export const staffService = {
   deleteStaffScheduleOverride,
   getEffectiveStaffSchedule,
   updateSingleStaffSchedule,
+  deleteSingleStaffSchedule,
 };

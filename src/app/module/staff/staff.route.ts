@@ -166,4 +166,13 @@ router.patch(
   validateRequest(staffValidation.updateSingleStaffScheduleValidation),
   staffController.updateSingleStaffSchedule,
 );
+// =====================================================
+// DELETE SINGLE STAFF WEEKLY SCHEDULE
+// =====================================================
+
+router.delete(
+  "/:staffId/schedules/:scheduleId",
+  auth(Role.BRAND_OWNER),
+  staffController.deleteSingleStaffSchedule,
+);
 export const StaffRoutes = router;

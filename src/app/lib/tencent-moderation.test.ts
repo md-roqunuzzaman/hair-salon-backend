@@ -25,7 +25,7 @@ for (const action of ["TextModeration", "ImageModeration"] as const) for (const 
 test("fetch uses fixed HTTPS origin, signed body, no redirects and an abort signal", async t => {
   t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     assert.equal(input, "https://tms.tencentcloudapi.com/");
-    assert.equal(init!.method, "POST"); assert.equal(init!.redirect, "error");
+    assert.equal(init!.method, "POST"); assert.equal(init!.redirect, "manual");
     assert.ok(init!.signal instanceof AbortSignal);
     assert.equal(JSON.parse(init!.body as string).Content, "c2FmZQ==");
     assert.ok(new Headers(init!.headers).get("authorization")!.startsWith("TC3-HMAC-SHA256 "));
@@ -69,4 +69,27 @@ for (const phase of ["headers", "body"] as const) test(`10-second deadline bound
   t.mock.timers.tick(TENCENT_MODERATION_TIMEOUT_MS);
   await rejected;
   assert.equal(signal!.aborted, true);
+});
+
+for (const [label, stage, status, providerCode, make] of [
+  ["authentication", "PROVIDER", 200, "AuthFailure", () => Response.json({ Response: { Error: { Code: "AuthFailure.SignatureFailure", Message: "synthetic-private-content" } } })],
+  ["unknown provider error", "PROVIDER", 200, undefined, () => Response.json({ Response: { Error: { Code: "synthetic-private-content", Message: "synthetic-private-content" } } })],
+  ["HTTP rejection", "HTTP", 403, undefined, () => new Response("synthetic-private-content", { status: 403 })],
+  ["invalid JSON", "BODY", 200, undefined, () => new Response("synthetic-private-content")],
+  ["invalid envelope", "ENVELOPE", 200, undefined, () => Response.json({ private: "synthetic-private-content" })],
+  ["network failure", "FETCH", undefined, undefined, () => { throw new Error("synthetic-private-content"); }],
+] as const) test(`safe diagnostics distinguish ${label} without leaking private data`, async t => {
+  const logs = t.mock.method(console, "error", () => {});
+  t.mock.method(globalThis, "fetch", async () => make());
+  const error = await tencentModerationRequest("TextModeration", { Content: "synthetic-private-content" }, credentials).then(
+    () => assert.fail("Expected unavailable"), error => error as Error & { code: string },
+  );
+  assert.equal(error.message, "TENCENT_MODERATION_UNAVAILABLE");
+  assert.equal(error.code, `TENCENT_MODERATION_${stage}_FAILED`);
+  assert.equal(logs.mock.callCount(), 1);
+  assert.deepEqual(logs.mock.calls[0]!.arguments[1], { stage, code: error.code, httpStatus: status, providerCode });
+  const serialized = JSON.stringify({ error, logs: logs.mock.calls.map(call => call.arguments) });
+  for (const marker of [credentials.secretId, credentials.secretKey, "synthetic-private-content", "Authorization", "Signature="]) {
+    assert.ok(!serialized.includes(marker), "Private moderation data leaked (value suppressed)");
+  }
 });

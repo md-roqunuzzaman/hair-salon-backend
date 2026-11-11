@@ -14,6 +14,7 @@ import {
 } from "../../utils/language.js";
 import { IMyStaffAppointmentsQuery } from "./staff.interface.js";
 import { AppError } from "../../utils/app-error.js";
+import { Role } from "../../../../generated/prisma/enums.js";
 
 const createStaff = catchAsync(async (req: Request, res: Response) => {
   // =====================================================
@@ -774,6 +775,66 @@ const updateSingleStaffSchedule = catchAsync(
     });
   },
 );
+
+const deleteSingleStaffSchedule = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. AUTHENTICATED USER
+    // =====================================================
+
+    const user = req.user;
+
+    if (!user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    // =====================================================
+    // 2. VALIDATE ROUTE PARAMETERS
+    // =====================================================
+
+    const { staffId, scheduleId } = req.params;
+
+    if (
+      typeof staffId !== "string" ||
+      typeof scheduleId !== "string" ||
+      !staffId.trim() ||
+      !scheduleId.trim()
+    ) {
+      throw new AppError("Valid Staff ID and Schedule ID are required", 400);
+    }
+
+    // =====================================================
+    // 3. REQUESTER INFORMATION
+    // =====================================================
+
+    const requester = {
+      userId: user.userId,
+      role: user.role,
+    };
+
+    // =====================================================
+    // 4. DELETE SELECTED SCHEDULE
+    // =====================================================
+
+    const result = await staffService.deleteSingleStaffSchedule(
+      staffId,
+      scheduleId,
+      requester,
+    );
+
+    // =====================================================
+    // 5. SUCCESS RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message: "Staff schedule deleted successfully",
+      data: result,
+    });
+  },
+);
+
 export const staffController = {
   createStaff,
   getStaff,
@@ -799,4 +860,5 @@ export const staffController = {
   updateStaffScheduleOverride,
   deleteStaffScheduleOverride,
   updateSingleStaffSchedule,
+  deleteSingleStaffSchedule,
 };
