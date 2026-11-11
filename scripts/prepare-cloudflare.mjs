@@ -30,6 +30,8 @@ schema = schema.replace(/^(\s*\w+\s+)Decimal(\??)(.*)$/gm, (_, prefix, optional,
   `${prefix}BigInt${optional}${tail.replace(/@db\.Decimal\([^)]*\)/g, '')}`);
 // SQLite stores PostgreSQL varchar fields as text; retain nullable/unique attributes.
 schema = schema.replace(/@db\.VarChar\(\d+\)/g, '');
+// Date-only values use the existing SQLite DateTime calendar-key representation.
+schema = schema.replace(/@db\.Date\b/g, '');
 schema = schema.replace(/^(\s*\w+\s+)(\w+)\[\](.*)$/gm, (line, prefix, type, tail) => {
   if (modelNames.includes(type)) return line;
   if (type !== 'String' && !enumNames.includes(type)) throw new Error(`Unsupported scalar array: ${type}`);

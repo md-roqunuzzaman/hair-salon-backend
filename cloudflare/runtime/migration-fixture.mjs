@@ -502,6 +502,23 @@ export class MigrationFixture {
     if(storage.sql.exec("SELECT brandId FROM BannerCarouselSetting WHERE id='carousel-custom'").one().brandId!==null)throw new Error('Carousel brand deletion must retain branch settings');
     storage.sql.exec("DELETE FROM Branch WHERE id IN ('carousel-a','carousel-b')");
     if(storage.sql.exec('SELECT COUNT(*) AS n FROM BannerCarouselSetting').one().n!==0||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Carousel branch cascade failed');
+    storage.sql.exec("INSERT INTO User (id,name,email,passwordHash,updatedAt) VALUES ('override-user','Override','override@example.com','test',1)");
+    storage.sql.exec("INSERT INTO Staff (id,userId,name,email,roleTitle,updatedAt) VALUES ('override-staff','override-user','Override','override-staff@example.com','Stylist',1)");
+    storage.sql.exec("INSERT INTO Branch (id,name,address,updatedAt) VALUES ('override-branch','Override','Address',1)");
+    const addOverride=(id,staffId,branchId,date)=>storage.sql.exec('INSERT INTO StaffScheduleOverride (id,staffId,branchId,date,startTime,endTime,updatedAt) VALUES (?,?,?,?,?,?,?)',id,staffId,branchId,date,'09:00','17:00',1);
+    addOverride('override-one','override-staff','override-branch',1794268800000);
+    for(const args of [['override-duplicate','override-staff','override-branch',1794268800000],['override-orphan-staff','missing','override-branch',1794355200000],['override-orphan-branch','override-staff','missing',1794355200000]]){
+      let rejected=false;try{addOverride(...args);}catch{rejected=true;}
+      if(!rejected)throw new Error('Staff schedule override uniqueness or foreign key missing');
+    }
+    const overridesBefore=JSON.stringify(storage.sql.exec('SELECT * FROM StaffScheduleOverride ORDER BY id').toArray());
+    applyMigrations(storage,migrations);
+    if(JSON.stringify(storage.sql.exec('SELECT * FROM StaffScheduleOverride ORDER BY id').toArray())!==overridesBefore||storage.sql.exec('SELECT COUNT(*) AS n FROM _Migrations WHERE version=40').one().n!==1)throw new Error('v40 repeat startup changed overrides');
+    storage.sql.exec("DELETE FROM Branch WHERE id='override-branch'");
+    if(storage.sql.exec('SELECT COUNT(*) AS n FROM StaffScheduleOverride').one().n!==0)throw new Error('Override branch cascade failed');
+    addOverride('override-staff-cascade','override-staff','branch',1794355200000);
+    storage.sql.exec("DELETE FROM Staff WHERE id='override-staff'");
+    if(storage.sql.exec('SELECT COUNT(*) AS n FROM StaffScheduleOverride').one().n!==0||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Override staff cascade failed');
     return Response.json({ preserved: true, repeatable: true, foreignKey: true, checksumProtected: true, currencyRequired: true });
   }
 }

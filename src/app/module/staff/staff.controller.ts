@@ -180,13 +180,35 @@ const assignStaffPackages = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getBranchStaff = catchAsync(async (req: Request, res: Response) => {
+  // =====================================================
+  // 1. GET BRANCH ID
+  // =====================================================
+
   const branchId = req.params.branchId as string;
+
+  // =====================================================
+  // 2. RESOLVE LANGUAGE
+  // =====================================================
 
   const language = isLanguage(res.locals.language)
     ? res.locals.language
     : DEFAULT_LANGUAGE;
 
-  const result = await staffService.getBranchStaff(branchId, language);
+  // =====================================================
+  // 3. GET OPTIONAL DATE QUERY
+  // =====================================================
+
+  const date = req.query.date as string | undefined;
+
+  // =====================================================
+  // 4. FETCH BRANCH STAFF
+  // =====================================================
+
+  const result = await staffService.getBranchStaff(branchId, language, date);
+
+  // =====================================================
+  // 5. SEND RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -197,19 +219,41 @@ const getBranchStaff = catchAsync(async (req: Request, res: Response) => {
 });
 const getEligibleStaffForService = catchAsync(
   async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. GET PARAMETERS
+    // =====================================================
+
     const branchId = req.params.branchId as string;
     const serviceId = req.params.serviceId as string;
 
-    // Resolve requested language
+    // =====================================================
+    // 2. RESOLVE LANGUAGE
+    // =====================================================
+
     const language = isLanguage(res.locals.language)
       ? res.locals.language
       : DEFAULT_LANGUAGE;
+
+    // =====================================================
+    // 3. GET OPTIONAL DATE
+    // =====================================================
+
+    const date = req.query.date as string | undefined;
+
+    // =====================================================
+    // 4. FETCH ELIGIBLE STAFF
+    // =====================================================
 
     const result = await staffService.getEligibleStaffForService(
       branchId,
       serviceId,
       language,
+      date,
     );
+
+    // =====================================================
+    // 5. SEND RESPONSE
+    // =====================================================
 
     sendResponse(res, {
       statusCode: httpStatus.OK,
@@ -219,22 +263,43 @@ const getEligibleStaffForService = catchAsync(
     });
   },
 );
-
 const getEligibleStaffForPackage = catchAsync(
   async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. GET PARAMETERS
+    // =====================================================
+
     const branchId = req.params.branchId as string;
     const packageId = req.params.packageId as string;
 
-    // Resolve selected language
+    // =====================================================
+    // 2. RESOLVE LANGUAGE
+    // =====================================================
+
     const language = isLanguage(res.locals.language)
       ? res.locals.language
       : DEFAULT_LANGUAGE;
+
+    // =====================================================
+    // 3. GET OPTIONAL DATE
+    // =====================================================
+
+    const date = req.query.date as string | undefined;
+
+    // =====================================================
+    // 4. FETCH ELIGIBLE STAFF FOR PACKAGE
+    // =====================================================
 
     const result = await staffService.getEligibleStaffForPackage(
       branchId,
       packageId,
       language,
+      date,
     );
+
+    // =====================================================
+    // 5. SEND RESPONSE
+    // =====================================================
 
     sendResponse(res, {
       statusCode: httpStatus.OK,
@@ -244,7 +309,6 @@ const getEligibleStaffForPackage = catchAsync(
     });
   },
 );
-
 const updateStaffSchedule = catchAsync(async (req: Request, res: Response) => {
   const staffId = req.params.staffId as string;
 
@@ -519,6 +583,148 @@ const getMyAppointments = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const createStaffScheduleOverride = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. AUTHENTICATION
+    // =====================================================
+
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    // =====================================================
+    // 2. REQUEST DATA
+    // =====================================================
+
+    const staffId = req.params.staffId as string;
+
+    // =====================================================
+    // 3. CREATE TEMPORARY ASSIGNMENT
+    // =====================================================
+
+    const result = await staffService.createStaffScheduleOverride(
+      staffId,
+      req.body,
+      {
+        userId: req.user.userId,
+        role: req.user.role,
+      },
+    );
+
+    // =====================================================
+    // 4. RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      statusCode: httpStatus.CREATED,
+      success: true,
+      message: "Temporary staff assignment created successfully",
+      data: result,
+    });
+  },
+);
+
+const getStaffScheduleOverrides = catchAsync(
+  async (req: Request, res: Response) => {
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    const staffId = req.params.staffId as string;
+
+    const result = await staffService.getStaffScheduleOverrides(
+      staffId,
+      {
+        branchId: req.query.branchId as string | undefined,
+        startDate: req.query.startDate as string | undefined,
+        endDate: req.query.endDate as string | undefined,
+      },
+      {
+        userId: req.user.userId,
+        role: req.user.role,
+      },
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Temporary staff assignments fetched successfully",
+      data: result,
+    });
+  },
+);
+
+const updateStaffScheduleOverride = catchAsync(
+  async (req: Request, res: Response) => {
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    const staffId = req.params.staffId as string;
+    const overrideId = req.params.overrideId as string;
+
+    const result = await staffService.updateStaffScheduleOverride(
+      staffId,
+      overrideId,
+      req.body,
+      {
+        userId: req.user.userId,
+        role: req.user.role,
+      },
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Temporary staff assignment updated successfully",
+      data: result,
+    });
+  },
+);
+
+const deleteStaffScheduleOverride = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. AUTHENTICATION
+    // =====================================================
+
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    // =====================================================
+    // 2. REQUEST PARAMETERS
+    // =====================================================
+
+    const staffId = req.params.staffId as string;
+    const overrideId = req.params.overrideId as string;
+
+    // =====================================================
+    // 3. DELETE TEMPORARY ASSIGNMENT
+    // =====================================================
+
+    const result = await staffService.deleteStaffScheduleOverride(
+      staffId,
+      overrideId,
+      {
+        userId: req.user.userId,
+        role: req.user.role,
+      },
+    );
+
+    // =====================================================
+    // 4. RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Temporary staff assignment deleted successfully",
+      data: result,
+    });
+  },
+);
 export const staffController = {
   createStaff,
   getStaff,
@@ -539,4 +745,8 @@ export const staffController = {
   deleteStaffUnavailability,
   getMyStaffSchedule,
   getMyAppointments,
+  createStaffScheduleOverride,
+  getStaffScheduleOverrides,
+  updateStaffScheduleOverride,
+  deleteStaffScheduleOverride,
 };

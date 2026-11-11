@@ -240,6 +240,7 @@
       "cancellationPolicy": "BranchCancellationPolicy",
       "groupPurchaseRefundPolicy": "GroupPurchaseRefundPolicy",
       "groupPurchaseCancellationPolicy": "GroupPurchaseCancellationPolicy",
+      "scheduleOverrides": "StaffScheduleOverride",
       "policyPurchases": "GroupPurchase"
     },
     "arrays": [],
@@ -1039,6 +1040,7 @@
     "money": {},
     "relations": {
       "branchPortfolioCases": "BranchPortfolioCase",
+      "scheduleOverrides": "StaffScheduleOverride",
       "user": "User",
       "branches": "StaffBranch",
       "services": "StaffService",
@@ -1137,6 +1139,24 @@
       "startTime": "String",
       "endTime": "String",
       "reason": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "StaffScheduleOverride": {
+    "money": {},
+    "relations": {
+      "staff": "Staff",
+      "branch": "Branch"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "staffId": "String",
+      "branchId": "String",
+      "date": "DateTime",
+      "startTime": "String",
+      "endTime": "String",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
     }

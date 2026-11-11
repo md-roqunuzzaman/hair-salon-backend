@@ -299,6 +299,8 @@ export const resolveAvailableStaff = async ({
   // =====================================================
 
   if (
+    !Number.isFinite(requestedStart) ||
+    !Number.isFinite(requestedEnd) ||
     requestedStart < 0 ||
     requestedEnd > 24 * 60 ||
     requestedStart >= requestedEnd
@@ -310,20 +312,10 @@ export const resolveAvailableStaff = async ({
   // 2. GET DAY OF WEEK
   // =====================================================
 
-  const dayNames = [
-    DayOfWeek.SUNDAY,
-    DayOfWeek.MONDAY,
-    DayOfWeek.TUESDAY,
-    DayOfWeek.WEDNESDAY,
-    DayOfWeek.THURSDAY,
-    DayOfWeek.FRIDAY,
-    DayOfWeek.SATURDAY,
-  ];
-
-  const day = dayNames[new Date(`${date}T00:00:00.000Z`).getUTCDay()];
+  const day = getDayOfWeek(date);
 
   // =====================================================
-  // 3. VALIDATE BRANCH BUSINESS HOURS + BREAKS (H05)
+  // 3. VALIDATE BRANCH BUSINESS HOURS + BREAKS
   // =====================================================
 
   const businessHour = await tx.branchBusinessHour.findFirst({
@@ -331,17 +323,18 @@ export const resolveAvailableStaff = async ({
       branchId,
       day,
     },
+
     select: {
       isClosed: true,
       openTime: true,
       closeTime: true,
 
-      // H05: Branch-wide recurring breaks
       breaks: {
         select: {
           startTime: true,
           endTime: true,
         },
+
         orderBy: {
           startTime: "asc",
         },
@@ -369,25 +362,17 @@ export const resolveAvailableStaff = async ({
   }
 
   // =====================================================
-  // H05: BRANCH-WIDE BREAK VALIDATION
+  // 4. BRANCH-WIDE BREAK VALIDATION
   // =====================================================
 
-  // The entire booking duration must not overlap
-  // any branch-wide break.
-  //
-  // Example:
-  // Branch break: 13:00 - 14:00
-  // Booking:      12:30 - 13:15 -> REJECT
-  // Booking:      13:45 - 14:30 -> REJECT
-  // Booking:      14:00 - 14:45 -> ALLOW (if otherwise valid)
-
-  const hasBranchBreakConflict = businessHour.breaks.some((businessBreak) => {
-    const breakStart = timeToMinutes(businessBreak.startTime);
-
-    const breakEnd = timeToMinutes(businessBreak.endTime);
-
-    return intervalsOverlap(requestedStart, requestedEnd, breakStart, breakEnd);
-  });
+  const hasBranchBreakConflict = businessHour.breaks.some((businessBreak) =>
+    intervalsOverlap(
+      requestedStart,
+      requestedEnd,
+      timeToMinutes(businessBreak.startTime),
+      timeToMinutes(businessBreak.endTime),
+    ),
+  );
 
   if (hasBranchBreakConflict) {
     throw new AppError(
@@ -397,7 +382,7 @@ export const resolveAvailableStaff = async ({
   }
 
   // =====================================================
-  // 4. FIND ELIGIBLE STAFF
+  // 5. FIND ELIGIBLE STAFF
   // =====================================================
 
   const eligibleStaff = await tx.staff.findMany({
@@ -406,11 +391,33 @@ export const resolveAvailableStaff = async ({
 
       status: "ACTIVE",
 
-      branches: {
-        some: {
-          branchId,
+      OR: [
+        // Staff temporarily assigned to this branch.
+        {
+          scheduleOverrides: {
+            some: {
+              branchId,
+              date: dateOnly,
+            },
+          },
         },
-      },
+
+        // Regular branch assignment applies only when
+        // no override exists for the selected date.
+        {
+          branches: {
+            some: {
+              branchId,
+            },
+          },
+
+          scheduleOverrides: {
+            none: {
+              date: dateOnly,
+            },
+          },
+        },
+      ],
 
       ...(serviceId
         ? {
@@ -450,13 +457,38 @@ export const resolveAvailableStaff = async ({
   const staffIds = eligibleStaff.map((staff) => staff.id);
 
   // =====================================================
-  // 5. FETCH STAFF SCHEDULES
+  // 6. FETCH TEMPORARY SCHEDULE OVERRIDES
   // =====================================================
 
-  const schedules = await tx.staffSchedule.findMany({
+  const overrides = await tx.staffScheduleOverride.findMany({
     where: {
       staffId: {
         in: staffIds,
+      },
+
+      date: dateOnly,
+    },
+
+    select: {
+      staffId: true,
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  const overriddenStaffIds = new Set(
+    overrides.map((override) => override.staffId),
+  );
+
+  // =====================================================
+  // 7. FETCH REGULAR WEEKLY SCHEDULES
+  // =====================================================
+
+  const regularSchedules = await tx.staffSchedule.findMany({
+    where: {
+      staffId: {
+        in: staffIds.filter((id) => !overriddenStaffIds.has(id)),
       },
 
       branchId,
@@ -471,7 +503,23 @@ export const resolveAvailableStaff = async ({
   });
 
   // =====================================================
-  // 6. FETCH STAFF UNAVAILABILITY
+  // 8. BUILD EFFECTIVE STAFF SCHEDULES
+  // =====================================================
+
+  const schedules = [
+    ...regularSchedules,
+
+    ...overrides
+      .filter((override) => override.branchId === branchId)
+      .map((override) => ({
+        staffId: override.staffId,
+        startTime: override.startTime,
+        endTime: override.endTime,
+      })),
+  ];
+
+  // =====================================================
+  // 9. FETCH STAFF UNAVAILABILITY
   // =====================================================
 
   const unavailability = await tx.staffUnavailability.findMany({
@@ -491,7 +539,7 @@ export const resolveAvailableStaff = async ({
   });
 
   // =====================================================
-  // 7. FETCH BLOCKING APPOINTMENTS
+  // 10. FETCH BLOCKING APPOINTMENTS
   // =====================================================
 
   const blockingAppointments = await tx.appointment.findMany({
@@ -516,6 +564,7 @@ export const resolveAvailableStaff = async ({
             in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
           },
         },
+
         {
           appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
 
@@ -534,33 +583,22 @@ export const resolveAvailableStaff = async ({
   });
 
   // =====================================================
-  // 8. CHECK STAFF CANDIDATES
+  // 11. CHECK STAFF CANDIDATES
   // =====================================================
-
-  const overlaps = (
-    startA: number,
-    endA: number,
-    startB: number,
-    endB: number,
-  ) => startA < endB && endA > startB;
 
   const availableStaffIds: string[] = [];
 
   for (const staff of eligibleStaff) {
     // -------------------------------------------------
-    // STAFF SCHEDULE MUST COVER COMPLETE BOOKING
+    // EFFECTIVE SCHEDULE MUST COVER FULL BOOKING
     // -------------------------------------------------
 
-    const hasValidSchedule = schedules.some((schedule) => {
-      if (schedule.staffId !== staff.id) {
-        return false;
-      }
-
-      return (
+    const hasValidSchedule = schedules.some(
+      (schedule) =>
+        schedule.staffId === staff.id &&
         requestedStart >= timeToMinutes(schedule.startTime) &&
-        requestedEnd <= timeToMinutes(schedule.endTime)
-      );
-    });
+        requestedEnd <= timeToMinutes(schedule.endTime),
+    );
 
     if (!hasValidSchedule) {
       continue;
@@ -570,18 +608,16 @@ export const resolveAvailableStaff = async ({
     // STAFF BREAK / LEAVE / UNAVAILABILITY
     // -------------------------------------------------
 
-    const isUnavailable = unavailability.some((item) => {
-      if (item.staffId !== staff.id) {
-        return false;
-      }
-
-      return overlaps(
-        requestedStart,
-        requestedEnd,
-        timeToMinutes(item.startTime),
-        timeToMinutes(item.endTime),
-      );
-    });
+    const isUnavailable = unavailability.some(
+      (item) =>
+        item.staffId === staff.id &&
+        intervalsOverlap(
+          requestedStart,
+          requestedEnd,
+          timeToMinutes(item.startTime),
+          timeToMinutes(item.endTime),
+        ),
+    );
 
     if (isUnavailable) {
       continue;
@@ -591,18 +627,16 @@ export const resolveAvailableStaff = async ({
     // EXISTING APPOINTMENTS / ACTIVE HOLDS
     // -------------------------------------------------
 
-    const hasAppointmentConflict = blockingAppointments.some((appointment) => {
-      if (appointment.staffId !== staff.id) {
-        return false;
-      }
-
-      return overlaps(
-        requestedStart,
-        requestedEnd,
-        timeToMinutes(appointment.startTime),
-        timeToMinutes(appointment.endTime),
-      );
-    });
+    const hasAppointmentConflict = blockingAppointments.some(
+      (appointment) =>
+        appointment.staffId === staff.id &&
+        intervalsOverlap(
+          requestedStart,
+          requestedEnd,
+          timeToMinutes(appointment.startTime),
+          timeToMinutes(appointment.endTime),
+        ),
+    );
 
     if (hasAppointmentConflict) {
       continue;
@@ -620,7 +654,7 @@ export const resolveAvailableStaff = async ({
   }
 
   // =====================================================
-  // 9. AUTO STAFF FAIR ASSIGNMENT
+  // 12. AUTO STAFF FAIR ASSIGNMENT
   // =====================================================
 
   if (availableStaffIds.length === 1) {
@@ -628,10 +662,10 @@ export const resolveAvailableStaff = async ({
   }
 
   if (availableStaffIds.length > 1) {
-    // Preserve existing fairness logic:
-    // Count daily workload across services/packages.
+    // Preserve existing daily workload fairness.
+    // Count RESERVED, CONFIRMED and COMPLETED.
     // Active payment holds block availability but
-    // do not count toward completed workload.
+    // do not count toward workload.
 
     const dailyAppointments = await tx.appointment.findMany({
       where: {
@@ -672,7 +706,7 @@ export const resolveAvailableStaff = async ({
   }
 
   // =====================================================
-  // 10. NO STAFF AVAILABLE
+  // 13. NO STAFF AVAILABLE
   // =====================================================
 
   throw new AppError(
@@ -682,7 +716,6 @@ export const resolveAvailableStaff = async ({
     409,
   );
 };
-
 // FINAL STAFF CONFLICT CHECK
 // =====================================================
 

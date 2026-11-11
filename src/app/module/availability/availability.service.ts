@@ -345,6 +345,37 @@ const getAvailableSlots = async (
   // 7. RESOLVE ELIGIBLE STAFF
   // =====================================================
 
+  // =====================================================
+  // 7. RESOLVE ELIGIBLE STAFF
+  // =====================================================
+
+  const dateOnly = new Date(`${date}T00:00:00.000Z`);
+
+  const effectiveBranchEligibility = {
+    OR: [
+      {
+        scheduleOverrides: {
+          some: {
+            branchId,
+            date: dateOnly,
+          },
+        },
+      },
+      {
+        branches: {
+          some: {
+            branchId,
+          },
+        },
+        scheduleOverrides: {
+          none: {
+            date: dateOnly,
+          },
+        },
+      },
+    ],
+  };
+
   let staffIds: string[] = [];
 
   if (staffId) {
@@ -354,6 +385,11 @@ const getAvailableSlots = async (
       include: {
         branches: {
           where: { branchId },
+          select: { branchId: true },
+        },
+
+        scheduleOverrides: {
+          where: { date: dateOnly },
           select: { branchId: true },
         },
 
@@ -381,8 +417,17 @@ const getAvailableSlots = async (
       throw new AppError("Staff is not eligible", 400);
     }
 
-    if (staffMember.branches.length === 0) {
-      throw new AppError("Staff is not eligible for this branch", 400);
+    const override = staffMember.scheduleOverrides[0];
+
+    const eligibleForBranch = override
+      ? override.branchId === branchId
+      : staffMember.branches.length > 0;
+
+    if (!eligibleForBranch) {
+      throw new AppError(
+        "Staff is not eligible for this branch on the selected date",
+        400,
+      );
     }
 
     if (
@@ -405,9 +450,7 @@ const getAvailableSlots = async (
       where: {
         status: StaffStatus.ACTIVE,
 
-        branches: {
-          some: { branchId },
-        },
+        ...effectiveBranchEligibility,
 
         ...(serviceId
           ? {
@@ -443,15 +486,80 @@ const getAvailableSlots = async (
   // 8. STAFF SCHEDULES
   // =====================================================
 
-  const schedules = await prisma.staffSchedule.findMany({
+  // =====================================================
+  // 8. EFFECTIVE STAFF SCHEDULES
+  // =====================================================
+
+  // -----------------------------------------------------
+  // 8.1 FETCH TEMPORARY OVERRIDES FOR SELECTED DATE
+  // -----------------------------------------------------
+
+  const overrides = await prisma.staffScheduleOverride.findMany({
     where: {
-      staffId: { in: staffIds },
+      staffId: {
+        in: staffIds,
+      },
+      date: dateOnly,
+    },
+
+    select: {
+      staffId: true,
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  // Every override replaces the staff's regular schedule
+  // for the entire selected date, across all branches.
+  const overriddenStaffIds = new Set(
+    overrides.map((override) => override.staffId),
+  );
+
+  // -----------------------------------------------------
+  // 8.2 FETCH REGULAR WEEKLY SCHEDULES
+  // -----------------------------------------------------
+
+  const regularSchedules = await prisma.staffSchedule.findMany({
+    where: {
+      staffId: {
+        in: staffIds.filter((id) => !overriddenStaffIds.has(id)),
+      },
       branchId,
       day,
     },
 
+    select: {
+      staffId: true,
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+
     orderBy: [{ startTime: "asc" }, { staffId: "asc" }],
   });
+
+  // -----------------------------------------------------
+  // 8.3 INCLUDE OVERRIDES FOR SELECTED BRANCH
+  // -----------------------------------------------------
+
+  const branchOverrides = overrides.filter(
+    (override) => override.branchId === branchId,
+  );
+
+  // -----------------------------------------------------
+  // 8.4 BUILD EFFECTIVE SCHEDULES
+  // -----------------------------------------------------
+
+  const schedules = [...regularSchedules, ...branchOverrides].sort(
+    (a, b) =>
+      a.startTime.localeCompare(b.startTime) ||
+      a.staffId.localeCompare(b.staffId),
+  );
+
+  // -----------------------------------------------------
+  // 8.5 NO STAFF SCHEDULE
+  // -----------------------------------------------------
 
   if (schedules.length === 0) {
     return {
@@ -465,8 +573,6 @@ const getAvailableSlots = async (
   // =====================================================
   // 9. STAFF UNAVAILABILITY
   // =====================================================
-
-  const dateOnly = new Date(`${date}T00:00:00.000Z`);
 
   const unavailability = await prisma.staffUnavailability.findMany({
     where: {

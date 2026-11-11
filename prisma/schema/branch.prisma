@@ -30,8 +30,8 @@ model Branch {
   cancellationPolicy              BranchCancellationPolicy?
   groupPurchaseRefundPolicy       GroupPurchaseRefundPolicy?
   groupPurchaseCancellationPolicy GroupPurchaseCancellationPolicy?
-
-  policyPurchases GroupPurchase[] @relation("PurchasePolicyBranch")
+  scheduleOverrides               StaffScheduleOverride[]
+  policyPurchases                 GroupPurchase[]                  @relation("PurchasePolicyBranch")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

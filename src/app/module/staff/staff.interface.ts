@@ -105,3 +105,51 @@ export interface IMyStaffAppointmentsQuery {
   page?: string;
   limit?: string;
 }
+
+// =====================================================
+// TEMPORARY STAFF SCHEDULE OVERRIDE
+// =====================================================
+
+export interface ICreateStaffScheduleOverridePayload {
+  branchId: string;
+  date: string; // YYYY-MM-DD
+  startTime: string; // HH:mm
+  endTime: string; // HH:mm
+}
+
+export interface IUpdateStaffScheduleOverridePayload {
+  branchId?: string;
+  date?: string; // YYYY-MM-DD
+  startTime?: string; // HH:mm
+  endTime?: string; // HH:mm
+}
+
+export interface IGetStaffScheduleOverridesQuery {
+  branchId?: string;
+  startDate?: string; // YYYY-MM-DD
+  endDate?: string; // YYYY-MM-DD
+}
+
+export interface IUpdateStaffScheduleOverridePayload {
+  branchId?: string;
+  date?: string; // YYYY-MM-DD
+  startTime?: string; // HH:mm
+  endTime?: string; // HH:mm
+}
+// =====================================================
+// EFFECTIVE STAFF SCHEDULE
+// =====================================================
+
+export interface IEffectiveStaffSchedule {
+  staffId: string;
+  date: string;
+  day: string;
+  source: "REGULAR" | "OVERRIDE";
+  hasOverride: boolean;
+
+  schedules: {
+    branchId: string;
+    startTime: string;
+    endTime: string;
+  }[];
+}

@@ -133,4 +133,30 @@ router.get(
   validateRequest(reviewValidation.getReviewsValidationSchema),
   reviewController.getStaffReviews,
 );
+
+router.post(
+  "/:staffId/schedule-overrides",
+  auth(Role.BRAND_OWNER),
+  validateRequest(staffValidation.createStaffScheduleOverrideValidationSchema),
+  staffController.createStaffScheduleOverride,
+);
+
+router.get(
+  "/:staffId/schedule-overrides",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER, Role.STAFF),
+  validateRequest(staffValidation.getStaffScheduleOverridesValidationSchema),
+  staffController.getStaffScheduleOverrides,
+);
+router.patch(
+  "/:staffId/schedule-overrides/:overrideId",
+  auth(Role.BRAND_OWNER),
+  validateRequest(staffValidation.updateStaffScheduleOverrideValidationSchema),
+  staffController.updateStaffScheduleOverride,
+);
+
+router.delete(
+  "/:staffId/schedule-overrides/:overrideId",
+  auth(Role.BRAND_OWNER),
+  staffController.deleteStaffScheduleOverride,
+);
 export const StaffRoutes = router;

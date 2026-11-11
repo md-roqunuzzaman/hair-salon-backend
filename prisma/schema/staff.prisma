@@ -12,9 +12,9 @@ model Staff {
   translations         Json?
   branchPortfolioCases BranchPortfolioCase[]
 
-  status StaffStatus @default(ACTIVE)
-
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status            StaffStatus             @default(ACTIVE)
+  scheduleOverrides StaffScheduleOverride[]
+  user              User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
 
   branches            StaffBranch[]
   services            StaffService[]
@@ -104,4 +104,23 @@ model StaffUnavailability {
   @@index([staffId])
   @@index([date])
   @@index([staffId, date])
+}
+
+model StaffScheduleOverride {
+  id        String   @id @default(uuid())
+  staffId   String
+  branchId  String
+  date      DateTime @db.Date
+  startTime String
+  endTime   String
+
+  staff  Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([staffId, date])
+  @@index([branchId, date])
+  @@index([staffId, branchId])
 }

@@ -342,6 +342,90 @@ const getMyAppointmentsValidationSchema = z.object({
   }),
 });
 
+const createStaffScheduleOverrideValidationSchema = z.object({
+  body: z
+    .object({
+      branchId: z.uuid("Invalid branch ID"),
+
+      date: z
+        .string()
+        .regex(dateRegex, "date must be in YYYY-MM-DD format")
+        .refine(
+          (value) => {
+            const parsed = new Date(`${value}T00:00:00.000Z`);
+
+            return (
+              !Number.isNaN(parsed.getTime()) &&
+              parsed.toISOString().slice(0, 10) === value
+            );
+          },
+          {
+            message: "date must be a valid calendar date",
+          },
+        ),
+
+      startTime: z
+        .string()
+        .regex(timeRegex, "startTime must be in HH:mm format"),
+
+      endTime: z.string().regex(timeRegex, "endTime must be in HH:mm format"),
+    })
+    .strict()
+    .superRefine((data, ctx) => {
+      if (!timeRegex.test(data.startTime) || !timeRegex.test(data.endTime)) {
+        return;
+      }
+
+      const toMinutes = (time: string): number => {
+        const [hours, minutes] = time.split(":").map(Number);
+        return hours * 60 + minutes;
+      };
+
+      if (toMinutes(data.startTime) >= toMinutes(data.endTime)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["endTime"],
+          message: "endTime must be later than startTime",
+        });
+      }
+    }),
+});
+
+const getStaffScheduleOverridesValidationSchema = z.object({
+  query: z
+    .object({
+      branchId: z.uuid("Invalid branch ID").optional(),
+
+      startDate: z
+        .string()
+        .regex(dateRegex, "startDate must be YYYY-MM-DD")
+        .optional(),
+
+      endDate: z
+        .string()
+        .regex(dateRegex, "endDate must be YYYY-MM-DD")
+        .optional(),
+    })
+    .strict(),
+});
+
+const updateStaffScheduleOverrideValidationSchema = z.object({
+  body: z
+    .object({
+      branchId: z.uuid("Invalid branch ID").optional(),
+
+      date: z.string().regex(dateRegex, "Date must be YYYY-MM-DD").optional(),
+
+      startTime: z.string().regex(timeRegex, "Invalid start time").optional(),
+
+      endTime: z.string().regex(timeRegex, "Invalid end time").optional(),
+    })
+    .strict()
+    .refine(
+      (data) => Object.keys(data).length > 0,
+      "At least one field is required",
+    ),
+});
 export const staffValidation = {
   createStaffValidationSchema,
   updateStaffValidationSchema,
@@ -353,4 +437,7 @@ export const staffValidation = {
   createStaffUnavailabilityValidationSchema,
   updateStaffUnavailabilityValidationSchema,
   getMyAppointmentsValidationSchema,
+  createStaffScheduleOverrideValidationSchema,
+  getStaffScheduleOverridesValidationSchema,
+  updateStaffScheduleOverrideValidationSchema,
 };

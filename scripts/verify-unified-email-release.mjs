@@ -18,7 +18,9 @@ const config = JSON.parse(await readFile('wrangler.jsonc','utf8'));
 assert.equal(config.vars.EMAIL_OUTBOX_ENABLED,'false');
 assert.ok(['false','true'].includes(config.env.staging.vars.EMAIL_OUTBOX_ENABLED));
 assert.equal(config.main,'cloudflare/.build/worker.mjs');
-assert.equal(migrations.length,39);
+assert.equal(migrations.length,40);
+assert.match(migrations[39].sql,/CREATE TABLE "StaffScheduleOverride"/);
+assert.match(migrations[39].sql,/CREATE UNIQUE INDEX "StaffScheduleOverride_staffId_date_key"/);
 assert.match(migrations[38].sql,/ALTER TABLE "GroupPurchase" ADD COLUMN "orderNumber" TEXT/);
 assert.match(migrations[38].sql,/CREATE UNIQUE INDEX "GroupPurchase_orderNumber_key"/);
 assert.match(migrations[37].sql,/ALTER TABLE "ServiceBranch" ADD COLUMN "bookingHoursEnabled" BOOLEAN NOT NULL DEFAULT false/);
@@ -63,6 +65,7 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
     if(name==='0036_international_transaction_snapshots.sql'||name==='20261105060000_international_transaction_snapshots')continue;
     if(name==='0037_group_purchase_currency_required.sql'||name==='20261106100703_group_purchase_currency_required')continue;
     if(name==='0039_group_purchase_order_number.sql'||name==='20261110030317_add_group_purchase_order_number')continue;
+    if(name==='0040_staff_schedule_override.sql'||name==='20261110090200_add_staff_schedule_override')continue;
     // Current PostgreSQL index candidates are retained verbatim; Workers use v32 SQLite.
     if(directory==='prisma/migrations'&&['20261102082512_email_outbox_stale_lock_index','20261102083831_email_outbox_stale_lock_index'].includes(name))continue;
     const file = `${directory}/${name}${directory.startsWith('prisma')?'/migration.sql':''}`;
@@ -77,6 +80,11 @@ const metadata=JSON.parse(await readFile('cloudflare/runtime/model-metadata.json
 assert.equal(metadata.Appointment.scalars.timezone,'String');
 assert.equal(metadata.GroupPurchase.scalars.currency,'String');
 assert.equal(metadata.GroupPurchase.scalars.orderNumber,'String');
+assert.equal(metadata.StaffScheduleOverride.scalars.date,'DateTime');
+assert.equal(metadata.StaffScheduleOverride.relations.staff,'Staff');
+assert.equal(metadata.StaffScheduleOverride.relations.branch,'Branch');
+assert.equal(metadata.Staff.relations.scheduleOverrides,'StaffScheduleOverride');
+assert.equal(metadata.Branch.relations.scheduleOverrides,'StaffScheduleOverride');
 assert.equal(metadata.ServiceBranch.scalars.bookingHoursEnabled,'Boolean');
 assert.equal(metadata.ServiceBranch.relations.bookingWindows,'ServiceBookingWindow');
 assert.equal(metadata.ServiceBookingWindow.relations.serviceBranch,'ServiceBranch');

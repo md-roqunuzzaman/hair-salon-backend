@@ -27,10 +27,14 @@ import {
   IAssignStaffPackagesPayload,
   IAssignStaffServicesPayload,
   ICreateStaffPayload,
+  ICreateStaffScheduleOverridePayload,
   ICreateStaffUnavailabilityPayload,
+  IEffectiveStaffSchedule,
+  IGetStaffScheduleOverridesQuery,
   IMyStaffAppointmentsQuery,
   IStaffTranslations,
   IUpdateStaffPayload,
+  IUpdateStaffScheduleOverridePayload,
   IUpdateStaffSchedulePayload,
   IUpdateStaffStatusPayload,
   IUpdateStaffUnavailabilityPayload,
@@ -2423,6 +2427,7 @@ const assignStaffPackages = async (
 const getBranchStaff = async (
   branchId: string,
   language: Language = DEFAULT_LANGUAGE,
+  date?: string,
 ) => {
   // =====================================================
   // 1. CHECK BRANCH
@@ -2448,18 +2453,100 @@ const getBranchStaff = async (
   }
 
   // =====================================================
-  // 2. FETCH ACTIVE STAFF OF BRANCH
+  // 2. VALIDATE OPTIONAL DATE
+  // =====================================================
+
+  let selectedDate: Date | undefined;
+  let selectedDay:
+    | "SUNDAY"
+    | "MONDAY"
+    | "TUESDAY"
+    | "WEDNESDAY"
+    | "THURSDAY"
+    | "FRIDAY"
+    | "SATURDAY"
+    | undefined;
+
+  if (date !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new AppError("Date must be YYYY-MM-DD", 400);
+    }
+
+    selectedDate = new Date(`${date}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(selectedDate.getTime()) ||
+      selectedDate.toISOString().slice(0, 10) !== date
+    ) {
+      throw new AppError("Invalid date", 400);
+    }
+
+    const dayNames = [
+      "SUNDAY",
+      "MONDAY",
+      "TUESDAY",
+      "WEDNESDAY",
+      "THURSDAY",
+      "FRIDAY",
+      "SATURDAY",
+    ] as const;
+
+    selectedDay = dayNames[selectedDate.getUTCDay()];
+  }
+
+  // =====================================================
+  // 3. FETCH ACTIVE STAFF
   // =====================================================
 
   const staff = await prisma.staff.findMany({
     where: {
       status: StaffStatus.ACTIVE,
 
-      branches: {
-        some: {
-          branchId,
-        },
-      },
+      ...(selectedDate && selectedDay
+        ? {
+            OR: [
+              // Staff temporarily assigned to this branch.
+              {
+                scheduleOverrides: {
+                  some: {
+                    branchId,
+                    date: selectedDate,
+                  },
+                },
+              },
+
+              // Staff normally scheduled at this branch,
+              // provided no override replaces that day.
+              {
+                branches: {
+                  some: {
+                    branchId,
+                  },
+                },
+
+                schedule: {
+                  some: {
+                    branchId,
+                    day: selectedDay,
+                  },
+                },
+
+                scheduleOverrides: {
+                  none: {
+                    date: selectedDate,
+                  },
+                },
+              },
+            ],
+          }
+        : {
+            // Preserve the original behavior when no date is supplied.
+            branches: {
+              some: {
+                branchId,
+              },
+            },
+          }),
     },
 
     select: {
@@ -2478,7 +2565,7 @@ const getBranchStaff = async (
   });
 
   // =====================================================
-  // 3. FETCH VISIBLE REVIEW SUMMARY FOR BRANCH STAFF
+  // 4. FETCH VISIBLE REVIEW SUMMARY FOR BRANCH STAFF
   // =====================================================
 
   const staffIds = staff.map((item) => item.id);
@@ -2505,7 +2592,7 @@ const getBranchStaff = async (
       : [];
 
   // =====================================================
-  // 4. BUILD REVIEW SUMMARY MAP
+  // 5. BUILD REVIEW SUMMARY MAP
   // =====================================================
 
   const reviewSummaryMap = new Map<string, ReviewSummary>();
@@ -2527,32 +2614,20 @@ const getBranchStaff = async (
   }
 
   // =====================================================
-  // 5. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
+  // 6. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
   // =====================================================
 
   const items = await Promise.all(
     staff.map(async (item) => {
-      // -------------------------------------------------
-      // LOCALIZE ROLE TITLE, SPECIALIZATION, DESCRIPTION
-      // -------------------------------------------------
-
       const localizedStaff = getLocalizedContent(item.translations, language, {
         roleTitle: item.roleTitle,
         specialization: item.specialization ?? "",
         description: item.description ?? "",
       });
 
-      // -------------------------------------------------
-      // GENERATE SIGNED AVATAR URL
-      // -------------------------------------------------
-
       const avatarUrl = item.avatarObjectKey
         ? await uploadService.getImageUrl(item.avatarObjectKey)
         : null;
-
-      // -------------------------------------------------
-      // RESPONSE ITEM
-      // -------------------------------------------------
 
       return {
         id: item.id,
@@ -2575,7 +2650,7 @@ const getBranchStaff = async (
   );
 
   // =====================================================
-  // 6. RESPONSE
+  // 7. RESPONSE
   // =====================================================
 
   return {
@@ -2586,6 +2661,7 @@ const getEligibleStaffForService = async (
   branchId: string,
   serviceId: string,
   language: Language = DEFAULT_LANGUAGE,
+  date?: string,
 ) => {
   // =====================================================
   // 1. CHECK BRANCH
@@ -2643,35 +2719,111 @@ const getEligibleStaffForService = async (
     throw new AppError("Service is not active", 400);
   }
 
-  // Service must actually belong to selected branch.
   if (service.branches.length === 0) {
     throw new AppError("Service is not available in this branch", 400);
   }
 
   // =====================================================
-  // 3. FETCH ELIGIBLE STAFF
-  //
-  // Staff must satisfy:
-  // 1. ACTIVE
-  // 2. Assigned to selected branch
-  // 3. Assigned to selected service
+  // 3. VALIDATE OPTIONAL DATE
+  // =====================================================
+
+  let selectedDate: Date | undefined;
+
+  let selectedDay:
+    | "SUNDAY"
+    | "MONDAY"
+    | "TUESDAY"
+    | "WEDNESDAY"
+    | "THURSDAY"
+    | "FRIDAY"
+    | "SATURDAY"
+    | undefined;
+
+  if (date !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new AppError("Date must be YYYY-MM-DD", 400);
+    }
+
+    selectedDate = new Date(`${date}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(selectedDate.getTime()) ||
+      selectedDate.toISOString().slice(0, 10) !== date
+    ) {
+      throw new AppError("Invalid date", 400);
+    }
+
+    const dayNames = [
+      "SUNDAY",
+      "MONDAY",
+      "TUESDAY",
+      "WEDNESDAY",
+      "THURSDAY",
+      "FRIDAY",
+      "SATURDAY",
+    ] as const;
+
+    selectedDay = dayNames[selectedDate.getUTCDay()];
+  }
+
+  // =====================================================
+  // 4. FETCH ELIGIBLE STAFF
   // =====================================================
 
   const staff = await prisma.staff.findMany({
     where: {
       status: StaffStatus.ACTIVE,
 
-      branches: {
-        some: {
-          branchId,
-        },
-      },
-
       services: {
         some: {
           serviceId,
         },
       },
+
+      ...(selectedDate && selectedDay
+        ? {
+            OR: [
+              // Temporary assignment to selected branch.
+              {
+                scheduleOverrides: {
+                  some: {
+                    branchId,
+                    date: selectedDate,
+                  },
+                },
+              },
+
+              // Regular schedule, only when no override exists.
+              {
+                branches: {
+                  some: {
+                    branchId,
+                  },
+                },
+
+                schedule: {
+                  some: {
+                    branchId,
+                    day: selectedDay,
+                  },
+                },
+
+                scheduleOverrides: {
+                  none: {
+                    date: selectedDate,
+                  },
+                },
+              },
+            ],
+          }
+        : {
+            // Preserve original behavior without date.
+            branches: {
+              some: {
+                branchId,
+              },
+            },
+          }),
     },
 
     select: {
@@ -2679,10 +2831,7 @@ const getEligibleStaffForService = async (
       name: true,
       roleTitle: true,
       specialization: true,
-
-      // Multilingual support
       translations: true,
-
       avatarObjectKey: true,
     },
 
@@ -2692,20 +2841,16 @@ const getEligibleStaffForService = async (
   });
 
   // =====================================================
-  // 4. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
+  // 5. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
   // =====================================================
 
   const items = await Promise.all(
     staff.map(async (item) => {
-      // Resolve requested language.
-      // Missing translations fall back to base fields.
-
       const localizedStaff = getLocalizedContent(item.translations, language, {
         roleTitle: item.roleTitle,
         specialization: item.specialization ?? "",
       });
 
-      // Generate signed avatar URL.
       const avatarUrl = item.avatarObjectKey
         ? await uploadService.getImageUrl(item.avatarObjectKey)
         : null;
@@ -2727,7 +2872,7 @@ const getEligibleStaffForService = async (
   );
 
   // =====================================================
-  // 5. RESPONSE
+  // 6. RESPONSE
   // =====================================================
 
   return {
@@ -2739,6 +2884,7 @@ const getEligibleStaffForPackage = async (
   branchId: string,
   packageId: string,
   language: Language = DEFAULT_LANGUAGE,
+  date?: string,
 ) => {
   // =====================================================
   // 1. CHECK BRANCH
@@ -2819,29 +2965,106 @@ const getEligibleStaffForPackage = async (
   const requiredServiceIds = packageData.services.map((item) => item.serviceId);
 
   // =====================================================
-  // 4. FETCH PACKAGE-ASSIGNED STAFF
-  //
-  // Staff must:
-  // 1. Be ACTIVE
-  // 2. Be assigned to selected branch
-  // 3. Be assigned to selected package
+  // 4. VALIDATE OPTIONAL DATE
+  // =====================================================
+
+  let selectedDate: Date | undefined;
+
+  let selectedDay:
+    | "SUNDAY"
+    | "MONDAY"
+    | "TUESDAY"
+    | "WEDNESDAY"
+    | "THURSDAY"
+    | "FRIDAY"
+    | "SATURDAY"
+    | undefined;
+
+  if (date !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new AppError("Date must be YYYY-MM-DD", 400);
+    }
+
+    selectedDate = new Date(`${date}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(selectedDate.getTime()) ||
+      selectedDate.toISOString().slice(0, 10) !== date
+    ) {
+      throw new AppError("Invalid date", 400);
+    }
+
+    const dayNames = [
+      "SUNDAY",
+      "MONDAY",
+      "TUESDAY",
+      "WEDNESDAY",
+      "THURSDAY",
+      "FRIDAY",
+      "SATURDAY",
+    ] as const;
+
+    selectedDay = dayNames[selectedDate.getUTCDay()];
+  }
+
+  // =====================================================
+  // 5. FETCH PACKAGE-ASSIGNED STAFF
   // =====================================================
 
   const staffList = await prisma.staff.findMany({
     where: {
       status: StaffStatus.ACTIVE,
 
-      branches: {
-        some: {
-          branchId,
-        },
-      },
-
       packages: {
         some: {
           packageId,
         },
       },
+
+      ...(selectedDate && selectedDay
+        ? {
+            OR: [
+              // Temporary assignment to selected branch.
+              {
+                scheduleOverrides: {
+                  some: {
+                    branchId,
+                    date: selectedDate,
+                  },
+                },
+              },
+
+              // Regular schedule if no override exists.
+              {
+                branches: {
+                  some: {
+                    branchId,
+                  },
+                },
+
+                schedule: {
+                  some: {
+                    branchId,
+                    day: selectedDay,
+                  },
+                },
+
+                scheduleOverrides: {
+                  none: {
+                    date: selectedDate,
+                  },
+                },
+              },
+            ],
+          }
+        : {
+            // Preserve original behavior without date.
+            branches: {
+              some: {
+                branchId,
+              },
+            },
+          }),
     },
 
     include: {
@@ -2858,7 +3081,7 @@ const getEligibleStaffForPackage = async (
   });
 
   // =====================================================
-  // 5. STAFF MUST SUPPORT ALL PACKAGE SERVICES
+  // 6. STAFF MUST SUPPORT ALL PACKAGE SERVICES
   // =====================================================
 
   const eligibleStaff = staffList.filter((staff) => {
@@ -2872,20 +3095,16 @@ const getEligibleStaffForPackage = async (
   });
 
   // =====================================================
-  // 6. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
+  // 7. LOCALIZE STAFF + GENERATE SIGNED AVATAR URLS
   // =====================================================
 
   const items = await Promise.all(
     eligibleStaff.map(async (staff) => {
-      // Resolve requested language.
-      // Missing translations fall back to base fields.
-
       const localizedStaff = getLocalizedContent(staff.translations, language, {
         roleTitle: staff.roleTitle,
         specialization: staff.specialization ?? "",
       });
 
-      // Generate signed R2 avatar URL.
       const avatarUrl = staff.avatarObjectKey
         ? await uploadService.getImageUrl(staff.avatarObjectKey)
         : null;
@@ -2907,14 +3126,13 @@ const getEligibleStaffForPackage = async (
   );
 
   // =====================================================
-  // 7. RESPONSE
+  // 8. RESPONSE
   // =====================================================
 
   return {
     items,
   };
 };
-
 const timeToMinutes = (time: string) => {
   const [hour, minute] = time.split(":").map(Number);
 
@@ -5026,6 +5244,1001 @@ const getMyAppointments = async (
   };
 };
 
+const createStaffScheduleOverride = async (
+  staffId: string,
+  payload: ICreateStaffScheduleOverridePayload,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  // =====================================================
+  // 1. AUTHORIZATION
+  // =====================================================
+
+  if (requester.role !== Role.BRAND_OWNER) {
+    throw new AppError(
+      "Only brand owners can create temporary staff assignments",
+      403,
+    );
+  }
+
+  // =====================================================
+  // 2. VALIDATE DATE AND TIME
+  // =====================================================
+
+  const date = new Date(`${payload.date}T00:00:00.000Z`);
+
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(payload.date) ||
+    Number.isNaN(date.getTime()) ||
+    date.toISOString().slice(0, 10) !== payload.date
+  ) {
+    throw new AppError("Invalid assignment date", 400);
+  }
+
+  const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+  const toMinutes = (value: string) => {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+
+  if (!timeRegex.test(payload.startTime) || !timeRegex.test(payload.endTime)) {
+    throw new AppError("Time must be in HH:mm format", 400);
+  }
+
+  const start = toMinutes(payload.startTime);
+  const end = toMinutes(payload.endTime);
+
+  if (start >= end) {
+    throw new AppError("endTime must be later than startTime", 400);
+  }
+
+  const dayNames = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+  ] as const;
+
+  const day = dayNames[date.getUTCDay()];
+
+  // =====================================================
+  // 3. CHECK STAFF
+  // =====================================================
+
+  const staff = await prisma.staff.findUnique({
+    where: { id: staffId },
+    select: {
+      id: true,
+      status: true,
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  if (staff.status !== "ACTIVE") {
+    throw new AppError("Staff must be active", 400);
+  }
+
+  // =====================================================
+  // 4. CHECK TARGET BRANCH AND BUSINESS HOURS
+  // =====================================================
+
+  const branch = await prisma.branch.findUnique({
+    where: { id: payload.branchId },
+    select: {
+      id: true,
+      status: true,
+      businessHours: {
+        where: { day },
+        include: { breaks: true },
+      },
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Target branch not found", 404);
+  }
+
+  if (branch.status !== "ACTIVE") {
+    throw new AppError("Target branch must be active", 400);
+  }
+
+  const businessHour = branch.businessHours[0];
+
+  if (
+    !businessHour ||
+    businessHour.isClosed ||
+    !businessHour.openTime ||
+    !businessHour.closeTime
+  ) {
+    throw new AppError(
+      "Target branch is closed or has no configured business hours",
+      400,
+    );
+  }
+
+  if (
+    start < toMinutes(businessHour.openTime) ||
+    end > toMinutes(businessHour.closeTime)
+  ) {
+    throw new AppError(
+      "Temporary shift must be within branch business hours",
+      400,
+    );
+  }
+
+  // Branch breaks cannot overlap the assigned shift.
+  // This is conservative: split shifts are not yet supported.
+
+  const overlaps = (
+    aStart: number,
+    aEnd: number,
+    bStart: number,
+    bEnd: number,
+  ) => aStart < bEnd && aEnd > bStart;
+
+  const overlapsBusinessBreak = businessHour.breaks.some((item) =>
+    overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
+  );
+
+  if (overlapsBusinessBreak) {
+    throw new AppError("Temporary shift overlaps a branch business break", 409);
+  }
+
+  // =====================================================
+  // 5. CHECK DUPLICATE OVERRIDE
+  // =====================================================
+
+  const existing = await prisma.staffScheduleOverride.findUnique({
+    where: {
+      staffId_date: {
+        staffId,
+        date,
+      },
+    },
+  });
+
+  if (existing) {
+    throw new AppError(
+      "A temporary assignment already exists for this staff and date",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 6. CHECK EXISTING STAFF UNAVAILABILITY
+  // =====================================================
+
+  const unavailability = await prisma.staffUnavailability.findMany({
+    where: {
+      staffId,
+      date,
+    },
+    select: {
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  if (
+    unavailability.some((item) =>
+      overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
+    )
+  ) {
+    throw new AppError(
+      "Temporary assignment conflicts with staff unavailability",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 7. CHECK EXISTING APPOINTMENTS ACROSS ALL BRANCHES
+  // =====================================================
+
+  const now = new Date();
+
+  const appointments = await prisma.appointment.findMany({
+    where: {
+      staffId,
+      date,
+      OR: [
+        {
+          appointmentStatus: {
+            in: ["RESERVED", "CONFIRMED", "COMPLETED"],
+          },
+        },
+        {
+          appointmentStatus: "PENDING_PAYMENT",
+          holdExpiresAt: { gt: now },
+        },
+      ],
+    },
+    select: {
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  const hasAppointmentConflict = appointments.some((appointment) => {
+    return (
+      appointment.branchId !== payload.branchId ||
+      toMinutes(appointment.startTime) < start ||
+      toMinutes(appointment.endTime) > end
+    );
+  });
+
+  if (hasAppointmentConflict) {
+    throw new AppError(
+      "Existing appointments conflict with the temporary assignment",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 8. CREATE OVERRIDE
+  // =====================================================
+
+  const result = await prisma.staffScheduleOverride.create({
+    data: {
+      staffId,
+      branchId: payload.branchId,
+      date,
+      startTime: payload.startTime,
+      endTime: payload.endTime,
+    },
+  });
+
+  return {
+    id: result.id,
+    staffId: result.staffId,
+    branchId: result.branchId,
+    date: result.date.toISOString().slice(0, 10),
+    startTime: result.startTime,
+    endTime: result.endTime,
+    createdAt: result.createdAt,
+  };
+};
+
+const getStaffScheduleOverrides = async (
+  staffId: string,
+  query: IGetStaffScheduleOverridesQuery,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  // =====================================================
+  // 1. FIND STAFF
+  // =====================================================
+
+  const staff = await prisma.staff.findUnique({
+    where: { id: staffId },
+    select: {
+      id: true,
+      userId: true,
+      name: true,
+      branches: {
+        select: { branchId: true },
+      },
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  // =====================================================
+  // 2. AUTHORIZATION
+  // =====================================================
+
+  if (requester.role === Role.STAFF) {
+    if (staff.userId !== requester.userId) {
+      throw new AppError(
+        "You can only view your own temporary assignments",
+        403,
+      );
+    }
+  } else if (requester.role === Role.BRANCH_MANAGER) {
+    const managerBranches = await prisma.branchManagerBranch.findMany({
+      where: { userId: requester.userId },
+      select: { branchId: true },
+    });
+
+    const allowedBranchIds = new Set(
+      managerBranches.map((item) => item.branchId),
+    );
+
+    const hasAccess =
+      staff.branches.length > 0 &&
+      staff.branches.every((item) => allowedBranchIds.has(item.branchId));
+
+    if (!hasAccess) {
+      throw new AppError(
+        "You are not allowed to view this staff schedule",
+        403,
+      );
+    }
+  } else if (requester.role !== Role.BRAND_OWNER) {
+    throw new AppError("Forbidden", 403);
+  }
+
+  // =====================================================
+  // 3. VALIDATE DATE FILTERS
+  // =====================================================
+
+  const parseDate = (value: string, field: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new AppError(`${field} must be YYYY-MM-DD`, 400);
+    }
+
+    const date = new Date(`${value}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(date.getTime()) ||
+      date.toISOString().slice(0, 10) !== value
+    ) {
+      throw new AppError(`${field} must be a valid date`, 400);
+    }
+
+    return date;
+  };
+
+  const startDate = query.startDate
+    ? parseDate(query.startDate, "startDate")
+    : undefined;
+
+  const endDate = query.endDate
+    ? parseDate(query.endDate, "endDate")
+    : undefined;
+
+  if (startDate && endDate && startDate > endDate) {
+    throw new AppError("endDate must not be earlier than startDate", 400);
+  }
+
+  // =====================================================
+  // 4. FETCH TEMPORARY ASSIGNMENTS
+  // =====================================================
+
+  const overrides = await prisma.staffScheduleOverride.findMany({
+    where: {
+      staffId,
+
+      ...(query.branchId ? { branchId: query.branchId } : {}),
+
+      ...(startDate || endDate
+        ? {
+            date: {
+              ...(startDate ? { gte: startDate } : {}),
+              ...(endDate ? { lte: endDate } : {}),
+            },
+          }
+        : {}),
+
+      ...(requester.role === Role.BRANCH_MANAGER
+        ? {
+            branch: {
+              managers: {
+                some: {
+                  userId: requester.userId,
+                },
+              },
+            },
+          }
+        : {}),
+    },
+
+    include: {
+      branch: {
+        select: {
+          id: true,
+          name: true,
+          status: true,
+        },
+      },
+    },
+
+    orderBy: [{ date: "asc" }, { startTime: "asc" }],
+  });
+
+  // =====================================================
+  // 5. FORMAT RESPONSE
+  // =====================================================
+
+  return {
+    staff: {
+      id: staff.id,
+      name: staff.name,
+    },
+
+    total: overrides.length,
+
+    items: overrides.map((item) => ({
+      id: item.id,
+      date: item.date.toISOString().slice(0, 10),
+
+      branch: {
+        id: item.branch.id,
+        name: item.branch.name,
+        status: item.branch.status,
+      },
+
+      startTime: item.startTime,
+      endTime: item.endTime,
+
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    })),
+  };
+};
+
+const updateStaffScheduleOverride = async (
+  staffId: string,
+  overrideId: string,
+  payload: IUpdateStaffScheduleOverridePayload,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  // =====================================================
+  // 1. AUTHORIZATION
+  // =====================================================
+
+  if (requester.role !== Role.BRAND_OWNER) {
+    throw new AppError(
+      "Only brand owners can update temporary staff assignments",
+      403,
+    );
+  }
+
+  // =====================================================
+  // 2. FIND EXISTING OVERRIDE
+  // =====================================================
+
+  const existing = await prisma.staffScheduleOverride.findFirst({
+    where: {
+      id: overrideId,
+      staffId,
+    },
+  });
+
+  if (!existing) {
+    throw new AppError("Temporary staff assignment not found", 404);
+  }
+
+  // =====================================================
+  // 3. RESOLVE UPDATED VALUES
+  // =====================================================
+
+  const branchId = payload.branchId ?? existing.branchId;
+
+  const dateString = payload.date ?? existing.date.toISOString().slice(0, 10);
+
+  const startTime = payload.startTime ?? existing.startTime;
+  const endTime = payload.endTime ?? existing.endTime;
+
+  const date = new Date(`${dateString}T00:00:00.000Z`);
+
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(dateString) ||
+    Number.isNaN(date.getTime()) ||
+    date.toISOString().slice(0, 10) !== dateString
+  ) {
+    throw new AppError("Invalid assignment date", 400);
+  }
+
+  const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+  const toMinutes = (value: string) => {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+
+  if (!timeRegex.test(startTime) || !timeRegex.test(endTime)) {
+    throw new AppError("Time must be in HH:mm format", 400);
+  }
+
+  const start = toMinutes(startTime);
+  const end = toMinutes(endTime);
+
+  if (start >= end) {
+    throw new AppError("endTime must be later than startTime", 400);
+  }
+
+  // =====================================================
+  // 4. VALIDATE STAFF
+  // =====================================================
+
+  const staff = await prisma.staff.findUnique({
+    where: { id: staffId },
+    select: {
+      id: true,
+      status: true,
+    },
+  });
+
+  if (!staff) {
+    throw new AppError("Staff not found", 404);
+  }
+
+  if (staff.status !== "ACTIVE") {
+    throw new AppError("Staff must be active", 400);
+  }
+
+  // =====================================================
+  // 5. VALIDATE TARGET BRANCH BUSINESS HOURS
+  // =====================================================
+
+  const dayNames = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+  ] as const;
+
+  const day = dayNames[date.getUTCDay()];
+
+  const branch = await prisma.branch.findUnique({
+    where: { id: branchId },
+    select: {
+      id: true,
+      status: true,
+      businessHours: {
+        where: { day },
+        include: {
+          breaks: true,
+        },
+      },
+    },
+  });
+
+  if (!branch) {
+    throw new AppError("Target branch not found", 404);
+  }
+
+  if (branch.status !== "ACTIVE") {
+    throw new AppError("Target branch must be active", 400);
+  }
+
+  const businessHour = branch.businessHours[0];
+
+  if (
+    !businessHour ||
+    businessHour.isClosed ||
+    !businessHour.openTime ||
+    !businessHour.closeTime
+  ) {
+    throw new AppError(
+      "Target branch is closed or has no configured business hours",
+      400,
+    );
+  }
+
+  if (
+    start < toMinutes(businessHour.openTime) ||
+    end > toMinutes(businessHour.closeTime)
+  ) {
+    throw new AppError(
+      "Temporary shift must be within branch business hours",
+      400,
+    );
+  }
+
+  const overlaps = (
+    aStart: number,
+    aEnd: number,
+    bStart: number,
+    bEnd: number,
+  ) => aStart < bEnd && aEnd > bStart;
+
+  // Keep consistent with the existing CREATE API policy.
+  const conflictsWithBranchBreak = businessHour.breaks.some((item) =>
+    overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
+  );
+
+  if (conflictsWithBranchBreak) {
+    throw new AppError("Temporary shift overlaps a branch business break", 409);
+  }
+
+  // =====================================================
+  // 6. CHECK DUPLICATE STAFF + DATE
+  // =====================================================
+
+  const duplicate = await prisma.staffScheduleOverride.findUnique({
+    where: {
+      staffId_date: {
+        staffId,
+        date,
+      },
+    },
+  });
+
+  if (duplicate && duplicate.id !== overrideId) {
+    throw new AppError(
+      "A temporary assignment already exists for this staff and date",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 7. CHECK STAFF UNAVAILABILITY
+  // =====================================================
+
+  const unavailability = await prisma.staffUnavailability.findMany({
+    where: {
+      staffId,
+      date,
+    },
+    select: {
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  const hasUnavailabilityConflict = unavailability.some((item) =>
+    overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
+  );
+
+  if (hasUnavailabilityConflict) {
+    throw new AppError(
+      "Temporary assignment conflicts with staff unavailability",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 8. CHECK EXISTING APPOINTMENTS
+  // =====================================================
+
+  const now = new Date();
+
+  const appointments = await prisma.appointment.findMany({
+    where: {
+      staffId,
+      date,
+      OR: [
+        {
+          appointmentStatus: {
+            in: ["RESERVED", "CONFIRMED", "COMPLETED"],
+          },
+        },
+        {
+          appointmentStatus: "PENDING_PAYMENT",
+          holdExpiresAt: { gt: now },
+        },
+      ],
+    },
+    select: {
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  const hasAppointmentConflict = appointments.some(
+    (appointment) =>
+      appointment.branchId !== branchId ||
+      toMinutes(appointment.startTime) < start ||
+      toMinutes(appointment.endTime) > end,
+  );
+
+  if (hasAppointmentConflict) {
+    throw new AppError(
+      "Existing appointments conflict with the temporary assignment",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 9. UPDATE OVERRIDE
+  // =====================================================
+
+  const updated = await prisma.staffScheduleOverride.update({
+    where: {
+      id: overrideId,
+    },
+    data: {
+      branchId,
+      date,
+      startTime,
+      endTime,
+    },
+  });
+
+  // =====================================================
+  // 10. RESPONSE
+  // =====================================================
+
+  return {
+    id: updated.id,
+    staffId: updated.staffId,
+    branchId: updated.branchId,
+    date: updated.date.toISOString().slice(0, 10),
+    startTime: updated.startTime,
+    endTime: updated.endTime,
+    createdAt: updated.createdAt,
+    updatedAt: updated.updatedAt,
+  };
+};
+
+const deleteStaffScheduleOverride = async (
+  staffId: string,
+  overrideId: string,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  // =====================================================
+  // 1. AUTHORIZATION
+  // =====================================================
+
+  if (requester.role !== Role.BRAND_OWNER) {
+    throw new AppError(
+      "Only brand owners can delete temporary staff assignments",
+      403,
+    );
+  }
+
+  // =====================================================
+  // 2. FIND EXISTING OVERRIDE
+  // =====================================================
+
+  const existing = await prisma.staffScheduleOverride.findFirst({
+    where: {
+      id: overrideId,
+      staffId,
+    },
+  });
+
+  if (!existing) {
+    throw new AppError("Temporary staff assignment not found", 404);
+  }
+
+  // =====================================================
+  // 3. RESOLVE DAY OF WEEK
+  // =====================================================
+
+  const dayNames = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+  ] as const;
+
+  const day = dayNames[existing.date.getUTCDay()];
+
+  const toMinutes = (value: string) => {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+
+  // =====================================================
+  // 4. FETCH REGULAR STAFF SCHEDULES
+  // =====================================================
+
+  const regularSchedules = await prisma.staffSchedule.findMany({
+    where: {
+      staffId,
+      day,
+    },
+    select: {
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  // =====================================================
+  // 5. FETCH EXISTING APPOINTMENTS
+  // =====================================================
+
+  const now = new Date();
+
+  const appointments = await prisma.appointment.findMany({
+    where: {
+      staffId,
+      date: existing.date,
+      OR: [
+        {
+          appointmentStatus: {
+            in: ["RESERVED", "CONFIRMED", "COMPLETED"],
+          },
+        },
+        {
+          appointmentStatus: "PENDING_PAYMENT",
+          holdExpiresAt: {
+            gt: now,
+          },
+        },
+      ],
+    },
+    select: {
+      id: true,
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  // =====================================================
+  // 6. CHECK REGULAR SCHEDULE COMPATIBILITY
+  // =====================================================
+
+  for (const appointment of appointments) {
+    const appointmentStart = toMinutes(appointment.startTime);
+    const appointmentEnd = toMinutes(appointment.endTime);
+
+    const matchesRegularSchedule = regularSchedules.some(
+      (schedule) =>
+        schedule.branchId === appointment.branchId &&
+        appointmentStart >= toMinutes(schedule.startTime) &&
+        appointmentEnd <= toMinutes(schedule.endTime),
+    );
+
+    if (!matchesRegularSchedule) {
+      throw new AppError(
+        "Cannot delete temporary assignment because existing appointments conflict with the regular staff schedule",
+        409,
+      );
+    }
+  }
+
+  // =====================================================
+  // 7. DELETE TEMPORARY OVERRIDE
+  // =====================================================
+
+  await prisma.staffScheduleOverride.delete({
+    where: {
+      id: overrideId,
+    },
+  });
+
+  // =====================================================
+  // 8. RESPONSE
+  // =====================================================
+
+  return {
+    id: existing.id,
+    staffId: existing.staffId,
+    branchId: existing.branchId,
+    date: existing.date.toISOString().slice(0, 10),
+    deleted: true,
+  };
+};
+
+const getEffectiveStaffSchedule = async (
+  staffId: string,
+  dateString: string,
+): Promise<IEffectiveStaffSchedule> => {
+  // =====================================================
+  // 1. VALIDATE DATE
+  // =====================================================
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    throw new AppError("Date must be YYYY-MM-DD", 400);
+  }
+
+  const date = new Date(`${dateString}T00:00:00.000Z`);
+
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.toISOString().slice(0, 10) !== dateString
+  ) {
+    throw new AppError("Invalid date", 400);
+  }
+
+  // =====================================================
+  // 2. RESOLVE DAY OF WEEK
+  // =====================================================
+
+  const dayNames = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+  ] as const;
+
+  const day = dayNames[date.getUTCDay()];
+
+  // =====================================================
+  // 3. CHECK TEMPORARY OVERRIDE FIRST
+  // =====================================================
+
+  const override = await prisma.staffScheduleOverride.findUnique({
+    where: {
+      staffId_date: {
+        staffId,
+        date,
+      },
+    },
+
+    select: {
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+  });
+
+  // =====================================================
+  // 4. OVERRIDE REPLACES REGULAR SCHEDULE
+  // =====================================================
+
+  if (override) {
+    return {
+      staffId,
+      date: dateString,
+      day,
+      source: "OVERRIDE",
+      hasOverride: true,
+
+      schedules: [
+        {
+          branchId: override.branchId,
+          startTime: override.startTime,
+          endTime: override.endTime,
+        },
+      ],
+    };
+  }
+
+  // =====================================================
+  // 5. FALLBACK TO REGULAR WEEKLY SCHEDULE
+  // =====================================================
+
+  const regularSchedules = await prisma.staffSchedule.findMany({
+    where: {
+      staffId,
+      day,
+    },
+
+    select: {
+      branchId: true,
+      startTime: true,
+      endTime: true,
+    },
+
+    orderBy: {
+      startTime: "asc",
+    },
+  });
+
+  // =====================================================
+  // 6. FORMAT RESPONSE
+  // =====================================================
+
+  return {
+    staffId,
+    date: dateString,
+    day,
+    source: "REGULAR",
+    hasOverride: false,
+
+    schedules: regularSchedules.map((schedule) => ({
+      branchId: schedule.branchId,
+      startTime: schedule.startTime,
+      endTime: schedule.endTime,
+    })),
+  };
+};
 export const staffService = {
   createStaff,
   getStaff,
@@ -5046,4 +6259,9 @@ export const staffService = {
   deleteStaffUnavailability,
   getMyStaffSchedule,
   getMyAppointments,
+  createStaffScheduleOverride,
+  getStaffScheduleOverrides,
+  updateStaffScheduleOverride,
+  deleteStaffScheduleOverride,
+  getEffectiveStaffSchedule,
 };
