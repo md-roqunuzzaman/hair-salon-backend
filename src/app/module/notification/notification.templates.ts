@@ -2,6 +2,18 @@ import type { INotificationTranslations } from "./notification.interface.js";
 import { currencyDigits } from "../../utils/transaction-currency.utils.js";
 import { notificationName } from './notification.names.js';
 
+const withModerationReason = (
+  translations: INotificationTranslations,
+  reason?: string | null,
+): INotificationTranslations => {
+  const value = reason?.trim();
+  if (!value) return translations;
+  return Object.fromEntries((["en", "zh-CN", "zh-HK"] as const).map(language => [language, {
+    ...translations[language],
+    message: `${translations[language]?.message ?? ""}\n${language === "en" ? "Reason: " : "原因："}${value}`,
+  }]));
+};
+
 export const notificationTemplates = {
   BOOKING_CONFIRMED_SUCCESS: (): INotificationTranslations => ({
     en: { title: 'Booking confirmed', message: 'Your appointment has been confirmed successfully.' },
@@ -378,7 +390,8 @@ export const notificationTemplates = {
 
   REVIEW_NEEDS_CHANGES: (
     isUpdated: boolean = false,
-  ): INotificationTranslations => ({
+    reason?: string | null,
+  ): INotificationTranslations => withModerationReason({
     en: {
       title: "Review needs changes",
       message: isUpdated
@@ -397,9 +410,9 @@ export const notificationTemplates = {
         ? "您更新後的評價因可能不符合評價指引而未公開。您可以修改後重新提交。"
         : "您的評價因可能不符合評價指引而未公開。您可以修改後重新提交。",
     },
-  }),
+  }, reason),
 
-  REVIEW_PENDING: (isUpdated: boolean = false): INotificationTranslations => ({
+  REVIEW_PENDING: (isUpdated: boolean = false, reason?: string | null): INotificationTranslations => withModerationReason({
     en: {
       title: "Review under review",
       message: isUpdated
@@ -418,7 +431,7 @@ export const notificationTemplates = {
         ? "您更新後的評價正在審核中，審核完成後才會發佈。"
         : "您的評價正在審核中，審核完成後才會發佈。",
     },
-  }),
+  }, reason),
 
   REVIEW_REPLY: (): INotificationTranslations => ({
     en: {

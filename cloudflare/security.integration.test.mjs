@@ -122,6 +122,22 @@ test('Worker S6 nullable Tencent metadata permits approved owner/manager replies
   }
 });
 
+test('Worker S6 manual moderation reason reaches customer notification messages in all three languages', async t => {
+  const ctx = await setup(t);
+  const review = await completedReview(ctx);
+  const reason = 'Please remove personal contact details.';
+  await ctx.api(`/api/v1/reviews/${review.id}/moderation`, { method: 'PATCH', roleToken: ctx.ownerToken,
+    body: { moderationStatus: 'HIDDEN', reason } });
+  const token = (await ctx.api('/api/v1/auth/login', { body: { email: 'book-now-customer@example.com', password: 'StrongPassword123!' } })).data.accessToken;
+  for (const lang of ['en', 'zh-CN', 'zh-HK']) {
+    const response = await ctx.fetch('https://test/api/v1/notifications', { headers: { authorization: 'Bearer ' + token, 'accept-language': lang } });
+    assert.equal(response.status, 200);
+    const notice = (await response.json()).data.items.find(row => row.type === 'REVIEW_NEEDS_CHANGES');
+    assert.ok(notice.message.includes(reason));
+    assert.ok(notice.message.includes(lang === 'en' ? 'Reason: ' : '原因：'));
+  }
+});
+
 test('Worker booking-policy PUT remains owner-only under the confirmed permission contract', async t => {
   const ctx = await setup(t);
   const before = await ctx.api(`/api/v1/branches/${ctx.fixture.branchId}/booking-policy`);

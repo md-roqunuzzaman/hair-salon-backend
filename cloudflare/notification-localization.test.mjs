@@ -10,6 +10,24 @@ import { notificationTemplates as templates } from '../src/app/module/notificati
 const locales = ['en', 'zh-CN', 'zh-HK'];
 const rowFor = (type, translations) => ({ type, ...translations.en, translations });
 
+test('review moderation reasons survive persistence/localization without changing reason-free notifications', () => {
+  for (const type of ['REVIEW_NEEDS_CHANGES', 'REVIEW_PENDING']) {
+    for (const updated of [false, true]) {
+      const original = templates[type](updated);
+      for (const reason of [undefined, null, '', '   ']) assert.deepEqual(templates[type](updated, reason), original);
+      for (const reason of ['Please remove personal contact details.', '原文说明']) {
+        const translations = templates[type](updated, `  ${reason}  `);
+        const stored = JSON.parse(JSON.stringify(rowFor(type, translations)));
+        for (const lang of locales) {
+          const localized = localizeNotification(stored, lang);
+          assert.equal(localized.title, original[lang].title);
+          assert.equal(localized.message, `${original[lang].message}\n${lang === 'en' ? 'Reason: ' : '原因：'}${reason}`);
+        }
+      }
+    }
+  }
+});
+
 test('the same stored notification switches language without changing stored content', () => {
   const row = rowFor('BOOKING_RESERVED', templates.BOOKING_RESERVED('2026-11-15', '15:00'));
   const before = JSON.stringify(row);

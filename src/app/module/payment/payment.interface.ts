@@ -57,6 +57,7 @@ export interface IMyPaymentsQuery {
 
   category?: MyPaymentCategory;
 }
+
 export interface IMyPaymentItem {
   id: string;
 
@@ -95,8 +96,12 @@ export interface IMyPaymentItem {
     name: string;
   }[];
 
+  // NEW - Purchased Quantity
+  quantity: number | null;
+
   walletTopupId?: string | null;
 }
+
 // =====================================================
 // 5. CUSTOMER PAYMENT HISTORY ITEM
 // =====================================================

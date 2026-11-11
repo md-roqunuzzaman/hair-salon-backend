@@ -11,6 +11,7 @@ const { redisClient } = await import('../src/app/lib/redis.ts');
 const { jwtUtils } = await import('../src/app/utils/jwt.ts');
 const { notificationService } = await import('../src/app/module/notification/notification.service.ts');
 const { uploadService } = await import('../src/app/module/upload/upload.service.ts');
+const { auditLogService } = await import('../src/app/module/auditLog/auditLog.service.ts');
 const { default: app } = await import('../src/app.ts');
 const now = new Date('2026-11-02T04:00:00.000Z');
 
@@ -220,6 +221,11 @@ for (const [label, response, status, failure] of [
       assert.deepEqual(f.row().images, [{ objectKey: 'reviews/customer/photo.jpg', sortOrder: 0 }]);
       assert.equal(result.moderationReason, label === 'review' ? 'Abuse' : status === 'PENDING' ? 'Moderation service unavailable' : status === 'HIDDEN' ? 'Abuse' : null);
       assert.equal(f.notifications.mock.calls[0].arguments[0].type, status === 'PENDING' ? 'REVIEW_PENDING' : status === 'HIDDEN' ? 'REVIEW_NEEDS_CHANGES' : 'REVIEW_PUBLISHED');
+      const notice = f.notifications.mock.calls[0].arguments[0];
+      for (const language of ['en', 'zh-CN', 'zh-HK']) {
+        if (result.moderationReason) assert.ok(notice.translations[language].message.includes(result.moderationReason));
+        else assert.ok(!notice.translations[language].message.includes('Reason:'));
+      }
       assertRedacted([result, f.logs], ['synthetic-provider-detail']);
     });
   }
@@ -232,6 +238,22 @@ test('S6 rating-only update preserves existing moderation status and authorizati
   assert.equal(f.writes[0].moderationStatus, undefined);
   await assert.rejects(reviewService.updateReview('other-customer', 'review', { comment: 'Denied' }), { statusCode: 403 });
   await assert.rejects(reviewService.saveReviewReply('review', 'customer', 'CUSTOMER', { reply: 'Denied' }), { statusCode: 403 });
+});
+
+test('manual review moderation notifies the customer of the saved reason and retains its audit record', async t => {
+  const f = fixture(t);
+  const audit = t.mock.method(auditLogService, 'createAuditLog', async () => ({ id: 'audit' }));
+  const reason = 'Please remove personal contact details.';
+  await reviewService.moderateReview('review', 'owner', { moderationStatus: 'HIDDEN', reason });
+  assert.equal(f.provider.mock.callCount(), 0);
+  assert.equal(f.row().moderationReason, reason);
+  const notice = f.notifications.mock.calls[0].arguments[0];
+  assert.equal(notice.userId, 'customer');
+  assert.equal(notice.type, 'REVIEW_NEEDS_CHANGES');
+  for (const lang of ['en', 'zh-CN', 'zh-HK']) assert.ok(notice.translations[lang].message.includes(reason));
+  assert.equal(audit.mock.calls[0].arguments[0].metadata.reason, reason);
+  await reviewService.moderateReview('review', 'owner', { moderationStatus: 'HIDDEN', reason: 'Updated note' });
+  assert.equal(f.notifications.mock.callCount(), 1, 'Existing status-change notification policy must stay unchanged');
 });
 
 for (const role of ['BRAND_OWNER', 'BRANCH_MANAGER']) {

@@ -300,10 +300,10 @@ const createReview = async (
       translations = notificationTemplates.REVIEW_PUBLISHED();
     } else if (review.moderationStatus === ReviewModerationStatus.HIDDEN) {
       notificationType = "REVIEW_NEEDS_CHANGES";
-      translations = notificationTemplates.REVIEW_NEEDS_CHANGES();
+      translations = notificationTemplates.REVIEW_NEEDS_CHANGES(false, review.moderationReason);
     } else {
       notificationType = "REVIEW_PENDING";
-      translations = notificationTemplates.REVIEW_PENDING();
+      translations = notificationTemplates.REVIEW_PENDING(false, review.moderationReason);
     }
 
     await notificationService.createNotification({
@@ -1531,10 +1531,10 @@ const updateReview = async (
         translations = notificationTemplates.REVIEW_PUBLISHED(true);
       } else if (result.moderationStatus === ReviewModerationStatus.HIDDEN) {
         type = "REVIEW_NEEDS_CHANGES";
-        translations = notificationTemplates.REVIEW_NEEDS_CHANGES(true);
+        translations = notificationTemplates.REVIEW_NEEDS_CHANGES(true, result.moderationReason);
       } else {
         type = "REVIEW_PENDING";
-        translations = notificationTemplates.REVIEW_PENDING(true);
+        translations = notificationTemplates.REVIEW_PENDING(true, result.moderationReason);
       }
 
       await notificationService.createNotification({
@@ -1773,10 +1773,10 @@ const moderateReview = async (
         updatedReview.moderationStatus === ReviewModerationStatus.HIDDEN
       ) {
         type = "REVIEW_NEEDS_CHANGES";
-        translations = notificationTemplates.REVIEW_NEEDS_CHANGES();
+        translations = notificationTemplates.REVIEW_NEEDS_CHANGES(false, updatedReview.moderationReason);
       } else {
         type = "REVIEW_PENDING";
-        translations = notificationTemplates.REVIEW_PENDING();
+        translations = notificationTemplates.REVIEW_PENDING(false, updatedReview.moderationReason);
       }
 
       await notificationService.createNotification({

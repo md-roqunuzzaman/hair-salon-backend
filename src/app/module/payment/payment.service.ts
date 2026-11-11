@@ -4351,14 +4351,27 @@ const getMyPayments = async (
   const purchaseSelect = {
     id: true,
     orderNumber: true,
+    quantity: true, // NEW
+
     package: {
       select: {
-        id: true, name: true, translations: true,
-        services: { select: { service: { select: { id: true, name: true, translations: true } } } },
+        id: true,
+        name: true,
+        translations: true,
+        services: {
+          select: {
+            service: {
+              select: {
+                id: true,
+                name: true,
+                translations: true,
+              },
+            },
+          },
+        },
       },
     },
   } satisfies Prisma.GroupPurchaseSelect;
-
   const [payments, total] = await prisma.$transaction([
     prisma.payment.findMany({
       where,
@@ -4416,18 +4429,26 @@ const getMyPayments = async (
 
   // Resolve appointment-only historical links once per page, without adding
   // per-payment queries or loading the same purchase twice on normal records.
-  const missingPurchaseIds = [...new Set(payments.flatMap((payment) =>
-    payment.purpose !== PaymentPurpose.WALLET_TOP_UP && !payment.groupPurchase && payment.appointment?.groupPurchaseId
-      ? [payment.appointment.groupPurchaseId]
-      : [],
-  ))];
+  const missingPurchaseIds = [
+    ...new Set(
+      payments.flatMap((payment) =>
+        payment.purpose !== PaymentPurpose.WALLET_TOP_UP &&
+        !payment.groupPurchase &&
+        payment.appointment?.groupPurchaseId
+          ? [payment.appointment.groupPurchaseId]
+          : [],
+      ),
+    ),
+  ];
   const linkedPurchases = missingPurchaseIds.length
     ? await prisma.groupPurchase.findMany({
         where: { id: { in: missingPurchaseIds }, customerId },
         select: purchaseSelect,
       })
     : [];
-  const linkedPurchaseMap = new Map(linkedPurchases.map((purchase) => [purchase.id, purchase]));
+  const linkedPurchaseMap = new Map(
+    linkedPurchases.map((purchase) => [purchase.id, purchase]),
+  );
 
   // =====================================================
   // 4. SUCCESSFUL REFUND TOTALS
@@ -4517,7 +4538,9 @@ const getMyPayments = async (
     // LOCALIZED GROUP PURCHASE PACKAGE
     // =================================================
 
-    const groupPurchase = payment.groupPurchase ?? linkedPurchaseMap.get(payment.appointment?.groupPurchaseId ?? "");
+    const groupPurchase =
+      payment.groupPurchase ??
+      linkedPurchaseMap.get(payment.appointment?.groupPurchaseId ?? "");
     const groupPackage = groupPurchase?.package;
 
     const localizedPackage = groupPackage
@@ -4604,7 +4627,9 @@ const getMyPayments = async (
           null)
         : paymentCategory === "REGULAR_PURCHASE"
           ? (payment.appointment?.orderNumber ?? payment.orderNumber ?? null)
-          : (payment.walletTopup?.payments[0]?.orderNumber ?? payment.orderNumber ?? null);
+          : (payment.walletTopup?.payments[0]?.orderNumber ??
+            payment.orderNumber ??
+            null);
 
     // =================================================
     // RESPONSE
@@ -4619,6 +4644,12 @@ const getMyPayments = async (
 
       itemName,
       services,
+
+      // NEW - Purchased Quantity
+      quantity:
+        paymentCategory === "GROUP_PURCHASE"
+          ? (groupPurchase?.quantity ?? null)
+          : null,
 
       amount: Number(payment.amount),
       currency: payment.currency,
