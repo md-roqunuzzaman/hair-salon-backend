@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DayOfWeek } from "../../../../generated/prisma/enums.js";
 
 const staffLocaleSchema = z
   .object({
@@ -426,6 +427,30 @@ const updateStaffScheduleOverrideValidationSchema = z.object({
       "At least one field is required",
     ),
 });
+
+const updateSingleStaffScheduleValidation = z.object({
+  body: z
+    .object({
+      branchId: z.uuid().optional(),
+
+      day: z.nativeEnum(DayOfWeek).optional(),
+
+      startTime: z
+        .string()
+        .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "startTime must be in HH:mm format")
+        .optional(),
+
+      endTime: z
+        .string()
+        .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "endTime must be in HH:mm format")
+        .optional(),
+    })
+    .strict()
+    .refine(
+      (data) => Object.keys(data).length > 0,
+      "At least one field is required",
+    ),
+});
 export const staffValidation = {
   createStaffValidationSchema,
   updateStaffValidationSchema,
@@ -440,4 +465,5 @@ export const staffValidation = {
   createStaffScheduleOverrideValidationSchema,
   getStaffScheduleOverridesValidationSchema,
   updateStaffScheduleOverrideValidationSchema,
+  updateSingleStaffScheduleValidation,
 };

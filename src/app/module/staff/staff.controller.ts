@@ -725,6 +725,55 @@ const deleteStaffScheduleOverride = catchAsync(
     });
   },
 );
+
+const updateSingleStaffSchedule = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. AUTHENTICATION CHECK
+    // =====================================================
+
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    // =====================================================
+    // 2. REQUEST PARAMS
+    // =====================================================
+
+    const { staffId, scheduleId } = req.params;
+
+    // =====================================================
+    // 3. REQUESTER
+    // =====================================================
+
+    const requester = {
+      userId: req.user.userId,
+      role: req.user.role,
+    };
+
+    // =====================================================
+    // 4. UPDATE SINGLE SCHEDULE
+    // =====================================================
+
+    const result = await staffService.updateSingleStaffSchedule(
+      staffId as string,
+      scheduleId as string,
+      req.body,
+      requester,
+    );
+
+    // =====================================================
+    // 5. RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      statusCode: 200,
+      success: true,
+      message: "Staff schedule updated successfully",
+      data: result,
+    });
+  },
+);
 export const staffController = {
   createStaff,
   getStaff,
@@ -749,4 +798,5 @@ export const staffController = {
   getStaffScheduleOverrides,
   updateStaffScheduleOverride,
   deleteStaffScheduleOverride,
+  updateSingleStaffSchedule,
 };

@@ -1,8 +1,14 @@
 import { appointmentTimezone } from "../../utils/appointment-timezone.utils.js";
 import { createDateTimeInTimezone } from "../../utils/brand-timezone.utils.js";
-import { assertCurrencyAmount, stripeAmount } from "../../utils/transaction-currency.utils.js";
+import {
+  assertCurrencyAmount,
+  stripeAmount,
+} from "../../utils/transaction-currency.utils.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
-import { validateAllocationPlan, lockRefundResource } from './refund-allocation.plan.js';
+import {
+  validateAllocationPlan,
+  lockRefundResource,
+} from "./refund-allocation.plan.js";
 import { isSnapshot } from "../cancellation-refund/policy.calculation.js";
 import { validatePolicyRefund } from "../cancellation-refund/policy-refund.execution.js";
 import {
@@ -37,7 +43,12 @@ import type {
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationService } from "../notification/notification.service.js";
 
-const createHongKongDateTime = (date: Date, time: string, timezone: string): Date => createDateTimeInTimezone(date.toISOString().slice(0, 10), time, timezone);
+const createHongKongDateTime = (
+  date: Date,
+  time: string,
+  timezone: string,
+): Date =>
+  createDateTimeInTimezone(date.toISOString().slice(0, 10), time, timezone);
 
 const createRefundRequest = async (
   customerId: string,
@@ -191,7 +202,11 @@ const createRefundRequest = async (
       throw new AppError("BRANCH_BOOKING_POLICY_NOT_FOUND", 404);
     }
 
-    const appointmentDateTime = createHongKongDateTime(appointment.date, appointment.startTime, await appointmentTimezone(prisma, appointment.id));
+    const appointmentDateTime = createHongKongDateTime(
+      appointment.date,
+      appointment.startTime,
+      await appointmentTimezone(prisma, appointment.id),
+    );
 
     validateAppointmentRefundPolicy({
       appointmentDateTime,
@@ -271,7 +286,10 @@ const createRefundRequest = async (
         data: {
           customerId,
           paymentId: payment.id,
-          amount: assertCurrencyAmount(eligibility.refundableAmount, payment.currency),
+          amount: assertCurrencyAmount(
+            eligibility.refundableAmount,
+            payment.currency,
+          ),
           reason,
           status: RefundRequestStatus.PENDING,
         },
@@ -340,6 +358,18 @@ const getMyRefundRequests = async (customerId: string) => {
           purpose: true,
           appointmentId: true,
           groupPurchaseId: true,
+
+          appointment: {
+            select: {
+              orderNumber: true,
+            },
+          },
+
+          groupPurchase: {
+            select: {
+              orderNumber: true,
+            },
+          },
         },
       },
     },
@@ -354,8 +384,12 @@ const getMyRefundRequests = async (customerId: string) => {
 
     paymentId: request.paymentId,
 
-    // Customer-friendly order number
-    orderNumber: request.payment.orderNumber,
+    // Resolve order number from the linked resource
+    orderNumber:
+      request.payment.orderNumber ??
+      request.payment.appointment?.orderNumber ??
+      request.payment.groupPurchase?.orderNumber ??
+      null,
 
     amount: Number(request.amount),
 
@@ -420,6 +454,23 @@ const getRefundRequests = async (query: IGetRefundRequestsQuery) => {
             status: true,
             appointmentId: true,
             groupPurchaseId: true,
+
+            // Payment order number
+            orderNumber: true,
+
+            // Appointment fallback
+            appointment: {
+              select: {
+                orderNumber: true,
+              },
+            },
+
+            // Group purchase fallback
+            groupPurchase: {
+              select: {
+                orderNumber: true,
+              },
+            },
           },
         },
       },
@@ -434,29 +485,41 @@ const getRefundRequests = async (query: IGetRefundRequestsQuery) => {
   ]);
 
   return {
-    items: requests.map((request) => ({
-      id: request.id,
-      customerId: request.customerId,
-      paymentId: request.paymentId,
-      amount: Number(request.amount),
-      reason: request.reason,
-      status: request.status,
-      reviewedBy: request.reviewedBy,
-      reviewedAt: request.reviewedAt,
-      reviewNote: request.reviewNote,
-      createdAt: request.createdAt,
+    items: requests.map((request) => {
+      const orderNumber =
+        request.payment.orderNumber ??
+        request.payment.appointment?.orderNumber ??
+        request.payment.groupPurchase?.orderNumber ??
+        null;
 
-      customer: request.customer,
+      return {
+        id: request.id,
+        customerId: request.customerId,
+        paymentId: request.paymentId,
 
-      payment: {
-        amount: Number(request.payment.amount),
-        currency: request.payment.currency,
-        purpose: request.payment.purpose,
-        status: request.payment.status,
-        appointmentId: request.payment.appointmentId,
-        groupPurchaseId: request.payment.groupPurchaseId,
-      },
-    })),
+        // Customer-facing order number
+        orderNumber,
+
+        amount: Number(request.amount),
+        reason: request.reason,
+        status: request.status,
+        reviewedBy: request.reviewedBy,
+        reviewedAt: request.reviewedAt,
+        reviewNote: request.reviewNote,
+        createdAt: request.createdAt,
+
+        customer: request.customer,
+
+        payment: {
+          amount: Number(request.payment.amount),
+          currency: request.payment.currency,
+          purpose: request.payment.purpose,
+          status: request.payment.status,
+          appointmentId: request.payment.appointmentId,
+          groupPurchaseId: request.payment.groupPurchaseId,
+        },
+      };
+    }),
 
     pagination: {
       page,
@@ -484,9 +547,13 @@ const reviewRefundRequest = async (
 
   return prisma.$transaction(
     async (tx) => {
-      const reviewer=await tx.user.findUnique({where:{id:reviewerId},select:{role:true,status:true}});
-      if(reviewer?.role!=='BRAND_OWNER'||reviewer.status!=='ACTIVE')throw new AppError('REFUND_REVIEW_ACCESS_DENIED',403);
-      await lockRefundResource(tx,requestId);
+      const reviewer = await tx.user.findUnique({
+        where: { id: reviewerId },
+        select: { role: true, status: true },
+      });
+      if (reviewer?.role !== "BRAND_OWNER" || reviewer.status !== "ACTIVE")
+        throw new AppError("REFUND_REVIEW_ACCESS_DENIED", 403);
+      await lockRefundResource(tx, requestId);
       // =====================================================
       // 1. FETCH REFUND REQUEST
       // =====================================================
@@ -558,7 +625,10 @@ const reviewRefundRequest = async (
           throw new AppError("REFUND_REQUEST_ALREADY_REVIEWED", 409);
         }
 
-        await tx.refundAllocation.updateMany({where:{refundRequestId:request.id,status:'RESERVED'},data:{status:'CANCELLED'}});
+        await tx.refundAllocation.updateMany({
+          where: { refundRequestId: request.id, status: "RESERVED" },
+          data: { status: "CANCELLED" },
+        });
         // =================================================
         // 2.1 AUDIT LOG: REFUND REJECTED
         // =================================================
@@ -597,7 +667,11 @@ const reviewRefundRequest = async (
               `Your refund request for ${currency} ` +
               `${amount.toFixed(2)} was rejected. ` +
               `Reason: ${reviewNote}`,
-            translations: notificationTemplates.REFUND_REQUEST_REJECTED(amount, currency, reviewNote),
+            translations: notificationTemplates.REFUND_REQUEST_REJECTED(
+              amount,
+              currency,
+              reviewNote,
+            ),
           },
           tx,
         );
@@ -624,8 +698,13 @@ const reviewRefundRequest = async (
       // =====================================================
 
       const payment = request.payment;
-      const hasAllocations=(await tx.refundAllocation.count({where:{refundRequestId:request.id}}))>0;
-      const policyExecution = hasAllocations ? !!await validateAllocationPlan(tx,request.id) : await validatePolicyRefund(tx, request);
+      const hasAllocations =
+        (await tx.refundAllocation.count({
+          where: { refundRequestId: request.id },
+        })) > 0;
+      const policyExecution = hasAllocations
+        ? !!(await validateAllocationPlan(tx, request.id))
+        : await validatePolicyRefund(tx, request);
 
       const isStripe = payment.provider === PaymentProvider.STRIPE;
 
@@ -646,7 +725,9 @@ const reviewRefundRequest = async (
       const eligibility = policyExecution
         ? {
             eligible: true,
-            refundableAmount: hasAllocations ? Number(request.amount) : Number(payment.amount) - alreadyRefunded,
+            refundableAmount: hasAllocations
+              ? Number(request.amount)
+              : Number(payment.amount) - alreadyRefunded,
           }
         : calculateRefundEligibility({
             paymentStatus: payment.status,
@@ -693,7 +774,11 @@ const reviewRefundRequest = async (
           throw new AppError("APPOINTMENT_REFUND_NOT_ALLOWED", 409);
         }
 
-        const appointmentDateTime = createHongKongDateTime(appointment.date, appointment.startTime, await appointmentTimezone(tx, appointment.id));
+        const appointmentDateTime = createHongKongDateTime(
+          appointment.date,
+          appointment.startTime,
+          await appointmentTimezone(tx, appointment.id),
+        );
 
         const cutoffMinutes = policy.cancellationCutoffMinutes;
 
@@ -795,7 +880,10 @@ const reviewRefundRequest = async (
             `Your refund request for ${currency} ` +
             `${amount.toFixed(2)} has been approved. ` +
             `Your refund will be processed shortly.`,
-          translations: notificationTemplates.REFUND_REQUEST_APPROVED(amount, currency),
+          translations: notificationTemplates.REFUND_REQUEST_APPROVED(
+            amount,
+            currency,
+          ),
         },
         tx,
       );
@@ -838,7 +926,11 @@ const getRefundRequestById = async (
     },
 
     include: {
-      allocations:{include:{refund:true},orderBy:{createdAt:"asc"}},
+      allocations: {
+        include: { refund: true },
+        orderBy: { createdAt: "asc" },
+      },
+
       customer: {
         select: {
           id: true,
@@ -858,6 +950,7 @@ const getRefundRequestById = async (
       payment: {
         select: {
           id: true,
+          orderNumber: true,
           amount: true,
           currency: true,
           purpose: true,
@@ -869,6 +962,7 @@ const getRefundRequestById = async (
           appointment: {
             select: {
               id: true,
+              orderNumber: true,
               branchId: true,
               bookingMethod: true,
               appointmentStatus: true,
@@ -885,6 +979,7 @@ const getRefundRequestById = async (
           groupPurchase: {
             select: {
               id: true,
+              orderNumber: true,
               quantity: true,
               amount: true,
               paymentStatus: true,
@@ -956,12 +1051,35 @@ const getRefundRequestById = async (
   }
 
   // =====================================================
-  // 3. RESPONSE
+  // 3. RESOLVE ORDER NUMBER
+  // =====================================================
+
+  const orderNumber =
+    request.payment.orderNumber ??
+    request.payment.appointment?.orderNumber ??
+    request.payment.groupPurchase?.orderNumber ??
+    null;
+
+  // =====================================================
+  // 4. RESPONSE
   // =====================================================
 
   return {
     id: request.id,
-    allocations:request.allocations.map(a=>({id:a.id,paymentId:a.paymentId,provider:a.provider,amount:Number(a.amount),status:a.status,refundId:a.refundId,providerRefundId:a.refund?.providerRefundId??null,errorCode:a.lastErrorCode})),
+
+    // Customer-facing order number
+    orderNumber,
+
+    allocations: request.allocations.map((a) => ({
+      id: a.id,
+      paymentId: a.paymentId,
+      provider: a.provider,
+      amount: Number(a.amount),
+      status: a.status,
+      refundId: a.refundId,
+      providerRefundId: a.refund?.providerRefundId ?? null,
+      errorCode: a.lastErrorCode,
+    })),
 
     customer: {
       id: request.customer.id,

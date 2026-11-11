@@ -46,6 +46,10 @@ import { getLocalizedContent } from "../../utils/localization.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 import { notificationService } from "../notification/notification.service.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
+import {
+  createDateTimeInTimezone,
+  getDateInTimezone,
+} from "../../utils/brand-timezone.utils.js";
 
 const readStaffTranslations = (value: unknown): IStaffTranslations => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -3753,6 +3757,10 @@ const getStaffSchedule = async (
   // 9. LOCALIZED RESPONSE
   // =====================================================
 
+  // =====================================================
+  // 9. LOCALIZED RESPONSE
+  // =====================================================
+
   return {
     staffId: staff.id,
 
@@ -3766,6 +3774,9 @@ const getStaffSchedule = async (
       );
 
       return {
+        // Unique schedule ID for single-record updates
+        id: item.id,
+
         day: item.day,
 
         branch: {
@@ -6239,6 +6250,544 @@ const getEffectiveStaffSchedule = async (
     })),
   };
 };
+
+const updateSingleStaffSchedule = async (
+  staffId: string,
+  scheduleId: string,
+  payload: {
+    branchId?: string;
+    day?: DayOfWeek;
+    startTime?: string;
+    endTime?: string;
+  },
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  // =====================================================
+  // 1. AUTHORIZATION
+  // =====================================================
+
+  if (requester.role !== Role.BRAND_OWNER) {
+    throw new AppError(
+      "Only brand owners can update individual staff schedules",
+      403,
+    );
+  }
+
+  const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+  const MAX_RETRIES = 3;
+
+  const toMinutes = (value: string): number => {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+
+  const dayNames: DayOfWeek[] = [
+    DayOfWeek.SUNDAY,
+    DayOfWeek.MONDAY,
+    DayOfWeek.TUESDAY,
+    DayOfWeek.WEDNESDAY,
+    DayOfWeek.THURSDAY,
+    DayOfWeek.FRIDAY,
+    DayOfWeek.SATURDAY,
+  ];
+
+  // =====================================================
+  // 2. SERIALIZABLE TRANSACTION WITH RETRY
+  // =====================================================
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const result = await prisma.$transaction(
+        async (tx) => {
+          // =================================================
+          // 3. FIND STAFF
+          // =================================================
+
+          const staff = await tx.staff.findUnique({
+            where: { id: staffId },
+            select: {
+              id: true,
+              userId: true,
+              status: true,
+            },
+          });
+
+          if (!staff || staff.status !== StaffStatus.ACTIVE) {
+            throw new AppError("Active staff not found", 404);
+          }
+
+          // =================================================
+          // 4. FIND EXISTING SCHEDULE
+          // =================================================
+
+          const existing = await tx.staffSchedule.findFirst({
+            where: {
+              id: scheduleId,
+              staffId,
+            },
+          });
+
+          if (!existing) {
+            throw new AppError("Staff schedule not found", 404);
+          }
+
+          // =================================================
+          // 5. RESOLVE UPDATED VALUES
+          // =================================================
+
+          const branchId = payload.branchId ?? existing.branchId;
+
+          const day = payload.day ?? existing.day;
+
+          const startTime = payload.startTime ?? existing.startTime;
+
+          const endTime = payload.endTime ?? existing.endTime;
+
+          if (!timeRegex.test(startTime) || !timeRegex.test(endTime)) {
+            throw new AppError("Time must be in HH:mm format", 400);
+          }
+
+          const start = toMinutes(startTime);
+          const end = toMinutes(endTime);
+
+          if (start >= end) {
+            throw new AppError(
+              "Schedule startTime must be earlier than endTime",
+              400,
+            );
+          }
+
+          // =================================================
+          // 6. SKIP UNCHANGED UPDATE
+          // =================================================
+
+          const hasChanges =
+            existing.branchId !== branchId ||
+            existing.day !== day ||
+            existing.startTime !== startTime ||
+            existing.endTime !== endTime;
+
+          if (!hasChanges) {
+            return {
+              updated: existing,
+              changed: false,
+              staffUserId: staff.userId,
+            };
+          }
+
+          // =================================================
+          // 7. VALIDATE TARGET BRANCH
+          // =================================================
+
+          const branch = await tx.branch.findUnique({
+            where: { id: branchId },
+            select: {
+              id: true,
+              name: true,
+              status: true,
+              businessHours: {
+                select: {
+                  day: true,
+                  isClosed: true,
+                  openTime: true,
+                  closeTime: true,
+                },
+              },
+            },
+          });
+
+          if (!branch) {
+            throw new AppError("Branch not found", 404);
+          }
+
+          if (branch.status !== BranchStatus.ACTIVE) {
+            throw new AppError(
+              `Cannot schedule staff in inactive branch "${branch.name}"`,
+              400,
+            );
+          }
+
+          // =================================================
+          // 8. TARGET BRANCH ASSIGNMENT
+          //
+          // Old branch assignment is NOT required.
+          // =================================================
+
+          const assignment = await tx.staffBranch.findUnique({
+            where: {
+              staffId_branchId: {
+                staffId,
+                branchId,
+              },
+            },
+          });
+
+          if (!assignment) {
+            throw new AppError(
+              "Staff cannot be scheduled in an unassigned branch",
+              400,
+            );
+          }
+
+          // =================================================
+          // 9. BRANCH BUSINESS HOURS
+          // =================================================
+
+          const businessHour = branch.businessHours.find(
+            (hour) => hour.day === day,
+          );
+
+          if (!businessHour) {
+            throw new AppError(
+              `Business hours are not configured for ${day} at branch "${branch.name}"`,
+              400,
+            );
+          }
+
+          if (businessHour.isClosed) {
+            throw new AppError(
+              `Branch "${branch.name}" is closed on ${day}`,
+              400,
+            );
+          }
+
+          if (!businessHour.openTime || !businessHour.closeTime) {
+            throw new AppError(
+              `Business hours are incomplete for ${day} at branch "${branch.name}"`,
+              400,
+            );
+          }
+
+          const branchOpen = toMinutes(businessHour.openTime);
+
+          const branchClose = toMinutes(businessHour.closeTime);
+
+          if (start < branchOpen || end > branchClose) {
+            throw new AppError(
+              `Staff schedule must be within branch business hours for ${day}`,
+              400,
+            );
+          }
+
+          // =================================================
+          // 10. DUPLICATE SCHEDULE CHECK
+          // =================================================
+
+          const duplicate = await tx.staffSchedule.findFirst({
+            where: {
+              staffId,
+              branchId,
+              day,
+              id: { not: scheduleId },
+            },
+          });
+
+          if (duplicate) {
+            throw new AppError(
+              "A schedule already exists for this staff, branch and day",
+              409,
+            );
+          }
+
+          // =================================================
+          // 11. CROSS-BRANCH OVERLAP CHECK
+          // =================================================
+
+          const otherSchedules = await tx.staffSchedule.findMany({
+            where: {
+              staffId,
+              day,
+              id: { not: scheduleId },
+            },
+            select: {
+              branchId: true,
+              day: true,
+              startTime: true,
+              endTime: true,
+            },
+          });
+
+          const hasOverlap = otherSchedules.some((item) => {
+            const otherStart = toMinutes(item.startTime);
+
+            const otherEnd = toMinutes(item.endTime);
+
+            return start < otherEnd && end > otherStart;
+          });
+
+          if (hasOverlap) {
+            throw new AppError(
+              "Updated schedule overlaps another staff shift",
+              409,
+            );
+          }
+
+          // =================================================
+          // 12. GET BRAND TIMEZONE
+          // =================================================
+
+          const brand = await tx.brand.findFirst({
+            select: {
+              timezone: true,
+            },
+          });
+
+          if (!brand) {
+            throw new AppError("Brand not found", 404);
+          }
+
+          const now = new Date();
+
+          const todayKey = getDateInTimezone(brand.timezone, now);
+
+          // Date-only database keys use UTC midnight.
+          const todayDate = new Date(`${todayKey}T00:00:00.000Z`);
+
+          // =================================================
+          // 13. GET FUTURE ACTIVE APPOINTMENTS
+          // =================================================
+
+          const appointments = await tx.appointment.findMany({
+            where: {
+              staffId,
+              date: {
+                gte: todayDate,
+              },
+              OR: [
+                {
+                  appointmentStatus: {
+                    in: [
+                      AppointmentStatus.RESERVED,
+                      AppointmentStatus.CONFIRMED,
+                    ],
+                  },
+                },
+                {
+                  appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+                  holdExpiresAt: {
+                    gt: now,
+                  },
+                },
+              ],
+            },
+            select: {
+              id: true,
+              orderNumber: true,
+              branchId: true,
+              date: true,
+              startTime: true,
+              endTime: true,
+              timezone: true,
+            },
+          });
+
+          // =================================================
+          // 14. GET TEMPORARY SCHEDULE OVERRIDES
+          // =================================================
+
+          const overrides = await tx.staffScheduleOverride.findMany({
+            where: {
+              staffId,
+              date: {
+                gte: todayDate,
+              },
+            },
+            select: {
+              date: true,
+              branchId: true,
+              startTime: true,
+              endTime: true,
+            },
+          });
+
+          const overrideMap = new Map(
+            overrides.map((override) => [
+              override.date.toISOString().slice(0, 10),
+              override,
+            ]),
+          );
+
+          // =================================================
+          // 15. BUILD PROPOSED WEEKLY SCHEDULE
+          // =================================================
+
+          const remainingSchedules = await tx.staffSchedule.findMany({
+            where: {
+              staffId,
+              id: { not: scheduleId },
+            },
+            select: {
+              branchId: true,
+              day: true,
+              startTime: true,
+              endTime: true,
+            },
+          });
+
+          const proposedSchedules = [
+            ...remainingSchedules,
+            {
+              branchId,
+              day,
+              startTime,
+              endTime,
+            },
+          ];
+
+          // =================================================
+          // 16. APPOINTMENT CONFLICT VALIDATION
+          // =================================================
+
+          for (const appointment of appointments) {
+            const appointmentDateKey = appointment.date
+              .toISOString()
+              .slice(0, 10);
+
+            // Ignore appointments whose actual start
+            // instant is already in the past.
+            const appointmentTimezone = appointment.timezone ?? brand.timezone;
+
+            const appointmentStartUTC = createDateTimeInTimezone(
+              appointmentDateKey,
+              appointment.startTime,
+              appointmentTimezone,
+            );
+
+            if (appointmentStartUTC.getTime() < now.getTime()) {
+              continue;
+            }
+
+            const appointmentStart = toMinutes(appointment.startTime);
+
+            const appointmentEnd = toMinutes(appointment.endTime);
+
+            const override = overrideMap.get(appointmentDateKey);
+
+            let isCovered = false;
+
+            // Temporary override has priority.
+            if (override) {
+              isCovered =
+                override.branchId === appointment.branchId &&
+                appointmentStart >= toMinutes(override.startTime) &&
+                appointmentEnd <= toMinutes(override.endTime);
+            } else {
+              const appointmentDay = dayNames[appointment.date.getUTCDay()];
+
+              isCovered = proposedSchedules.some(
+                (schedule) =>
+                  schedule.branchId === appointment.branchId &&
+                  schedule.day === appointmentDay &&
+                  appointmentStart >= toMinutes(schedule.startTime) &&
+                  appointmentEnd <= toMinutes(schedule.endTime),
+              );
+            }
+
+            if (!isCovered) {
+              throw new AppError(
+                `Schedule update conflicts with existing appointment ${appointment.orderNumber}`,
+                409,
+              );
+            }
+          }
+
+          // =================================================
+          // 17. UPDATE SELECTED WEEKLY RECORD
+          // =================================================
+
+          const updated = await tx.staffSchedule.update({
+            where: {
+              id: scheduleId,
+            },
+            data: {
+              branchId,
+              day,
+              startTime,
+              endTime,
+            },
+          });
+
+          return {
+            updated,
+            changed: true,
+            staffUserId: staff.userId,
+          };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 20000,
+        },
+      );
+
+      // =====================================================
+      // 18. MULTILINGUAL STAFF NOTIFICATION
+      // =====================================================
+
+      if (result.changed && result.staffUserId) {
+        try {
+          const translations = notificationTemplates.STAFF_SCHEDULE_UPDATED();
+
+          await notificationService.createNotification({
+            userId: result.staffUserId,
+            type: "STAFF_SCHEDULE_UPDATED",
+            title: translations.en!.title!,
+            message: translations.en!.message!,
+            translations,
+          });
+        } catch (error) {
+          logUnexpectedError(error, {
+            source: "staff.service.ts:updateSingleStaffSchedule",
+          });
+        }
+      }
+
+      // =====================================================
+      // 19. RETURN UPDATED RECORD
+      // =====================================================
+
+      return result.updated;
+    } catch (error) {
+      // =====================================================
+      // 20. RETRY SERIALIZABLE CONFLICT
+      // =====================================================
+
+      const isSerializableConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+
+      if (isSerializableConflict && attempt < MAX_RETRIES) {
+        continue;
+      }
+
+      if (isSerializableConflict) {
+        throw new AppError(
+          "Schedule was modified concurrently. Please try again.",
+          409,
+        );
+      }
+
+      const isUniqueConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002";
+
+      if (isUniqueConflict) {
+        throw new AppError(
+          "A schedule already exists for this staff, branch and day",
+          409,
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError("Unable to update staff schedule. Please try again.", 409);
+};
+
 export const staffService = {
   createStaff,
   getStaff,
@@ -6264,4 +6813,5 @@ export const staffService = {
   updateStaffScheduleOverride,
   deleteStaffScheduleOverride,
   getEffectiveStaffSchedule,
+  updateSingleStaffSchedule,
 };

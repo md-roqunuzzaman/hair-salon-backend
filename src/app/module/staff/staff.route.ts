@@ -159,4 +159,11 @@ router.delete(
   auth(Role.BRAND_OWNER),
   staffController.deleteStaffScheduleOverride,
 );
+
+router.patch(
+  "/:staffId/schedules/:scheduleId",
+  auth(Role.BRAND_OWNER),
+  validateRequest(staffValidation.updateSingleStaffScheduleValidation),
+  staffController.updateSingleStaffSchedule,
+);
 export const StaffRoutes = router;
