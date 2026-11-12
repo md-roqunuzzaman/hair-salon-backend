@@ -1026,7 +1026,6 @@ const createPayNowAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
-
     try {
       const result = await prisma.$transaction(
         async (tx) => {
@@ -1505,7 +1504,6 @@ const createDepositAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
-
     try {
       const result = await prisma.$transaction(
         async (tx) => {
@@ -2034,7 +2032,6 @@ const createReserveAppointment = async (
   // =====================================================
 
   for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt++) {
-
     try {
       console.log(`[RESERVE_NOW] Transaction attempt: ${attempt}`);
 
@@ -6360,7 +6357,7 @@ const getBranchAppointments = async (
 
       select: {
         id: true,
-
+        orderNumber: true, // NEW
         bookingMethod: true,
         appointmentStatus: true,
         paymentStatus: true,
@@ -6580,6 +6577,7 @@ const getBranchAppointments = async (
 
     return {
       id: appointment.id,
+      orderNumber: appointment.orderNumber, // NEW
 
       bookingMethod: appointment.bookingMethod,
       appointmentStatus: appointment.appointmentStatus,

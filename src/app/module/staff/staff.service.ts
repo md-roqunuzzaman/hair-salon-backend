@@ -5134,7 +5134,7 @@ const getMyAppointments = async (
 
       select: {
         id: true,
-
+        orderNumber: true,
         bookingMethod: true,
         appointmentStatus: true,
         paymentStatus: true,
@@ -5281,7 +5281,7 @@ const getMyAppointments = async (
 
     return {
       id: appointment.id,
-
+      orderNumber: appointment.orderNumber, // NEW
       bookingMethod: appointment.bookingMethod,
 
       appointmentStatus: appointment.appointmentStatus,
