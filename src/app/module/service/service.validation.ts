@@ -56,7 +56,7 @@ const createServiceValidationSchema = z.object({
       .max(1000, "Description must not exceed 1000 characters")
       .optional(),
 
-    price: z.number().positive("Price must be greater than 0"),
+    price: z.number().min(4, "Price must be at least 4"),
 
     durationMinutes: z
       .number()
@@ -91,7 +91,7 @@ const updateServiceValidationSchema = z.object({
 
     description: z.string().max(1000).optional(),
 
-    price: z.number().positive().optional(),
+    price: z.number().min(4, "Price must be at least 4").optional(),
 
     imageObjectKeys: z.array(z.string().trim().min(1)).optional(),
 

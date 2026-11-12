@@ -96,9 +96,9 @@ const createPackageValidationSchema = z
       // PRICING
       // =================================================
 
-      regularPrice: z.number().positive("Regular price must be greater than 0"),
+      regularPrice: z.number().min(4, "Regular price must be at least 4"),
 
-      packagePrice: z.number().positive("Package price must be greater than 0"),
+      packagePrice: z.number().min(4, "Package price must be at least 4"),
 
       durationMinutes: z
         .number()
@@ -221,9 +221,9 @@ const updatePackageValidationSchema = z.object({
     // PRICING + DURATION
     // ===============================================
 
-    regularPrice: z.number().positive().optional(),
+    regularPrice: z.number().min(4, "Regular price must be at least 4").optional(),
 
-    packagePrice: z.number().positive().optional(),
+    packagePrice: z.number().min(4, "Package price must be at least 4").optional(),
 
     durationMinutes: z.number().int().positive().optional(),
 

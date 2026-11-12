@@ -1,4 +1,7 @@
-import { reportingCurrency, assertReportingCurrency } from "../../utils/report-currency.utils.js";
+import {
+  reportingCurrency,
+  assertReportingCurrency,
+} from "../../utils/report-currency.utils.js";
 import {
   AppointmentStatus,
   BranchStatus,
@@ -155,10 +158,30 @@ const createBranch = async (payload: ICreateBranchPayload) => {
   });
 
   // =====================================================
-  // 4. CREATE BRANCH + DEFAULT BOOKING POLICY
+  // 4. DEFAULT BRANCH CONFIGURATION
+  // =====================================================
+
+  const DEFAULT_HOURLY_CAPACITY = 4;
+
+  const DAYS_OF_WEEK = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+  ] as const;
+
+  // =====================================================
+  // 5. CREATE BRANCH + DEFAULT CONFIGURATION
   // =====================================================
 
   const branch = await prisma.$transaction(async (tx) => {
+    // -------------------------------------------------
+    // 5.1 CREATE BRANCH
+    // -------------------------------------------------
+
     const createdBranch = await tx.branch.create({
       data: {
         name,
@@ -172,14 +195,13 @@ const createBranch = async (payload: ICreateBranchPayload) => {
 
         translations,
 
-        // Map-based branch location
         latitude: payload.latitude ?? null,
         longitude: payload.longitude ?? null,
       },
     });
 
     // -------------------------------------------------
-    // CREATE DEFAULT BOOKING POLICY
+    // 5.2 CREATE DEFAULT BOOKING POLICY
     // -------------------------------------------------
 
     await tx.branchBookingPolicy.create({
@@ -198,13 +220,31 @@ const createBranch = async (payload: ICreateBranchPayload) => {
 
         reserveExpiryRule: "APPOINTMENT_TIME",
 
-        // Deposit is always enabled
+        qrVerificationRule: "BEFORE_START_TIME",
+
+        allowedBookingMethods: ["PAY_NOW", "DEPOSIT", "RESERVE_NOW"],
+
         depositEnabled: true,
 
-        // Default deposit = 10%
         depositPercentage: 10,
       },
     });
+
+    // -------------------------------------------------
+    // 5.3 CREATE DEFAULT HOURLY CAPACITY
+    // -------------------------------------------------
+
+    await tx.branchHourlyCapacity.createMany({
+      data: DAYS_OF_WEEK.map((day) => ({
+        branchId: createdBranch.id,
+        day,
+        maxBookingsPerHour: DEFAULT_HOURLY_CAPACITY,
+      })),
+    });
+
+    // -------------------------------------------------
+    // 5.4 RETURN CREATED BRANCH
+    // -------------------------------------------------
 
     return createdBranch;
   });
