@@ -5,8 +5,10 @@ import crypto from "crypto";
 
 import {
   AppointmentStatus,
+  BookingMethod,
   BranchStatus,
   DayOfWeek,
+  GroupPurchaseFlow,
   ListingStatus,
   PackageStatus,
   PaymentStatus,
@@ -4825,9 +4827,7 @@ const getMyAppointments = async (
   // =====================================================
 
   const staff = await prisma.staff.findUnique({
-    where: {
-      userId,
-    },
+    where: { userId },
     select: {
       id: true,
       status: true,
@@ -4903,11 +4903,7 @@ const getMyAppointments = async (
   // 6. BASE FILTERS
   // =====================================================
 
-  const filters: Prisma.AppointmentWhereInput[] = [
-    {
-      staffId: staff.id,
-    },
-  ];
+  const filters: Prisma.AppointmentWhereInput[] = [{ staffId: staff.id }];
 
   // =====================================================
   // 6.1 PRESERVE DATE FILTER
@@ -4924,9 +4920,7 @@ const getMyAppointments = async (
       throw new AppError("date must be a valid YYYY-MM-DD date", 400);
     }
 
-    filters.push({
-      date,
-    });
+    filters.push({ date });
   }
 
   // =====================================================
@@ -4953,12 +4947,8 @@ const getMyAppointments = async (
 
   if (appointmentType === "UPCOMING" || appointmentType === "HISTORY") {
     const timezoneRows = await prisma.appointment.findMany({
-      where: {
-        staffId: staff.id,
-      },
-      select: {
-        timezone: true,
-      },
+      where: { staffId: staff.id },
+      select: { timezone: true },
       distinct: ["timezone"],
     });
 
@@ -4984,10 +4974,8 @@ const getMyAppointments = async (
 
       const localTime = `${getPart("hour")}:${getPart("minute")}`;
 
-      const todayDate = new Date(`${localDate}T00:00:00.000Z`);
-
       return {
-        todayDate,
+        todayDate: new Date(`${localDate}T00:00:00.000Z`),
         localTime,
       };
     };
@@ -4996,6 +4984,7 @@ const getMyAppointments = async (
 
     for (const row of timezoneRows) {
       const savedTimezone = row.timezone;
+
       const effectiveTimezone = savedTimezone ?? fallbackTimezone;
 
       const { todayDate, localTime } = getCurrentLocalTime(effectiveTimezone);
@@ -5007,15 +4996,11 @@ const getMyAppointments = async (
       const upcomingDateCondition: Prisma.AppointmentWhereInput = {
         OR: [
           {
-            date: {
-              gt: todayDate,
-            },
+            date: { gt: todayDate },
           },
           {
             date: todayDate,
-            endTime: {
-              gt: localTime,
-            },
+            endTime: { gt: localTime },
           },
         ],
       };
@@ -5023,15 +5008,11 @@ const getMyAppointments = async (
       const historyDateCondition: Prisma.AppointmentWhereInput = {
         OR: [
           {
-            date: {
-              lt: todayDate,
-            },
+            date: { lt: todayDate },
           },
           {
             date: todayDate,
-            endTime: {
-              lte: localTime,
-            },
+            endTime: { lte: localTime },
           },
         ],
       };
@@ -5078,9 +5059,7 @@ const getMyAppointments = async (
 
     if (timezoneFilters.length === 0) {
       filters.push({
-        id: {
-          in: [],
-        },
+        id: { in: [] },
       });
     } else {
       filters.push({
@@ -5120,7 +5099,6 @@ const getMyAppointments = async (
         appointmentStatus: true,
         paymentStatus: true,
 
-        // NEW: FINANCIAL FIELDS
         price: true,
         currency: true,
         depositPercentage: true,
@@ -5130,11 +5108,23 @@ const getMyAppointments = async (
         date: true,
         startTime: true,
         endTime: true,
-
         timezone: true,
 
         itemName: true,
         durationMinutes: true,
+
+        // Parent purchase is required because
+        // Group Purchase appointments may have price=0.
+        groupPurchase: {
+          select: {
+            id: true,
+            amount: true,
+            depositAmount: true,
+            paymentStatus: true,
+            purchaseFlow: true,
+            bookingMethod: true,
+          },
+        },
 
         branch: {
           select: {
@@ -5157,9 +5147,7 @@ const getMyAppointments = async (
       },
     }),
 
-    prisma.appointment.count({
-      where,
-    }),
+    prisma.appointment.count({ where }),
   ]);
 
   // =====================================================
@@ -5186,9 +5174,7 @@ const getMyAppointments = async (
     serviceIds.length > 0
       ? prisma.service.findMany({
           where: {
-            id: {
-              in: serviceIds,
-            },
+            id: { in: serviceIds },
           },
           select: {
             id: true,
@@ -5201,9 +5187,7 @@ const getMyAppointments = async (
     packageIds.length > 0
       ? prisma.package.findMany({
           where: {
-            id: {
-              in: packageIds,
-            },
+            id: { in: packageIds },
           },
           select: {
             id: true,
@@ -5224,9 +5208,7 @@ const getMyAppointments = async (
     const localizedService = getLocalizedContent(
       service.translations,
       language,
-      {
-        name: service.name,
-      },
+      { name: service.name },
     );
 
     serviceNameMap.set(service.id, localizedService.name);
@@ -5238,16 +5220,119 @@ const getMyAppointments = async (
     const localizedPackage = getLocalizedContent(
       packageData.translations,
       language,
-      {
-        name: packageData.name,
-      },
+      { name: packageData.name },
     );
 
     packageNameMap.set(packageData.id, localizedPackage.name);
   }
 
   // =====================================================
-  // 12. BUILD LOCALIZED RESPONSE
+  // 12. CALCULATE CURRENT OUTSTANDING BALANCE
+  // =====================================================
+
+  const calculateOutstandingBalance = (
+    appointment: (typeof appointments)[number],
+  ): number => {
+    const paymentStatus = appointment.paymentStatus;
+
+    const appointmentStatus = appointment.appointmentStatus;
+
+    // Already settled.
+    if (paymentStatus === PaymentStatus.PAID) {
+      return 0;
+    }
+
+    // This list API does not calculate refund debts,
+    // cancellation fees, or no-show penalties.
+    if (
+      appointmentStatus === AppointmentStatus.CANCELLED ||
+      appointmentStatus === AppointmentStatus.EXPIRED ||
+      appointmentStatus === AppointmentStatus.NO_SHOW ||
+      paymentStatus === PaymentStatus.REFUNDED ||
+      paymentStatus === PaymentStatus.PARTIALLY_REFUNDED
+    ) {
+      return 0;
+    }
+
+    const purchase = appointment.groupPurchase;
+
+    // =================================================
+    // GROUP PURCHASE
+    // =================================================
+
+    if (purchase) {
+      // A voucher redemption must not repeat the
+      // purchase-level outstanding amount.
+      if (purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK) {
+        return 0;
+      }
+
+      // Only the original Direct Book appointment
+      // can display the purchase-level debt.
+      if (appointment.bookingMethod !== purchase.bookingMethod) {
+        return 0;
+      }
+
+      if (
+        purchase.paymentStatus === PaymentStatus.PAID ||
+        purchase.paymentStatus === PaymentStatus.REFUNDED ||
+        purchase.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED
+      ) {
+        return 0;
+      }
+
+      const totalAmount = purchase.amount;
+
+      if (
+        purchase.paymentStatus === PaymentStatus.PARTIALLY_PAID &&
+        purchase.bookingMethod === BookingMethod.DEPOSIT
+      ) {
+        const deposit = purchase.depositAmount ?? new Prisma.Decimal(0);
+
+        return Number(
+          Prisma.Decimal.max(totalAmount.minus(deposit), new Prisma.Decimal(0)),
+        );
+      }
+
+      if (
+        purchase.paymentStatus === PaymentStatus.UNPAID ||
+        purchase.paymentStatus === PaymentStatus.PENDING
+      ) {
+        return Number(totalAmount);
+      }
+
+      return 0;
+    }
+
+    // =================================================
+    // NORMAL APPOINTMENT
+    // =================================================
+
+    const totalPrice = appointment.price;
+
+    if (
+      paymentStatus === PaymentStatus.PARTIALLY_PAID &&
+      appointment.bookingMethod === BookingMethod.DEPOSIT
+    ) {
+      const deposit = appointment.depositAmount ?? new Prisma.Decimal(0);
+
+      return Number(
+        Prisma.Decimal.max(totalPrice.minus(deposit), new Prisma.Decimal(0)),
+      );
+    }
+
+    if (
+      paymentStatus === PaymentStatus.UNPAID ||
+      paymentStatus === PaymentStatus.PENDING
+    ) {
+      return Number(totalPrice);
+    }
+
+    return 0;
+  };
+
+  // =====================================================
+  // 13. BUILD LOCALIZED RESPONSE
   // =====================================================
 
   const items = appointments.map((appointment) => {
@@ -5267,20 +5352,35 @@ const getMyAppointments = async (
       ? (packageNameMap.get(appointment.packageId) ?? appointment.itemName)
       : null;
 
+    const purchase = appointment.groupPurchase;
+
+    const outstandingBalance = calculateOutstandingBalance(appointment);
+
     return {
       id: appointment.id,
       orderNumber: appointment.orderNumber,
 
       bookingMethod: appointment.bookingMethod,
+
       appointmentStatus: appointment.appointmentStatus,
+
       paymentStatus: appointment.paymentStatus,
 
-      // NEW: FINANCIAL RESPONSE
+      // Existing financial fields preserved.
       price: Number(appointment.price),
       currency: appointment.currency,
+
       depositPercentage: Number(appointment.depositPercentage ?? 0),
+
       depositAmount: Number(appointment.depositAmount ?? 0),
+
       remainingAmount: Number(appointment.remainingAmount ?? 0),
+
+      // New: actual current outstanding.
+      outstandingBalance,
+
+      // New: purchase-level context.
+      groupPurchaseTotal: purchase ? Number(purchase.amount) : null,
 
       branch: {
         id: appointment.branch.id,
@@ -5312,8 +5412,6 @@ const getMyAppointments = async (
       startTime: appointment.startTime,
       endTime: appointment.endTime,
 
-      // Booking-time timezone snapshot.
-      // Legacy records may return null.
       timezone: appointment.timezone,
 
       durationMinutes: appointment.durationMinutes,
@@ -5321,13 +5419,13 @@ const getMyAppointments = async (
   });
 
   // =====================================================
-  // 13. PAGINATION
+  // 14. PAGINATION
   // =====================================================
 
   const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   // =====================================================
-  // 14. FINAL RESPONSE
+  // 15. FINAL RESPONSE
   // =====================================================
 
   return {

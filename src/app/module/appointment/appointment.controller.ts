@@ -372,4 +372,5 @@ export const appointmentController = {
   getBranchAppointments,
   getAllAppointments,
   recordRemainingPayment,
+  recordGroupPurchaseRemainingPayment,
 };
