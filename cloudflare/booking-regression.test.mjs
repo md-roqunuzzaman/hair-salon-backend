@@ -53,7 +53,7 @@ function fixture(t) {
     } },
     service: { name: 'Haircut', translations: { en: { name: 'Haircut' } }, price: new Prisma.Decimal('125.55'), status: 'ACTIVE', durationMinutes: 60, branches: [{ branchId }] },
     serviceBranch: { bookingHoursEnabled: false, bookingWindows: [] },
-    package: { name: 'Package', translations: { en: { name: 'Package' } }, packagePrice: new Prisma.Decimal('200.50'), status: 'ACTIVE', durationMinutes: 90, branches: [{ branchId }] },
+    package: { type: 'STANDARD_SERVICE_PACKAGE', services: [], name: 'Package', translations: { en: { name: 'Package' } }, packagePrice: new Prisma.Decimal('200.50'), status: 'ACTIVE', durationMinutes: 90, branches: [{ branchId }] },
     hours: { isClosed: false, openTime: '10:00', closeTime: '13:00', breaks: [] },
     capacity: { maxBookingsPerHour: 2 },
     staff: { id: staffId, status: 'ACTIVE', branches: [{ branchId }], services: [{ serviceId }], packages: [{ packageId: 'package' }], scheduleOverrides: [] },
@@ -378,6 +378,7 @@ function autoStaffFixture(t, ids = ['alex','james','saikat']) {
     schedules: ids.map(staffId=>({staffId,startTime:'10:00',endTime:'13:00'})), leave: [], rows: [] };
   const queries=[];
   const tx={
+    package:{findUnique:async()=>({services:[]})},
     branchBusinessHour:{findFirst:async()=>({isClosed:false,openTime:'10:00',closeTime:'13:00',breaks:[]})},
     staff:{findMany:async({where})=>data.staff.filter(s=>s.status===where.status&&(!where.id||s.id===where.id)&&s.branches.includes((where.branches ?? where.OR.find(item=>item.branches).branches).some.branchId)&&(where.services?s.services.includes(where.services.some.serviceId):s.packages.includes(where.packages.some.packageId))).map(({id})=>({id}))},
     staffSchedule:{findMany:async()=>data.schedules},staffUnavailability:{findMany:async()=>data.leave},

@@ -17,6 +17,7 @@ import {
   DayOfWeek,
   GroupPurchaseFlow,
   PackageStatus,
+  PackageType,
   PaymentProvider,
   PaymentPurpose,
   PaymentStatus,
@@ -385,6 +386,16 @@ export const resolveAvailableStaff = async ({
   // 5. FIND ELIGIBLE STAFF
   // =====================================================
 
+  const packageData = packageId
+    ? await tx.package.findUnique({
+        where: { id: packageId },
+        select: { services: { select: { serviceId: true } } },
+      })
+    : null;
+  if (packageId && !packageData) throw new AppError("Package not found", 404);
+  const requiredPackageServiceIds =
+    packageData?.services.map((item) => item.serviceId) ?? [];
+
   const eligibleStaff = await tx.staff.findMany({
     where: {
       ...(staffId ? { id: staffId } : {}),
@@ -433,6 +444,9 @@ export const resolveAvailableStaff = async ({
                 packageId: packageId!,
               },
             },
+            AND: requiredPackageServiceIds.map((id) => ({
+              services: { some: { serviceId: id } },
+            })),
           }),
     },
 
@@ -1139,6 +1153,7 @@ const createPayNowAppointment = async (
               },
               select: {
                 id: true,
+                type: true,
                 name: true,
                 translations: true,
                 packagePrice: true,
@@ -1157,6 +1172,13 @@ const createPayNowAppointment = async (
 
             if (!packageData) {
               throw new AppError("Package not found", 404);
+            }
+
+            if (packageData.type !== PackageType.STANDARD_SERVICE_PACKAGE) {
+              throw new AppError(
+                "Use the Group Purchase API to book this package",
+                422,
+              );
             }
 
             if (packageData.status !== PackageStatus.ACTIVE) {
@@ -1621,6 +1643,7 @@ const createDepositAppointment = async (
               where: { id: packageId! },
               select: {
                 id: true,
+                type: true,
                 name: true,
                 translations: true,
                 packagePrice: true,
@@ -1635,6 +1658,13 @@ const createDepositAppointment = async (
 
             if (!packageData) {
               throw new AppError("Package not found", 404);
+            }
+
+            if (packageData.type !== PackageType.STANDARD_SERVICE_PACKAGE) {
+              throw new AppError(
+                "Use the Group Purchase API to book this package",
+                422,
+              );
             }
 
             if (packageData.status !== PackageStatus.ACTIVE) {
@@ -2155,6 +2185,7 @@ const createReserveAppointment = async (
               },
               select: {
                 id: true,
+                type: true,
                 name: true,
                 translations: true,
                 packagePrice: true,
@@ -2173,6 +2204,13 @@ const createReserveAppointment = async (
 
             if (!packageData) {
               throw new AppError("Package not found", 404);
+            }
+
+            if (packageData.type !== PackageType.STANDARD_SERVICE_PACKAGE) {
+              throw new AppError(
+                "Use the Group Purchase API to book this package",
+                422,
+              );
             }
 
             if (packageData.status !== PackageStatus.ACTIVE) {
@@ -4246,18 +4284,21 @@ const rescheduleAppointment = async (
   // 7. HYBRID AVAILABILITY PRECHECK
   // =====================================================
 
-  const availability = await AvailabilityService.getAvailableSlots({
-    branchId: appointment.branchId,
+  const availability = await AvailabilityService.getAvailableSlots(
+    {
+      branchId: appointment.branchId,
 
-    ...(appointment.serviceId ? { serviceId: appointment.serviceId } : {}),
+      ...(appointment.serviceId ? { serviceId: appointment.serviceId } : {}),
 
-    ...(appointment.packageId ? { packageId: appointment.packageId } : {}),
+      ...(appointment.packageId ? { packageId: appointment.packageId } : {}),
 
-    ...(staffId ? { staffId } : {}),
+      ...(staffId ? { staffId } : {}),
 
-    date,
-    excludeAppointmentId: appointmentId,
-  });
+      date,
+      excludeAppointmentId: appointmentId,
+    },
+    { durationMinutes: appointment.durationMinutes },
+  );
 
   const selectedSlot = availability.slots.find(
     (slot) =>
@@ -6223,8 +6264,6 @@ const getBranchAppointments = async (
     staffProfileId = staff.id;
   }
 
-  // BRAND_OWNER can access appointments from any branch.
-
   // =====================================================
   // 3. PAGINATION
   // =====================================================
@@ -6357,7 +6396,8 @@ const getBranchAppointments = async (
 
       select: {
         id: true,
-        orderNumber: true, // NEW
+        orderNumber: true,
+
         bookingMethod: true,
         appointmentStatus: true,
         paymentStatus: true,
@@ -6381,6 +6421,18 @@ const getBranchAppointments = async (
 
         qrToken: true,
         qrVerifiedAt: true,
+
+        // NEW: Parent group purchase financial context.
+        groupPurchase: {
+          select: {
+            id: true,
+            amount: true,
+            depositAmount: true,
+            paymentStatus: true,
+            purchaseFlow: true,
+            bookingMethod: true,
+          },
+        },
 
         verifiedByUser: {
           select: {
@@ -6430,7 +6482,6 @@ const getBranchAppointments = async (
           },
         },
 
-        // NEW: Actual deposit payment and refund records
         payments: {
           select: {
             purpose: true,
@@ -6465,7 +6516,7 @@ const getBranchAppointments = async (
   });
 
   // =====================================================
-  // 11. FORMAT RESPONSE ITEMS
+  // 11. PAYMENT DISPLAY HELPERS
   // =====================================================
 
   const successfulPaymentStatuses: PaymentStatus[] = [
@@ -6473,6 +6524,114 @@ const getBranchAppointments = async (
     PaymentStatus.PARTIALLY_REFUNDED,
     PaymentStatus.REFUNDED,
   ];
+
+  // =====================================================
+  // 12. CALCULATE OUTSTANDING BALANCE
+  // =====================================================
+
+  const calculateOutstandingBalance = (
+    appointment: (typeof appointments)[number],
+  ): number => {
+    const paymentStatus = appointment.paymentStatus;
+    const appointmentStatus = appointment.appointmentStatus;
+
+    // Already fully paid.
+    if (paymentStatus === PaymentStatus.PAID) {
+      return 0;
+    }
+
+    // Cancellation, expiry, no-show and refund-related
+    // financial liabilities are outside this list API.
+    if (
+      appointmentStatus === AppointmentStatus.CANCELLED ||
+      appointmentStatus === AppointmentStatus.EXPIRED ||
+      appointmentStatus === AppointmentStatus.NO_SHOW ||
+      paymentStatus === PaymentStatus.REFUNDED ||
+      paymentStatus === PaymentStatus.PARTIALLY_REFUNDED
+    ) {
+      return 0;
+    }
+
+    const purchase = appointment.groupPurchase;
+
+    // =================================================
+    // GROUP PURCHASE
+    // =================================================
+
+    if (purchase) {
+      // Voucher redemption appointments must not
+      // repeat the purchase-level outstanding amount.
+      if (purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK) {
+        return 0;
+      }
+
+      // Only the original Direct Book appointment
+      // can display the purchase-level debt.
+      if (appointment.bookingMethod !== purchase.bookingMethod) {
+        return 0;
+      }
+
+      if (
+        purchase.paymentStatus === PaymentStatus.PAID ||
+        purchase.paymentStatus === PaymentStatus.REFUNDED ||
+        purchase.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED
+      ) {
+        return 0;
+      }
+
+      const totalAmount = purchase.amount;
+
+      if (
+        purchase.paymentStatus === PaymentStatus.PARTIALLY_PAID &&
+        purchase.bookingMethod === BookingMethod.DEPOSIT
+      ) {
+        const deposit = purchase.depositAmount ?? new Prisma.Decimal(0);
+
+        return Number(
+          Prisma.Decimal.max(totalAmount.minus(deposit), new Prisma.Decimal(0)),
+        );
+      }
+
+      if (
+        purchase.paymentStatus === PaymentStatus.UNPAID ||
+        purchase.paymentStatus === PaymentStatus.PENDING
+      ) {
+        return Number(totalAmount);
+      }
+
+      return 0;
+    }
+
+    // =================================================
+    // NORMAL APPOINTMENT
+    // =================================================
+
+    const totalPrice = appointment.price;
+
+    if (
+      paymentStatus === PaymentStatus.PARTIALLY_PAID &&
+      appointment.bookingMethod === BookingMethod.DEPOSIT
+    ) {
+      const deposit = appointment.depositAmount ?? new Prisma.Decimal(0);
+
+      return Number(
+        Prisma.Decimal.max(totalPrice.minus(deposit), new Prisma.Decimal(0)),
+      );
+    }
+
+    if (
+      paymentStatus === PaymentStatus.UNPAID ||
+      paymentStatus === PaymentStatus.PENDING
+    ) {
+      return Number(totalPrice);
+    }
+
+    return 0;
+  };
+
+  // =====================================================
+  // 13. FORMAT RESPONSE ITEMS
+  // =====================================================
 
   const items = appointments.map((appointment) => {
     const localizedItem = getLocalizedContent(
@@ -6495,9 +6654,9 @@ const getBranchAppointments = async (
         })
       : null;
 
-    // =====================================================
-    // 12. PAYMENT VALUES
-    // =====================================================
+    // =================================================
+    // PAYMENT VALUES
+    // =================================================
 
     const price = Number(appointment.price);
 
@@ -6507,9 +6666,16 @@ const getBranchAppointments = async (
 
     const remainingAmount = Number(appointment.remainingAmount ?? 0);
 
-    // =====================================================
-    // 13. VERIFY ACTUAL DEPOSIT PAYMENT
-    // =====================================================
+    // NEW: Current outstanding balance.
+    const outstandingBalance = calculateOutstandingBalance(appointment);
+
+    const groupPurchaseTotal = appointment.groupPurchase
+      ? Number(appointment.groupPurchase.amount)
+      : null;
+
+    // =================================================
+    // VERIFY ACTUAL DEPOSIT PAYMENT
+    // =================================================
 
     const depositPaid =
       appointment.bookingMethod === BookingMethod.DEPOSIT &&
@@ -6538,9 +6704,9 @@ const getBranchAppointments = async (
         return netDeposit > 0;
       });
 
-    // =====================================================
-    // 14. PAYMENT DISPLAY STATUS
-    // =====================================================
+    // =================================================
+    // PAYMENT DISPLAY STATUS
+    // =================================================
 
     const paymentDisplayStatus = getPaymentDisplayStatus(
       appointment.paymentStatus,
@@ -6548,9 +6714,9 @@ const getBranchAppointments = async (
       depositPaid,
     );
 
-    // =====================================================
-    // 15. QR STATUS
-    // =====================================================
+    // =================================================
+    // QR STATUS
+    // =================================================
 
     const qrEligibleStatuses: AppointmentStatus[] = [
       AppointmentStatus.RESERVED,
@@ -6571,13 +6737,13 @@ const getBranchAppointments = async (
         }
       : null;
 
-    // =====================================================
-    // 16. RESPONSE
-    // =====================================================
+    // =================================================
+    // RESPONSE
+    // =================================================
 
     return {
       id: appointment.id,
-      orderNumber: appointment.orderNumber, // NEW
+      orderNumber: appointment.orderNumber,
 
       bookingMethod: appointment.bookingMethod,
       appointmentStatus: appointment.appointmentStatus,
@@ -6628,6 +6794,7 @@ const getBranchAppointments = async (
 
       durationMinutes: appointment.durationMinutes,
 
+      // Existing financial fields.
       price,
       currency: appointment.currency,
       timezone: appointment.timezone,
@@ -6635,6 +6802,10 @@ const getBranchAppointments = async (
       depositPercentage,
       depositAmount,
       remainingAmount,
+
+      // NEW: Financial display fields.
+      outstandingBalance,
+      groupPurchaseTotal,
 
       reviewed: appointment.review !== null,
 
@@ -6652,10 +6823,14 @@ const getBranchAppointments = async (
   });
 
   // =====================================================
-  // 17. PAGINATION
+  // 14. PAGINATION
   // =====================================================
 
   const totalPages = Math.ceil(total / limit);
+
+  // =====================================================
+  // 15. FINAL RESPONSE
+  // =====================================================
 
   return {
     items,

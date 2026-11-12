@@ -73,6 +73,7 @@ const getDayOfWeek = (date: string): DayOfWeek => {
 
 const getAvailableSlots = async (
   query: IAvailabilityQuery,
+  options: { durationMinutes?: number } = {},
 ): Promise<IAvailabilityResult> => {
   const {
     branchId,
@@ -168,6 +169,8 @@ const getAvailableSlots = async (
 
   let serviceBookingHoursEnabled = false;
 
+  let requiredPackageServiceIds: string[] = [];
+
   let serviceBookingWindows: Array<{
     start: number;
     end: number;
@@ -248,6 +251,7 @@ const getAvailableSlots = async (
       where: { id: packageId! },
 
       include: {
+        services: { select: { serviceId: true } },
         branches: {
           where: { branchId },
           select: { branchId: true },
@@ -268,6 +272,16 @@ const getAvailableSlots = async (
     }
 
     durationMinutes = packageData.durationMinutes;
+    requiredPackageServiceIds = packageData.services.map((item) => item.serviceId);
+  }
+
+  // Internal reschedule callers use the immutable booked duration. HTTP query
+  // validation never forwards this option from customer input.
+  if (options.durationMinutes !== undefined) {
+    if (!Number.isSafeInteger(options.durationMinutes) || options.durationMinutes <= 0) {
+      throw new AppError("Invalid appointment duration", 400);
+    }
+    durationMinutes = options.durationMinutes;
   }
 
   // =====================================================
@@ -398,7 +412,9 @@ const getAvailableSlots = async (
               where: { serviceId },
               select: { serviceId: true },
             }
-          : false,
+          : packageId
+            ? { select: { serviceId: true } }
+            : false,
 
         packages: packageId
           ? {
@@ -444,6 +460,13 @@ const getAvailableSlots = async (
       throw new AppError("Staff is not eligible for this package", 400);
     }
 
+    if (packageId) {
+      const assigned = new Set(staffMember.services?.map((item) => item.serviceId));
+      if (requiredPackageServiceIds.some((id) => !assigned.has(id))) {
+        throw new AppError("Staff is not eligible for this package", 400);
+      }
+    }
+
     staffIds = [staffMember.id];
   } else {
     const eligibleStaff = await prisma.staff.findMany({
@@ -462,6 +485,7 @@ const getAvailableSlots = async (
               packages: {
                 some: { packageId: packageId! },
               },
+              AND: requiredPackageServiceIds.map((id) => ({ services: { some: { serviceId: id } } })),
             }),
       },
 

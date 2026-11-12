@@ -11,6 +11,7 @@ import {
   GroupPurchaseFlow,
   ListingStatus,
   PackageStatus,
+  PackageType,
   PaymentStatus,
   Prisma,
   ReviewModerationStatus,
@@ -2976,6 +2977,7 @@ const getEligibleStaffForPackage = async (
       name: true,
       status: true,
       listingStatus: true,
+      type: true,
 
       branches: {
         where: {
@@ -3003,7 +3005,10 @@ const getEligibleStaffForPackage = async (
     throw new AppError("Package is not active", 400);
   }
 
-  if (packageData.listingStatus !== ListingStatus.LISTED) {
+  // Discovery remains usable for purchased group vouchers. Dedicated new
+  // purchase creation still enforces LISTED; redemption validates ownership.
+  if (packageData.listingStatus !== ListingStatus.LISTED &&
+      packageData.type !== PackageType.GROUP_PURCHASE_PACKAGE) {
     throw new AppError("Package is not listed", 400);
   }
 
@@ -3249,326 +3254,441 @@ const updateStaffSchedule = async (
     role: Role;
   },
 ) => {
-  // =====================================================
-  // 1. FIND STAFF
-  // =====================================================
+  const maxRetries = 3;
+  let result: { changed: boolean; staffUserId: string | null } | undefined;
 
-  const staff = await prisma.staff.findUnique({
-    where: {
-      id: staffId,
-    },
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      result = await prisma.$transaction(
+        async (tx) => {
+          // =====================================================
+          // 1. FIND STAFF
+          // =====================================================
 
-    include: {
-      branches: {
-        select: {
-          branchId: true,
+          const staff = await tx.staff.findUnique({
+            where: {
+              id: staffId,
+            },
+
+            include: {
+              branches: {
+                select: {
+                  branchId: true,
+                },
+              },
+            },
+          });
+
+          if (!staff) {
+            throw new AppError("Staff not found", 404);
+          }
+
+          const staffBranchIds = new Set(staff.branches.map((item) => item.branchId));
+
+          // =====================================================
+          // 2. BRANCH MANAGER SCOPE CHECK
+          // =====================================================
+
+          let managerBranchIds: Set<string> | null = null;
+
+          if (requester.role === Role.BRANCH_MANAGER) {
+            const managerBranches = await tx.branchManagerBranch.findMany({
+              where: {
+                userId: requester.userId,
+              },
+
+              select: {
+                branchId: true,
+              },
+            });
+
+            managerBranchIds = new Set(managerBranches.map((item) => item.branchId));
+
+            const hasAccessToStaff = staff.branches.some((item) =>
+              managerBranchIds!.has(item.branchId),
+            );
+
+            if (!hasAccessToStaff) {
+              throw new AppError(
+                "You are not allowed to manage this staff member",
+                403,
+              );
+            }
+          }
+
+          // =====================================================
+          // 3. PREVENT DUPLICATE BRANCH + DAY ENTRIES
+          // =====================================================
+
+          const scheduleKeys = new Set<string>();
+
+          for (const item of payload.schedule) {
+            const key = `${item.branchId}:${item.day}`;
+
+            if (scheduleKeys.has(key)) {
+              throw new AppError(
+                "Duplicate schedule entry for the same branch and day is not allowed",
+                400,
+              );
+            }
+
+            scheduleKeys.add(key);
+          }
+
+          // =====================================================
+          // 4. VALIDATE REQUESTED BRANCHES
+          // =====================================================
+
+          const scheduleBranchIds = [
+            ...new Set(payload.schedule.map((item) => item.branchId)),
+          ];
+
+          const branches = await tx.branch.findMany({
+            where: {
+              id: {
+                in: scheduleBranchIds,
+              },
+            },
+
+            select: {
+              id: true,
+              name: true,
+              status: true,
+
+              businessHours: {
+                select: {
+                  day: true,
+                  isClosed: true,
+                  openTime: true,
+                  closeTime: true,
+                },
+              },
+            },
+          });
+
+          if (branches.length !== scheduleBranchIds.length) {
+            throw new AppError("One or more branches do not exist", 404);
+          }
+
+          const branchMap = new Map(branches.map((branch) => [branch.id, branch]));
+
+          // =====================================================
+          // 5. VALIDATE EACH SCHEDULE ENTRY
+          // =====================================================
+
+          for (const item of payload.schedule) {
+            // Staff must belong to requested branch.
+
+            if (!staffBranchIds.has(item.branchId)) {
+              throw new AppError(
+                "Staff cannot be scheduled in an unassigned branch",
+                400,
+              );
+            }
+
+            // Branch Manager scope.
+
+            if (
+              requester.role === Role.BRANCH_MANAGER &&
+              managerBranchIds &&
+              !managerBranchIds.has(item.branchId)
+            ) {
+              throw new AppError(
+                "You cannot manage staff schedule outside your branch scope",
+                403,
+              );
+            }
+
+            const branch = branchMap.get(item.branchId)!;
+
+            // Branch must be active.
+
+            if (branch.status !== BranchStatus.ACTIVE) {
+              throw new AppError(
+                `Cannot schedule staff in inactive branch "${branch.name}"`,
+                400,
+              );
+            }
+
+            // Validate time range.
+
+            const startMinutes = timeToMinutes(item.startTime);
+
+            const endMinutes = timeToMinutes(item.endTime);
+
+            if (startMinutes >= endMinutes) {
+              throw new AppError(
+                "Schedule startTime must be earlier than endTime",
+                400,
+              );
+            }
+
+            // Find business hours for requested day.
+
+            const businessHour = branch.businessHours.find(
+              (hour) => hour.day === item.day,
+            );
+
+            if (!businessHour) {
+              throw new AppError(
+                `Business hours are not configured for ${item.day} at branch "${branch.name}"`,
+                400,
+              );
+            }
+
+            if (businessHour.isClosed) {
+              throw new AppError(
+                `Branch "${branch.name}" is closed on ${item.day}`,
+                400,
+              );
+            }
+
+            if (!businessHour.openTime || !businessHour.closeTime) {
+              throw new AppError(
+                `Business hours are incomplete for ${item.day} at branch "${branch.name}"`,
+                400,
+              );
+            }
+
+            const branchOpenMinutes = timeToMinutes(businessHour.openTime);
+
+            const branchCloseMinutes = timeToMinutes(businessHour.closeTime);
+
+            if (startMinutes < branchOpenMinutes || endMinutes > branchCloseMinutes) {
+              throw new AppError(
+                `Staff schedule must be within branch business hours for ${item.day}`,
+                400,
+              );
+            }
+          }
+
+          // =====================================================
+          // 6. GET EXISTING STAFF SCHEDULE
+          //
+          // Needed to detect actual schedule changes.
+          // =====================================================
+
+          const existingSchedules = await tx.staffSchedule.findMany({
+            where: {
+              staffId,
+            },
+
+            select: {
+              branchId: true,
+              day: true,
+              startTime: true,
+              endTime: true,
+            },
+          });
+
+          // Retain every out-of-scope row, including its ID and timestamps.
+          const preservedSchedules = managerBranchIds
+            ? existingSchedules.filter((item) => !managerBranchIds.has(item.branchId))
+            : [];
+          const proposedSchedules = [...preservedSchedules, ...payload.schedule];
+
+          // =====================================================
+          // 7. CROSS-BRANCH OVERLAP VALIDATION
+          // =====================================================
+
+          const schedulesByDay = new Map<string, typeof payload.schedule>();
+
+          for (const item of proposedSchedules) {
+            const existing = schedulesByDay.get(item.day) ?? [];
+
+            existing.push(item);
+
+            schedulesByDay.set(item.day, existing);
+          }
+
+          for (const [day, schedules] of schedulesByDay) {
+            const sortedSchedules = [...schedules].sort(
+              (a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime),
+            );
+
+            for (let i = 0; i < sortedSchedules.length - 1; i++) {
+              const current = sortedSchedules[i];
+              const next = sortedSchedules[i + 1];
+
+              const currentEnd = timeToMinutes(current.endTime);
+
+              const nextStart = timeToMinutes(next.startTime);
+
+              if (currentEnd > nextStart) {
+                throw new AppError(`Schedule conflict detected on ${day}`, 409);
+              }
+            }
+          }
+
+          // =====================================================
+          // 8. COMPARE OLD AND NEW SCHEDULE
+          //
+          // Order-independent comparison.
+          // =====================================================
+
+          const normalizeSchedule = (
+            schedules: Array<{
+              branchId: string;
+              day: string;
+              startTime: string;
+              endTime: string;
+            }>,
+          ) => {
+            return schedules
+              .map(
+                (item) =>
+                  `${item.branchId}|${item.day}|${item.startTime}|${item.endTime}`,
+              )
+              .sort();
+          };
+
+          const oldSchedule = normalizeSchedule(existingSchedules);
+
+          const newSchedule = normalizeSchedule(proposedSchedules);
+
+          const hasChanges =
+            oldSchedule.length !== newSchedule.length ||
+            oldSchedule.some((item, index) => item !== newSchedule[index]);
+
+          // =====================================================
+          // 9. NO CHANGES - SKIP UPDATE + NOTIFICATION
+          // =====================================================
+
+          if (!hasChanges) {
+            return { changed: false, staffUserId: staff.userId };
+          }
+
+          // =====================================================
+          // 10. REPLACE STAFF SCHEDULE ATOMICALLY
+          // =====================================================
+
+          // Use the same active-status, saved-timezone and override precedence rules
+          // as updateSingleStaffSchedule. Filter by the actual start instant below so
+          // legacy bookings in another timezone cannot be missed at a date boundary.
+          const brand = await tx.brand.findFirst({ select: { timezone: true } });
+          if (!brand) {
+            throw new AppError("Brand not found", 404);
+          }
+
+          const now = new Date();
+          const appointments = await tx.appointment.findMany({
+            where: {
+              staffId,
+              OR: [
+                {
+                  appointmentStatus: {
+                    in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
+                  },
+                },
+                {
+                  appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
+                  holdExpiresAt: { gt: now },
+                },
+              ],
+            },
+            select: {
+              id: true,
+              orderNumber: true,
+              branchId: true,
+              date: true,
+              startTime: true,
+              endTime: true,
+              timezone: true,
+            },
+          });
+
+          const overrides = await tx.staffScheduleOverride.findMany({
+            where: { staffId, date: { in: appointments.map((item) => item.date) } },
+            select: { date: true, branchId: true, startTime: true, endTime: true },
+          });
+          const overrideMap = new Map(
+            overrides.map((item) => [item.date.toISOString().slice(0, 10), item]),
+          );
+
+          for (const appointment of appointments) {
+            const dateKey = appointment.date.toISOString().slice(0, 10);
+            const startsAt = createDateTimeInTimezone(
+              dateKey,
+              appointment.startTime,
+              appointment.timezone ?? brand.timezone,
+            );
+            if (startsAt.getTime() < now.getTime()) {
+              continue;
+            }
+
+            const start = timeToMinutes(appointment.startTime);
+            const end = timeToMinutes(appointment.endTime);
+            const override = overrideMap.get(dateKey);
+            const effectiveSchedules = override
+              ? [override]
+              : proposedSchedules.filter(
+                  (item) => item.day === getDayOfWeekFromDate(dateKey),
+                );
+            const covered = effectiveSchedules.some(
+              (item) =>
+                item.branchId === appointment.branchId &&
+                start >= timeToMinutes(item.startTime) &&
+                end <= timeToMinutes(item.endTime),
+            );
+            if (!covered) {
+              throw new AppError(
+                `Schedule update conflicts with existing appointment ${appointment.orderNumber}`,
+                409,
+              );
+            }
+          }
+
+          await tx.staffSchedule.deleteMany({
+            where: {
+              staffId,
+              ...(managerBranchIds && { branchId: { in: [...managerBranchIds] } }),
+            },
+          });
+          if (payload.schedule.length > 0) {
+            await tx.staffSchedule.createMany({
+              data: payload.schedule.map((item) => ({
+                staffId,
+                branchId: item.branchId,
+                day: item.day,
+                startTime: item.startTime,
+                endTime: item.endTime,
+              })),
+            });
+          }
+          return { changed: true, staffUserId: staff.userId };
         },
-      },
-    },
-  });
-
-  if (!staff) {
-    throw new AppError("Staff not found", 404);
-  }
-
-  const staffBranchIds = new Set(staff.branches.map((item) => item.branchId));
-
-  // =====================================================
-  // 2. BRANCH MANAGER SCOPE CHECK
-  // =====================================================
-
-  let managerBranchIds: Set<string> | null = null;
-
-  if (requester.role === Role.BRANCH_MANAGER) {
-    const managerBranches = await prisma.branchManagerBranch.findMany({
-      where: {
-        userId: requester.userId,
-      },
-
-      select: {
-        branchId: true,
-      },
-    });
-
-    managerBranchIds = new Set(managerBranches.map((item) => item.branchId));
-
-    const hasAccessToStaff = staff.branches.some((item) =>
-      managerBranchIds!.has(item.branchId),
-    );
-
-    if (!hasAccessToStaff) {
-      throw new AppError(
-        "You are not allowed to manage this staff member",
-        403,
-      );
-    }
-  }
-
-  // =====================================================
-  // 3. PREVENT DUPLICATE BRANCH + DAY ENTRIES
-  // =====================================================
-
-  const scheduleKeys = new Set<string>();
-
-  for (const item of payload.schedule) {
-    const key = `${item.branchId}:${item.day}`;
-
-    if (scheduleKeys.has(key)) {
-      throw new AppError(
-        "Duplicate schedule entry for the same branch and day is not allowed",
-        400,
-      );
-    }
-
-    scheduleKeys.add(key);
-  }
-
-  // =====================================================
-  // 4. VALIDATE REQUESTED BRANCHES
-  // =====================================================
-
-  const scheduleBranchIds = [
-    ...new Set(payload.schedule.map((item) => item.branchId)),
-  ];
-
-  const branches = await prisma.branch.findMany({
-    where: {
-      id: {
-        in: scheduleBranchIds,
-      },
-    },
-
-    select: {
-      id: true,
-      name: true,
-      status: true,
-
-      businessHours: {
-        select: {
-          day: true,
-          isClosed: true,
-          openTime: true,
-          closeTime: true,
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10000,
+          timeout: 20000,
         },
-      },
-    },
-  });
-
-  if (branches.length !== scheduleBranchIds.length) {
-    throw new AppError("One or more branches do not exist", 404);
-  }
-
-  const branchMap = new Map(branches.map((branch) => [branch.id, branch]));
-
-  // =====================================================
-  // 5. VALIDATE EACH SCHEDULE ENTRY
-  // =====================================================
-
-  for (const item of payload.schedule) {
-    // Staff must belong to requested branch.
-
-    if (!staffBranchIds.has(item.branchId)) {
-      throw new AppError(
-        "Staff cannot be scheduled in an unassigned branch",
-        400,
       );
-    }
-
-    // Branch Manager scope.
-
-    if (
-      requester.role === Role.BRANCH_MANAGER &&
-      managerBranchIds &&
-      !managerBranchIds.has(item.branchId)
-    ) {
-      throw new AppError(
-        "You cannot manage staff schedule outside your branch scope",
-        403,
-      );
-    }
-
-    const branch = branchMap.get(item.branchId)!;
-
-    // Branch must be active.
-
-    if (branch.status !== BranchStatus.ACTIVE) {
-      throw new AppError(
-        `Cannot schedule staff in inactive branch "${branch.name}"`,
-        400,
-      );
-    }
-
-    // Validate time range.
-
-    const startMinutes = timeToMinutes(item.startTime);
-
-    const endMinutes = timeToMinutes(item.endTime);
-
-    if (startMinutes >= endMinutes) {
-      throw new AppError(
-        "Schedule startTime must be earlier than endTime",
-        400,
-      );
-    }
-
-    // Find business hours for requested day.
-
-    const businessHour = branch.businessHours.find(
-      (hour) => hour.day === item.day,
-    );
-
-    if (!businessHour) {
-      throw new AppError(
-        `Business hours are not configured for ${item.day} at branch "${branch.name}"`,
-        400,
-      );
-    }
-
-    if (businessHour.isClosed) {
-      throw new AppError(
-        `Branch "${branch.name}" is closed on ${item.day}`,
-        400,
-      );
-    }
-
-    if (!businessHour.openTime || !businessHour.closeTime) {
-      throw new AppError(
-        `Business hours are incomplete for ${item.day} at branch "${branch.name}"`,
-        400,
-      );
-    }
-
-    const branchOpenMinutes = timeToMinutes(businessHour.openTime);
-
-    const branchCloseMinutes = timeToMinutes(businessHour.closeTime);
-
-    if (startMinutes < branchOpenMinutes || endMinutes > branchCloseMinutes) {
-      throw new AppError(
-        `Staff schedule must be within branch business hours for ${item.day}`,
-        400,
-      );
-    }
-  }
-
-  // =====================================================
-  // 6. CROSS-BRANCH OVERLAP VALIDATION
-  // =====================================================
-
-  const schedulesByDay = new Map<string, typeof payload.schedule>();
-
-  for (const item of payload.schedule) {
-    const existing = schedulesByDay.get(item.day) ?? [];
-
-    existing.push(item);
-
-    schedulesByDay.set(item.day, existing);
-  }
-
-  for (const [day, schedules] of schedulesByDay) {
-    const sortedSchedules = [...schedules].sort(
-      (a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime),
-    );
-
-    for (let i = 0; i < sortedSchedules.length - 1; i++) {
-      const current = sortedSchedules[i];
-      const next = sortedSchedules[i + 1];
-
-      const currentEnd = timeToMinutes(current.endTime);
-
-      const nextStart = timeToMinutes(next.startTime);
-
-      if (currentEnd > nextStart) {
-        throw new AppError(`Schedule conflict detected on ${day}`, 409);
+      break;
+    } catch (error) {
+      const isConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+      if (isConflict && attempt < maxRetries) {
+        continue;
       }
+      if (isConflict) {
+        throw new AppError(
+          "Schedule was modified concurrently. Please try again.",
+          409,
+        );
+      }
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        throw new AppError(
+          "A schedule already exists for this staff, branch and day",
+          409,
+        );
+      }
+      throw error;
     }
   }
-
-  // =====================================================
-  // 7. GET EXISTING STAFF SCHEDULE
-  //
-  // Needed to detect actual schedule changes.
-  // =====================================================
-
-  const existingSchedules = await prisma.staffSchedule.findMany({
-    where: {
-      staffId,
-    },
-
-    select: {
-      branchId: true,
-      day: true,
-      startTime: true,
-      endTime: true,
-    },
-  });
-
-  // =====================================================
-  // 8. COMPARE OLD AND NEW SCHEDULE
-  //
-  // Order-independent comparison.
-  // =====================================================
-
-  const normalizeSchedule = (
-    schedules: Array<{
-      branchId: string;
-      day: string;
-      startTime: string;
-      endTime: string;
-    }>,
-  ) => {
-    return schedules
-      .map(
-        (item) =>
-          `${item.branchId}|${item.day}|${item.startTime}|${item.endTime}`,
-      )
-      .sort();
-  };
-
-  const oldSchedule = normalizeSchedule(existingSchedules);
-
-  const newSchedule = normalizeSchedule(payload.schedule);
-
-  const hasChanges =
-    oldSchedule.length !== newSchedule.length ||
-    oldSchedule.some((item, index) => item !== newSchedule[index]);
-
-  // =====================================================
-  // 9. NO CHANGES - SKIP UPDATE + NOTIFICATION
-  // =====================================================
-
-  if (!hasChanges) {
-    return {
-      staffId,
-    };
-  }
-
-  // =====================================================
-  // 10. REPLACE STAFF SCHEDULE ATOMICALLY
-  // =====================================================
-
-  await prisma.$transaction(async (tx) => {
-    // Remove previous schedule.
-
-    await tx.staffSchedule.deleteMany({
-      where: {
-        staffId,
-      },
-    });
-
-    // Create new schedule entries.
-
-    if (payload.schedule.length > 0) {
-      await tx.staffSchedule.createMany({
-        data: payload.schedule.map((item) => ({
-          staffId,
-          branchId: item.branchId,
-          day: item.day,
-          startTime: item.startTime,
-          endTime: item.endTime,
-        })),
-      });
-    }
-  });
 
   // =====================================================
   // 11. MULTILINGUAL SCHEDULE NOTIFICATION
@@ -3577,12 +3697,12 @@ const updateStaffSchedule = async (
   // Only after successful schedule update.
   // =====================================================
 
-  if (staff.userId) {
+  if (result?.changed && result.staffUserId) {
     try {
       const translations = notificationTemplates.STAFF_SCHEDULE_UPDATED();
 
       await notificationService.createNotification({
-        userId: staff.userId,
+        userId: result.staffUserId,
 
         type: "STAFF_SCHEDULE_UPDATED",
 
@@ -3597,7 +3717,7 @@ const updateStaffSchedule = async (
       // successful schedule update.
 
       logUnexpectedError(error, {
-        source: "src/app/module/staff/staff.service.ts:3273",
+        source: "staff.service.ts:updateStaffSchedule",
       });
     }
   }
@@ -3907,6 +4027,94 @@ const getDayOfWeekFromDate = (date: string): DayOfWeek => {
   return dayMap[jsDay];
 };
 
+// Keep availability mutations and their authorization/conflict reads atomic on
+// PostgreSQL as well as the serialized Worker runtime.
+const withStaffAvailabilityTransaction = async <T>(
+  operation: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> => {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await prisma.$transaction(operation, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10000,
+        timeout: 20000,
+      });
+    } catch (error) {
+      const conflict = error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+      if (conflict && attempt < 3) continue;
+      if (conflict) throw new AppError("Staff availability changed concurrently. Please try again.", 409);
+      throw error;
+    }
+  }
+  throw new AppError("Unable to update staff availability", 409);
+};
+
+const unavailabilityManagerScope = async (
+  tx: Prisma.TransactionClient,
+  branches: { branchId: string }[],
+  requester: { userId: string; role: Role },
+): Promise<Set<string> | null> => {
+  if (requester.role !== Role.BRANCH_MANAGER) return null;
+  const assignments = await tx.branchManagerBranch.findMany({
+    where: { userId: requester.userId }, select: { branchId: true },
+  });
+  const allowed = new Set(assignments.map((item) => item.branchId));
+  // Unavailability has no branchId: changing it affects the staff globally.
+  if (branches.length === 0 || branches.some((item) => !allowed.has(item.branchId))) {
+    throw new AppError("You are not allowed to manage staff-wide unavailability", 403);
+  }
+  return allowed;
+};
+
+const assertUnavailabilityOverrideScope = (
+  allowed: Set<string> | null,
+  overrides: { branchId: string }[],
+) => {
+  if (allowed && overrides.some((item) => !allowed.has(item.branchId))) {
+    throw new AppError("You are not allowed to manage staff-wide unavailability", 403);
+  }
+};
+
+const assertUnavailabilityAppointmentSafety = async (
+  tx: Prisma.TransactionClient,
+  staffId: string,
+  records: { date: Date; startTime: string; endTime: string }[],
+) => {
+  const brand = await tx.brand.findFirst({ select: { timezone: true } });
+  if (!brand) throw new AppError("Brand not found", 404);
+  const now = new Date();
+  const appointments = await tx.appointment.findMany({
+    where: {
+      staffId,
+      OR: [
+        { appointmentStatus: { in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED] } },
+        { appointmentStatus: AppointmentStatus.PENDING_PAYMENT, holdExpiresAt: { gt: now } },
+      ],
+    },
+    select: { date: true, startTime: true, endTime: true, timezone: true, appointmentStatus: true },
+  });
+  const intervals = records.map((record) => {
+    const date = record.date.toISOString().slice(0, 10);
+    return {
+      date,
+      start: createDateTimeInTimezone(date, record.startTime, brand.timezone).getTime(),
+      end: createDateTimeInTimezone(date, record.endTime, brand.timezone).getTime(),
+    };
+  });
+  for (const appointment of appointments) {
+    const date = appointment.date.toISOString().slice(0, 10);
+    const timezone = appointment.timezone ?? brand.timezone;
+    const start = createDateTimeInTimezone(date, appointment.startTime, timezone).getTime();
+    if (start < now.getTime()) continue;
+    const end = createDateTimeInTimezone(date, appointment.endTime, timezone).getTime();
+    const conflict = intervals.find((interval) => interval.start < end && interval.end > start);
+    if (conflict) {
+      throw new AppError(`Staff has an existing ${appointment.appointmentStatus} appointment on ${conflict.date}`, 409);
+    }
+  }
+};
+
 const createStaffUnavailability = async (
   staffId: string,
   payload: ICreateStaffUnavailabilityPayload,
@@ -3915,387 +4123,300 @@ const createStaffUnavailability = async (
     role: Role;
   },
 ) => {
-  // =====================================================
-  // 1. FIND STAFF
-  // =====================================================
+  return withStaffAvailabilityTransaction(async (tx) => {
+    // =====================================================
+    // 1. FIND STAFF
+    // =====================================================
 
-  const staff = await prisma.staff.findUnique({
-    where: { id: staffId },
-    include: {
-      branches: {
-        select: {
-          branchId: true,
+    const staff = await tx.staff.findUnique({
+      where: { id: staffId },
+      include: {
+        branches: {
+          select: {
+            branchId: true,
+          },
         },
-      },
-    },
-  });
-
-  if (!staff) {
-    throw new AppError("Staff not found", 404);
-  }
-
-  // =====================================================
-  // 2. BRANCH MANAGER SCOPE
-  // =====================================================
-
-  if (requester.role === Role.BRANCH_MANAGER) {
-    const managerBranches = await prisma.branchManagerBranch.findMany({
-      where: {
-        userId: requester.userId,
-      },
-      select: {
-        branchId: true,
       },
     });
 
-    const allowedBranchIds = new Set(
-      managerBranches.map((item) => item.branchId),
-    );
+    if (!staff) {
+      throw new AppError("Staff not found", 404);
+    }
 
-    const hasAccess = staff.branches.some((item) =>
-      allowedBranchIds.has(item.branchId),
-    );
+    // =====================================================
+    // 2. BRANCH MANAGER SCOPE
+    // =====================================================
 
-    if (!hasAccess) {
+    const managerBranchIds = await unavailabilityManagerScope(tx, staff.branches, requester);
+
+    // =====================================================
+    // 3. VALIDATE DATE RANGE
+    // =====================================================
+
+    const isFullDay = payload.fullDay === true;
+
+    const startDateString = payload.startDate ?? payload.date;
+    const endDateString = payload.endDate ?? startDateString;
+
+    if (!startDateString || !endDateString) {
+      throw new AppError("Date is required", 400);
+    }
+
+    const parseDate = (value: string) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw new AppError("Invalid date format", 400);
+      }
+
+      const date = new Date(`${value}T00:00:00.000Z`);
+
+      if (
+        Number.isNaN(date.getTime()) ||
+        date.toISOString().slice(0, 10) !== value
+      ) {
+        throw new AppError("Invalid date", 400);
+      }
+
+      return date;
+    };
+
+    const startDate = parseDate(startDateString);
+    const endDate = parseDate(endDateString);
+
+    if (startDate > endDate) {
+      throw new AppError("startDate must not be after endDate", 400);
+    }
+
+    const totalDays =
+      Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
+
+    if (totalDays > 31) {
+      throw new AppError("Leave duration cannot exceed 31 days", 400);
+    }
+
+    if (totalDays > 1 && !["LEAVE", "TIME_OFF"].includes(payload.type)) {
       throw new AppError(
-        "You are not allowed to manage this staff member",
-        403,
-      );
-    }
-  }
-
-  // =====================================================
-  // 3. VALIDATE DATE RANGE
-  // =====================================================
-
-  const isFullDay = payload.fullDay === true;
-
-  const startDateString = payload.startDate ?? payload.date;
-  const endDateString = payload.endDate ?? startDateString;
-
-  if (!startDateString || !endDateString) {
-    throw new AppError("Date is required", 400);
-  }
-
-  const parseDate = (value: string) => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      throw new AppError("Invalid date format", 400);
-    }
-
-    const date = new Date(`${value}T00:00:00.000Z`);
-
-    if (
-      Number.isNaN(date.getTime()) ||
-      date.toISOString().slice(0, 10) !== value
-    ) {
-      throw new AppError("Invalid date", 400);
-    }
-
-    return date;
-  };
-
-  const startDate = parseDate(startDateString);
-  const endDate = parseDate(endDateString);
-
-  if (startDate > endDate) {
-    throw new AppError("startDate must not be after endDate", 400);
-  }
-
-  const totalDays =
-    Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
-
-  if (totalDays > 31) {
-    throw new AppError("Leave duration cannot exceed 31 days", 400);
-  }
-
-  if (totalDays > 1 && !["LEAVE", "TIME_OFF"].includes(payload.type)) {
-    throw new AppError(
-      "Multiple-day unavailability is only supported for LEAVE and TIME_OFF",
-      400,
-    );
-  }
-
-  // =====================================================
-  // 4. VALIDATE TIME
-  // =====================================================
-
-  if (!isFullDay && (!payload.startTime || !payload.endTime)) {
-    throw new AppError("startTime and endTime are required", 400);
-  }
-
-  if (isFullDay && !["LEAVE", "TIME_OFF"].includes(payload.type)) {
-    throw new AppError(
-      "Full-day unavailability is only supported for LEAVE and TIME_OFF",
-      400,
-    );
-  }
-
-  const requestedStartMinutes = isFullDay
-    ? 0
-    : timeToMinutes(payload.startTime!);
-
-  const requestedEndMinutes = isFullDay
-    ? 1439
-    : timeToMinutes(payload.endTime!);
-
-  if (requestedStartMinutes >= requestedEndMinutes) {
-    throw new AppError("startTime must be earlier than endTime", 400);
-  }
-
-  // =====================================================
-  // 5. BUILD DATES
-  // =====================================================
-
-  const dates: Date[] = [];
-
-  for (let i = 0; i < totalDays; i++) {
-    const date = new Date(startDate.getTime() + i * 86400000);
-
-    dates.push(date);
-  }
-
-  // =====================================================
-  // 6. LOAD STAFF SCHEDULES
-  // =====================================================
-
-  const schedules = await prisma.staffSchedule.findMany({
-    where: {
-      staffId,
-    },
-    select: {
-      day: true,
-      branchId: true,
-      startTime: true,
-      endTime: true,
-    },
-  });
-
-  // =====================================================
-  // 7. PREPARE DAILY RECORDS
-  // =====================================================
-
-  const records: {
-    staffId: string;
-    type: StaffUnavailabilityType;
-    date: Date;
-    startTime: string;
-    endTime: string;
-    reason: string | null;
-  }[] = [];
-
-  for (const date of dates) {
-    const dateString = date.toISOString().slice(0, 10);
-    const day = getDayOfWeekFromDate(dateString);
-
-    const dailySchedules = schedules.filter((schedule) => schedule.day === day);
-
-    // Full-day leave on non-working days does not need a record.
-    if (dailySchedules.length === 0 && isFullDay) {
-      continue;
-    }
-
-    if (dailySchedules.length === 0) {
-      throw new AppError(
-        `Staff is not scheduled to work on ${dateString}`,
+        "Multiple-day unavailability is only supported for LEAVE and TIME_OFF",
         400,
       );
     }
 
-    let startTime: string;
-    let endTime: string;
+    // =====================================================
+    // 4. VALIDATE TIME
+    // =====================================================
 
-    if (isFullDay) {
-      const starts = dailySchedules.map((schedule) =>
-        timeToMinutes(schedule.startTime),
+    if (!isFullDay && (!payload.startTime || !payload.endTime)) {
+      throw new AppError("startTime and endTime are required", 400);
+    }
+
+    if (isFullDay && !["LEAVE", "TIME_OFF"].includes(payload.type)) {
+      throw new AppError(
+        "Full-day unavailability is only supported for LEAVE and TIME_OFF",
+        400,
       );
+    }
 
-      const ends = dailySchedules.map((schedule) =>
-        timeToMinutes(schedule.endTime),
-      );
+    const requestedStartMinutes = isFullDay
+      ? 0
+      : timeToMinutes(payload.startTime!);
 
-      const earliestStart = Math.min(...starts);
-      const latestEnd = Math.max(...ends);
+    const requestedEndMinutes = isFullDay
+      ? 1439
+      : timeToMinutes(payload.endTime!);
 
-      const toTime = (minutes: number) => {
-        const hours = Math.floor(minutes / 60);
-        const mins = minutes % 60;
+    if (requestedStartMinutes >= requestedEndMinutes) {
+      throw new AppError("startTime must be earlier than endTime", 400);
+    }
 
-        return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
-      };
+    // =====================================================
+    // 5. BUILD DATES
+    // =====================================================
 
-      startTime = toTime(earliestStart);
-      endTime = toTime(latestEnd);
-    } else {
-      const fitsWorkingSchedule = dailySchedules.some((schedule) => {
-        const workStart = timeToMinutes(schedule.startTime);
+    const dates: Date[] = [];
 
-        const workEnd = timeToMinutes(schedule.endTime);
+    for (let i = 0; i < totalDays; i++) {
+      const date = new Date(startDate.getTime() + i * 86400000);
 
-        return (
-          requestedStartMinutes >= workStart && requestedEndMinutes <= workEnd
-        );
-      });
+      dates.push(date);
+    }
 
-      if (!fitsWorkingSchedule) {
+    // =====================================================
+    // 6. LOAD STAFF SCHEDULES
+    // =====================================================
+
+    const schedules = await tx.staffSchedule.findMany({
+      where: {
+        staffId,
+      },
+      select: {
+        day: true,
+        branchId: true,
+        startTime: true,
+        endTime: true,
+      },
+    });
+
+    const overrides = await tx.staffScheduleOverride.findMany({
+      where: { staffId, date: { in: dates } },
+      select: { date: true, branchId: true, startTime: true, endTime: true },
+    });
+    assertUnavailabilityOverrideScope(managerBranchIds, overrides);
+    const overrideMap = new Map(overrides.map((item) => [item.date.toISOString().slice(0, 10), item]));
+
+    // =====================================================
+    // 7. PREPARE DAILY RECORDS
+    // =====================================================
+
+    const records: {
+      staffId: string;
+      type: StaffUnavailabilityType;
+      date: Date;
+      startTime: string;
+      endTime: string;
+      reason: string | null;
+    }[] = [];
+
+    for (const date of dates) {
+      const dateString = date.toISOString().slice(0, 10);
+      const day = getDayOfWeekFromDate(dateString);
+
+      const override = overrideMap.get(dateString);
+      const dailySchedules = override ? [override] : schedules.filter((schedule) => schedule.day === day);
+
+      // Full-day leave on non-working days does not need a record.
+      if (dailySchedules.length === 0 && isFullDay) {
+        continue;
+      }
+
+      if (dailySchedules.length === 0) {
         throw new AppError(
-          `Unavailability must be within staff working hours on ${dateString}`,
+          `Staff is not scheduled to work on ${dateString}`,
           400,
         );
       }
 
-      startTime = payload.startTime!;
-      endTime = payload.endTime!;
-    }
+      let startTime: string;
+      let endTime: string;
 
-    records.push({
-      staffId,
-      type: payload.type,
-      date,
-      startTime,
-      endTime,
-      reason: payload.reason?.trim() || null,
-    });
-  }
+      if (isFullDay) {
+        // A full-day absence stays a full day if the shift later changes.
+        // No schema flag is required; partial absences retain their exact interval.
+        startTime = "00:00";
+        endTime = "23:59";
+      } else {
+        const fitsWorkingSchedule = dailySchedules.some((schedule) => {
+          const workStart = timeToMinutes(schedule.startTime);
 
-  if (records.length === 0) {
-    throw new AppError(
-      "No scheduled working days found in the selected date range",
-      400,
-    );
-  }
+          const workEnd = timeToMinutes(schedule.endTime);
 
-  // =====================================================
-  // 8. CHECK EXISTING UNAVAILABILITY
-  // =====================================================
+          return (
+            requestedStartMinutes >= workStart && requestedEndMinutes <= workEnd
+          );
+        });
 
-  const existing = await prisma.staffUnavailability.findMany({
-    where: {
-      staffId,
-      date: {
-        in: records.map((record) => record.date),
-      },
-    },
-    select: {
-      date: true,
-      startTime: true,
-      endTime: true,
-    },
-  });
+        if (!fitsWorkingSchedule) {
+          throw new AppError(
+            `Unavailability must be within staff working hours on ${dateString}`,
+            400,
+          );
+        }
 
-  for (const record of records) {
-    const recordStart = timeToMinutes(record.startTime);
-    const recordEnd = timeToMinutes(record.endTime);
-
-    const hasOverlap = existing.some((item) => {
-      if (item.date.getTime() !== record.date.getTime()) {
-        return false;
+        startTime = payload.startTime!;
+        endTime = payload.endTime!;
       }
 
-      return (
-        recordStart < timeToMinutes(item.endTime) &&
-        recordEnd > timeToMinutes(item.startTime)
-      );
-    });
+      records.push({
+        staffId,
+        type: payload.type,
+        date,
+        startTime,
+        endTime,
+        reason: payload.reason?.trim() || null,
+      });
+    }
 
-    if (hasOverlap) {
+    if (records.length === 0) {
       throw new AppError(
-        `Unavailability conflicts with an existing blocked period on ${record.date.toISOString().slice(0, 10)}`,
-        409,
+        "No scheduled working days found in the selected date range",
+        400,
       );
     }
-  }
 
-  // =====================================================
-  // 9. CHECK EXISTING APPOINTMENT CONFLICTS
-  // =====================================================
+    // =====================================================
+    // 8. CHECK EXISTING UNAVAILABILITY
+    // =====================================================
 
-  // =====================================================
-  // 9. CHECK EXISTING APPOINTMENT CONFLICTS
-  // =====================================================
-
-  const now = new Date();
-
-  const appointments = await prisma.appointment.findMany({
-    where: {
-      staffId,
-      date: {
-        in: records.map((record) => record.date),
+    const existing = await tx.staffUnavailability.findMany({
+      where: {
+        staffId,
+        date: {
+          in: records.map((record) => record.date),
+        },
       },
-      OR: [
-        {
-          appointmentStatus: {
-            in: ["RESERVED", "CONFIRMED"],
-          },
-        },
-        {
-          appointmentStatus: "PENDING_PAYMENT",
-          OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
-        },
-      ],
-    },
-    select: {
-      id: true,
-      date: true,
-      startTime: true,
-      endTime: true,
-      appointmentStatus: true,
-    },
-  });
-
-  for (const record of records) {
-    const recordDate = record.date.toISOString().slice(0, 10);
-
-    const recordStart = timeToMinutes(record.startTime);
-    const recordEnd = timeToMinutes(record.endTime);
-
-    const conflictingAppointment = appointments.find((appointment) => {
-      const appointmentDate = appointment.date.toISOString().slice(0, 10);
-
-      if (appointmentDate !== recordDate) {
-        return false;
-      }
-
-      const appointmentStart = timeToMinutes(appointment.startTime);
-
-      const appointmentEnd = timeToMinutes(appointment.endTime);
-
-      return recordStart < appointmentEnd && recordEnd > appointmentStart;
+      select: {
+        date: true,
+        startTime: true,
+        endTime: true,
+      },
     });
 
-    if (conflictingAppointment) {
-      throw new AppError(
-        `Staff has an existing ${conflictingAppointment.appointmentStatus} appointment on ${recordDate}`,
-        409,
-      );
+    for (const record of records) {
+      const recordStart = timeToMinutes(record.startTime);
+      const recordEnd = timeToMinutes(record.endTime);
+
+      const hasOverlap = existing.some((item) => {
+        if (item.date.getTime() !== record.date.getTime()) {
+          return false;
+        }
+
+        return (
+          recordStart < timeToMinutes(item.endTime) &&
+          recordEnd > timeToMinutes(item.startTime)
+        );
+      });
+
+      if (hasOverlap) {
+        throw new AppError(
+          `Unavailability conflicts with an existing blocked period on ${record.date.toISOString().slice(0, 10)}`,
+          409,
+        );
+      }
     }
-  }
-  // =====================================================
-  // 10. CREATE RECORDS
-  // =====================================================
 
-  const results = await prisma.$transaction(
-    records.map((record) =>
-      prisma.staffUnavailability.create({
-        data: record,
-      }),
-    ),
-  );
+    // =====================================================
+    // 9. CHECK EXISTING APPOINTMENT CONFLICTS
+    // =====================================================
 
-  // =====================================================
-  // 11. RESPONSE
-  // =====================================================
+    // =====================================================
+    // 9. CHECK EXISTING APPOINTMENT CONFLICTS
+    // =====================================================
 
-  return {
-    totalDays: results.length,
-    items: results.map((result) => ({
-      id: result.id,
-      type: result.type,
-      date: result.date.toISOString().slice(0, 10),
-      startTime: result.startTime,
-      endTime: result.endTime,
-      reason: result.reason,
-    })),
-  };
+    await assertUnavailabilityAppointmentSafety(tx, staffId, records);
+
+    // =====================================================
+    // 10. CREATE RECORDS
+    // =====================================================
+
+    const results = [];
+    for (const record of records) {
+      results.push(await tx.staffUnavailability.create({ data: record }));
+    }
+
+    // =====================================================
+    // 11. RESPONSE
+    // =====================================================
+
+    return {
+      totalDays: results.length,
+      items: results.map((result) => ({
+        id: result.id,
+        type: result.type,
+        date: result.date.toISOString().slice(0, 10),
+        startTime: result.startTime,
+        endTime: result.endTime,
+        reason: result.reason,
+      })),
+    };
+  });
 };
 
 const getStaffUnavailability = async (
@@ -4435,277 +4556,228 @@ const updateStaffUnavailability = async (
     role: Role;
   },
 ) => {
-  // =====================================================
-  // 1. FIND STAFF
-  // =====================================================
+  return withStaffAvailabilityTransaction(async (tx) => {
+    // =====================================================
+    // 1. FIND STAFF
+    // =====================================================
 
-  const staff = await prisma.staff.findUnique({
-    where: { id: staffId },
-    include: {
-      branches: {
-        select: {
-          branchId: true,
+    const staff = await tx.staff.findUnique({
+      where: { id: staffId },
+      include: {
+        branches: {
+          select: {
+            branchId: true,
+          },
         },
-      },
-    },
-  });
-
-  if (!staff) {
-    throw new AppError("Staff not found", 404);
-  }
-
-  // =====================================================
-  // 2. BRANCH MANAGER AUTHORIZATION
-  // =====================================================
-
-  if (requester.role === Role.BRANCH_MANAGER) {
-    const managerBranches = await prisma.branchManagerBranch.findMany({
-      where: {
-        userId: requester.userId,
-      },
-      select: {
-        branchId: true,
       },
     });
 
-    const allowedBranchIds = new Set(
-      managerBranches.map((item) => item.branchId),
-    );
-
-    // Staff-wide unavailability affects every assigned branch.
-    // Require access to all staff branches.
-    const hasAccess =
-      staff.branches.length > 0 &&
-      staff.branches.every((item) => allowedBranchIds.has(item.branchId));
-
-    if (!hasAccess) {
-      throw new AppError(
-        "You are not allowed to manage staff-wide unavailability",
-        403,
-      );
+    if (!staff) {
+      throw new AppError("Staff not found", 404);
     }
-  }
 
-  // =====================================================
-  // 3. FIND EXISTING UNAVAILABILITY
-  // =====================================================
+    // =====================================================
+    // 2. BRANCH MANAGER AUTHORIZATION
+    // =====================================================
 
-  const existingUnavailability = await prisma.staffUnavailability.findFirst({
-    where: {
-      id: unavailabilityId,
-      staffId,
-    },
-  });
+    const managerBranchIds = await unavailabilityManagerScope(tx, staff.branches, requester);
 
-  if (!existingUnavailability) {
-    throw new AppError("Staff unavailability not found", 404);
-  }
+    // =====================================================
+    // 3. FIND EXISTING UNAVAILABILITY
+    // =====================================================
 
-  // =====================================================
-  // 4. RESOLVE FINAL VALUES
-  // =====================================================
+    const existingUnavailability = await tx.staffUnavailability.findFirst({
+      where: {
+        id: unavailabilityId,
+        staffId,
+      },
+    });
 
-  const finalType = payload.type ?? existingUnavailability.type;
+    if (!existingUnavailability) {
+      throw new AppError("Staff unavailability not found", 404);
+    }
 
-  const finalDateString =
-    payload.date ?? existingUnavailability.date.toISOString().slice(0, 10);
+    // =====================================================
+    // 4. RESOLVE FINAL VALUES
+    // =====================================================
 
-  const finalStartTime = payload.startTime ?? existingUnavailability.startTime;
+    const finalType = payload.type ?? existingUnavailability.type;
 
-  const finalEndTime = payload.endTime ?? existingUnavailability.endTime;
+    const finalDateString =
+      payload.date ?? existingUnavailability.date.toISOString().slice(0, 10);
 
-  const finalReason =
-    payload.reason !== undefined
-      ? payload.reason.trim() || null
-      : existingUnavailability.reason;
+    const finalStartTime = payload.startTime ?? existingUnavailability.startTime;
 
-  // =====================================================
-  // 5. VALIDATE DATE AND TIME
-  // =====================================================
+    const finalEndTime = payload.endTime ?? existingUnavailability.endTime;
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(finalDateString)) {
-    throw new AppError("date must be in YYYY-MM-DD format", 400);
-  }
+    const finalReason =
+      payload.reason !== undefined
+        ? payload.reason.trim() || null
+        : existingUnavailability.reason;
 
-  const finalDate = new Date(`${finalDateString}T00:00:00.000Z`);
+    // =====================================================
+    // 5. VALIDATE DATE AND TIME
+    // =====================================================
 
-  if (
-    Number.isNaN(finalDate.getTime()) ||
-    finalDate.toISOString().slice(0, 10) !== finalDateString
-  ) {
-    throw new AppError("Invalid date", 400);
-  }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(finalDateString)) {
+      throw new AppError("date must be in YYYY-MM-DD format", 400);
+    }
 
-  const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    const finalDate = new Date(`${finalDateString}T00:00:00.000Z`);
 
-  if (!timeRegex.test(finalStartTime) || !timeRegex.test(finalEndTime)) {
-    throw new AppError("Time must be in HH:mm format", 400);
-  }
+    if (
+      Number.isNaN(finalDate.getTime()) ||
+      finalDate.toISOString().slice(0, 10) !== finalDateString
+    ) {
+      throw new AppError("Invalid date", 400);
+    }
 
-  const startMinutes = timeToMinutes(finalStartTime);
-  const endMinutes = timeToMinutes(finalEndTime);
+    const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-  if (startMinutes >= endMinutes) {
-    throw new AppError("startTime must be earlier than endTime", 400);
-  }
+    if (!timeRegex.test(finalStartTime) || !timeRegex.test(finalEndTime)) {
+      throw new AppError("Time must be in HH:mm format", 400);
+    }
 
-  // =====================================================
-  // 6. VALIDATE STAFF WORKING SCHEDULE
-  // =====================================================
+    const startMinutes = timeToMinutes(finalStartTime);
+    const endMinutes = timeToMinutes(finalEndTime);
 
-  const day = getDayOfWeekFromDate(finalDateString);
+    if (startMinutes >= endMinutes) {
+      throw new AppError("startTime must be earlier than endTime", 400);
+    }
 
-  const schedules = await prisma.staffSchedule.findMany({
-    where: {
-      staffId,
-      day,
-    },
-    select: {
-      branchId: true,
-      startTime: true,
-      endTime: true,
-    },
-  });
+    // =====================================================
+    // 6. VALIDATE STAFF WORKING SCHEDULE
+    // =====================================================
 
-  if (schedules.length === 0) {
-    throw new AppError("Staff is not scheduled to work on this date", 400);
-  }
+    const day = getDayOfWeekFromDate(finalDateString);
 
-  const fitsWorkingSchedule = schedules.some((schedule) => {
-    const workStart = timeToMinutes(schedule.startTime);
+    const weeklySchedules = await tx.staffSchedule.findMany({
+      where: {
+        staffId,
+        day,
+      },
+      select: {
+        branchId: true,
+        startTime: true,
+        endTime: true,
+      },
+    });
 
-    const workEnd = timeToMinutes(schedule.endTime);
+    const override = await tx.staffScheduleOverride.findUnique({
+      where: { staffId_date: { staffId, date: finalDate } },
+      select: { branchId: true, startTime: true, endTime: true },
+    });
+    // Check both dates when moving an existing staff-wide absence.
+    const scopedOverrides = await tx.staffScheduleOverride.findMany({
+      where: { staffId, date: { in: [existingUnavailability.date, finalDate] } },
+      select: { branchId: true },
+    });
+    assertUnavailabilityOverrideScope(managerBranchIds, scopedOverrides);
+    const schedules = override ? [override] : weeklySchedules;
 
-    return startMinutes >= workStart && endMinutes <= workEnd;
-  });
+    if (schedules.length === 0) {
+      throw new AppError("Staff is not scheduled to work on this date", 400);
+    }
 
-  // Full-day LEAVE/TIME_OFF may span multiple working periods.
-  const isLeaveType = finalType === "LEAVE" || finalType === "TIME_OFF";
-
-  const coversAllSchedules =
-    isLeaveType &&
-    schedules.every((schedule) => {
+    const fitsWorkingSchedule = schedules.some((schedule) => {
       const workStart = timeToMinutes(schedule.startTime);
 
       const workEnd = timeToMinutes(schedule.endTime);
 
-      return startMinutes <= workStart && endMinutes >= workEnd;
+      return startMinutes >= workStart && endMinutes <= workEnd;
     });
 
-  if (!fitsWorkingSchedule && !coversAllSchedules) {
-    throw new AppError(
-      "Unavailability must fit within a working period or cover all working periods for full-day leave",
-      400,
-    );
-  }
+    // Full-day LEAVE/TIME_OFF may span multiple working periods.
+    const isLeaveType = finalType === "LEAVE" || finalType === "TIME_OFF";
 
-  // =====================================================
-  // 7. CHECK OTHER UNAVAILABILITY RECORDS
-  // =====================================================
+    const coversAllSchedules =
+      isLeaveType &&
+      schedules.every((schedule) => {
+        const workStart = timeToMinutes(schedule.startTime);
 
-  const otherUnavailability = await prisma.staffUnavailability.findMany({
-    where: {
-      staffId,
-      date: finalDate,
-      id: {
-        not: unavailabilityId,
+        const workEnd = timeToMinutes(schedule.endTime);
+
+        return startMinutes <= workStart && endMinutes >= workEnd;
+      });
+
+    if (!fitsWorkingSchedule && !coversAllSchedules) {
+      throw new AppError(
+        "Unavailability must fit within a working period or cover all working periods for full-day leave",
+        400,
+      );
+    }
+
+    // =====================================================
+    // 7. CHECK OTHER UNAVAILABILITY RECORDS
+    // =====================================================
+
+    const otherUnavailability = await tx.staffUnavailability.findMany({
+      where: {
+        staffId,
+        date: finalDate,
+        id: {
+          not: unavailabilityId,
+        },
       },
-    },
-    select: {
-      startTime: true,
-      endTime: true,
-    },
+      select: {
+        startTime: true,
+        endTime: true,
+      },
+    });
+
+    const hasOverlap = otherUnavailability.some((item) => {
+      const existingStart = timeToMinutes(item.startTime);
+
+      const existingEnd = timeToMinutes(item.endTime);
+
+      return startMinutes < existingEnd && endMinutes > existingStart;
+    });
+
+    if (hasOverlap) {
+      throw new AppError(
+        "Unavailability conflicts with an existing blocked period",
+        409,
+      );
+    }
+
+    // =====================================================
+    // 8. CHECK EXISTING APPOINTMENT CONFLICTS
+    // =====================================================
+
+    await assertUnavailabilityAppointmentSafety(tx, staffId, [{
+      date: finalDate, startTime: finalStartTime, endTime: finalEndTime,
+    }]);
+
+    // =====================================================
+    // 9. UPDATE RECORD
+    // =====================================================
+
+    const updated = await tx.staffUnavailability.update({
+      where: {
+        id: unavailabilityId,
+      },
+      data: {
+        type: finalType,
+        date: finalDate,
+        startTime: finalStartTime,
+        endTime: finalEndTime,
+        reason: finalReason,
+      },
+    });
+
+    // =====================================================
+    // 10. RESPONSE — PRESERVE EXISTING FORMAT
+    // =====================================================
+
+    return {
+      id: updated.id,
+      type: updated.type,
+      date: updated.date.toISOString().slice(0, 10),
+      startTime: updated.startTime,
+      endTime: updated.endTime,
+      reason: updated.reason,
+    };
   });
-
-  const hasOverlap = otherUnavailability.some((item) => {
-    const existingStart = timeToMinutes(item.startTime);
-
-    const existingEnd = timeToMinutes(item.endTime);
-
-    return startMinutes < existingEnd && endMinutes > existingStart;
-  });
-
-  if (hasOverlap) {
-    throw new AppError(
-      "Unavailability conflicts with an existing blocked period",
-      409,
-    );
-  }
-
-  // =====================================================
-  // 8. CHECK EXISTING APPOINTMENT CONFLICTS
-  // =====================================================
-
-  const now = new Date();
-
-  const appointments = await prisma.appointment.findMany({
-    where: {
-      staffId,
-      date: finalDate,
-      OR: [
-        {
-          appointmentStatus: {
-            in: ["RESERVED", "CONFIRMED"],
-          },
-        },
-        {
-          appointmentStatus: "PENDING_PAYMENT",
-          OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
-        },
-      ],
-    },
-    select: {
-      id: true,
-      startTime: true,
-      endTime: true,
-      appointmentStatus: true,
-    },
-  });
-
-  const conflictingAppointment = appointments.find((appointment) => {
-    const appointmentStart = timeToMinutes(appointment.startTime);
-
-    const appointmentEnd = timeToMinutes(appointment.endTime);
-
-    return startMinutes < appointmentEnd && endMinutes > appointmentStart;
-  });
-
-  if (conflictingAppointment) {
-    throw new AppError(
-      `Staff has an existing ${conflictingAppointment.appointmentStatus} appointment on ${finalDateString}`,
-      409,
-    );
-  }
-
-  // =====================================================
-  // 9. UPDATE RECORD
-  // =====================================================
-
-  const updated = await prisma.staffUnavailability.update({
-    where: {
-      id: unavailabilityId,
-    },
-    data: {
-      type: finalType,
-      date: finalDate,
-      startTime: finalStartTime,
-      endTime: finalEndTime,
-      reason: finalReason,
-    },
-  });
-
-  // =====================================================
-  // 10. RESPONSE — PRESERVE EXISTING FORMAT
-  // =====================================================
-
-  return {
-    id: updated.id,
-    type: updated.type,
-    date: updated.date.toISOString().slice(0, 10),
-    startTime: updated.startTime,
-    endTime: updated.endTime,
-    reason: updated.reason,
-  };
 };
 
 const deleteStaffUnavailability = async (
@@ -4716,69 +4788,51 @@ const deleteStaffUnavailability = async (
     role: Role;
   },
 ) => {
-  const staff = await prisma.staff.findUnique({
-    where: {
-      id: staffId,
-    },
-
-    include: {
-      branches: {
-        select: {
-          branchId: true,
-        },
-      },
-    },
-  });
-
-  if (!staff) {
-    throw new AppError("Staff not found", 404);
-  }
-
-  if (requester.role === Role.BRANCH_MANAGER) {
-    const managerBranches = await prisma.branchManagerBranch.findMany({
+  return withStaffAvailabilityTransaction(async (tx) => {
+    const staff = await tx.staff.findUnique({
       where: {
-        userId: requester.userId,
+        id: staffId,
       },
 
-      select: {
-        branchId: true,
+      include: {
+        branches: {
+          select: {
+            branchId: true,
+          },
+        },
       },
     });
 
-    const allowedBranchIds = new Set(
-      managerBranches.map((item) => item.branchId),
-    );
-
-    const hasAccess = staff.branches.some((item) =>
-      allowedBranchIds.has(item.branchId),
-    );
-
-    if (!hasAccess) {
-      throw new AppError(
-        "You are not allowed to manage this staff member",
-        403,
-      );
+    if (!staff) {
+      throw new AppError("Staff not found", 404);
     }
-  }
 
-  const existingUnavailability = await prisma.staffUnavailability.findFirst({
-    where: {
-      id: unavailabilityId,
-      staffId,
-    },
+    const managerBranchIds = await unavailabilityManagerScope(tx, staff.branches, requester);
+
+    const existingUnavailability = await tx.staffUnavailability.findFirst({
+      where: {
+        id: unavailabilityId,
+        staffId,
+      },
+    });
+
+    if (!existingUnavailability) {
+      throw new AppError("Staff unavailability not found", 404);
+    }
+
+    const overrides = await tx.staffScheduleOverride.findMany({
+      where: { staffId, date: existingUnavailability.date }, select: { branchId: true },
+    });
+    assertUnavailabilityOverrideScope(managerBranchIds, overrides);
+
+    await tx.staffUnavailability.delete({
+      where: {
+        id: unavailabilityId,
+      },
+    });
+
+    return null;
   });
-
-  if (!existingUnavailability) {
-    throw new AppError("Staff unavailability not found", 404);
-  }
-
-  await prisma.staffUnavailability.delete({
-    where: {
-      id: unavailabilityId,
-    },
-  });
-
-  return null;
 };
 
 const getMyStaffSchedule = async (
@@ -5442,56 +5496,14 @@ const getMyAppointments = async (
   };
 };
 
-const createStaffScheduleOverride = async (
+const assertOverrideRemovalSafe = async (
+  tx: Prisma.TransactionClient,
   staffId: string,
-  payload: ICreateStaffScheduleOverridePayload,
-  requester: {
-    userId: string;
-    role: Role;
-  },
+  date: Date,
 ) => {
   // =====================================================
-  // 1. AUTHORIZATION
+  // 3. RESOLVE DAY OF WEEK
   // =====================================================
-
-  if (requester.role !== Role.BRAND_OWNER) {
-    throw new AppError(
-      "Only brand owners can create temporary staff assignments",
-      403,
-    );
-  }
-
-  // =====================================================
-  // 2. VALIDATE DATE AND TIME
-  // =====================================================
-
-  const date = new Date(`${payload.date}T00:00:00.000Z`);
-
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(payload.date) ||
-    Number.isNaN(date.getTime()) ||
-    date.toISOString().slice(0, 10) !== payload.date
-  ) {
-    throw new AppError("Invalid assignment date", 400);
-  }
-
-  const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-  const toMinutes = (value: string) => {
-    const [hours, minutes] = value.split(":").map(Number);
-    return hours * 60 + minutes;
-  };
-
-  if (!timeRegex.test(payload.startTime) || !timeRegex.test(payload.endTime)) {
-    throw new AppError("Time must be in HH:mm format", 400);
-  }
-
-  const start = toMinutes(payload.startTime);
-  const end = toMinutes(payload.endTime);
-
-  if (start >= end) {
-    throw new AppError("endTime must be later than startTime", 400);
-  }
 
   const dayNames = [
     "SUNDAY",
@@ -5505,159 +5517,19 @@ const createStaffScheduleOverride = async (
 
   const day = dayNames[date.getUTCDay()];
 
-  // =====================================================
-  // 3. CHECK STAFF
-  // =====================================================
-
-  const staff = await prisma.staff.findUnique({
-    where: { id: staffId },
-    select: {
-      id: true,
-      status: true,
-    },
-  });
-
-  if (!staff) {
-    throw new AppError("Staff not found", 404);
-  }
-
-  if (staff.status !== "ACTIVE") {
-    throw new AppError("Staff must be active", 400);
-  }
+  const toMinutes = (value: string) => {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
 
   // =====================================================
-  // 4. CHECK TARGET BRANCH AND BUSINESS HOURS
+  // 4. FETCH REGULAR STAFF SCHEDULES
   // =====================================================
 
-  const branch = await prisma.branch.findUnique({
-    where: { id: payload.branchId },
-    select: {
-      id: true,
-      status: true,
-      businessHours: {
-        where: { day },
-        include: { breaks: true },
-      },
-    },
-  });
-
-  if (!branch) {
-    throw new AppError("Target branch not found", 404);
-  }
-
-  if (branch.status !== "ACTIVE") {
-    throw new AppError("Target branch must be active", 400);
-  }
-
-  const businessHour = branch.businessHours[0];
-
-  if (
-    !businessHour ||
-    businessHour.isClosed ||
-    !businessHour.openTime ||
-    !businessHour.closeTime
-  ) {
-    throw new AppError(
-      "Target branch is closed or has no configured business hours",
-      400,
-    );
-  }
-
-  if (
-    start < toMinutes(businessHour.openTime) ||
-    end > toMinutes(businessHour.closeTime)
-  ) {
-    throw new AppError(
-      "Temporary shift must be within branch business hours",
-      400,
-    );
-  }
-
-  // Branch breaks cannot overlap the assigned shift.
-  // This is conservative: split shifts are not yet supported.
-
-  const overlaps = (
-    aStart: number,
-    aEnd: number,
-    bStart: number,
-    bEnd: number,
-  ) => aStart < bEnd && aEnd > bStart;
-
-  const overlapsBusinessBreak = businessHour.breaks.some((item) =>
-    overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
-  );
-
-  if (overlapsBusinessBreak) {
-    throw new AppError("Temporary shift overlaps a branch business break", 409);
-  }
-
-  // =====================================================
-  // 5. CHECK DUPLICATE OVERRIDE
-  // =====================================================
-
-  const existing = await prisma.staffScheduleOverride.findUnique({
-    where: {
-      staffId_date: {
-        staffId,
-        date,
-      },
-    },
-  });
-
-  if (existing) {
-    throw new AppError(
-      "A temporary assignment already exists for this staff and date",
-      409,
-    );
-  }
-
-  // =====================================================
-  // 6. CHECK EXISTING STAFF UNAVAILABILITY
-  // =====================================================
-
-  const unavailability = await prisma.staffUnavailability.findMany({
+  const regularSchedules = await tx.staffSchedule.findMany({
     where: {
       staffId,
-      date,
-    },
-    select: {
-      startTime: true,
-      endTime: true,
-    },
-  });
-
-  if (
-    unavailability.some((item) =>
-      overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
-    )
-  ) {
-    throw new AppError(
-      "Temporary assignment conflicts with staff unavailability",
-      409,
-    );
-  }
-
-  // =====================================================
-  // 7. CHECK EXISTING APPOINTMENTS ACROSS ALL BRANCHES
-  // =====================================================
-
-  const now = new Date();
-
-  const appointments = await prisma.appointment.findMany({
-    where: {
-      staffId,
-      date,
-      OR: [
-        {
-          appointmentStatus: {
-            in: ["RESERVED", "CONFIRMED", "COMPLETED"],
-          },
-        },
-        {
-          appointmentStatus: "PENDING_PAYMENT",
-          holdExpiresAt: { gt: now },
-        },
-      ],
+      day,
     },
     select: {
       branchId: true,
@@ -5666,44 +5538,327 @@ const createStaffScheduleOverride = async (
     },
   });
 
-  const hasAppointmentConflict = appointments.some((appointment) => {
-    return (
-      appointment.branchId !== payload.branchId ||
-      toMinutes(appointment.startTime) < start ||
-      toMinutes(appointment.endTime) > end
-    );
-  });
-
-  if (hasAppointmentConflict) {
-    throw new AppError(
-      "Existing appointments conflict with the temporary assignment",
-      409,
-    );
-  }
-
   // =====================================================
-  // 8. CREATE OVERRIDE
+  // 5. FETCH EXISTING APPOINTMENTS
   // =====================================================
 
-  const result = await prisma.staffScheduleOverride.create({
-    data: {
+  const now = new Date();
+
+  const appointments = await tx.appointment.findMany({
+    where: {
       staffId,
-      branchId: payload.branchId,
-      date,
-      startTime: payload.startTime,
-      endTime: payload.endTime,
+      date: date,
+      OR: [
+        {
+          appointmentStatus: {
+            in: ["RESERVED", "CONFIRMED", "COMPLETED"],
+          },
+        },
+        {
+          appointmentStatus: "PENDING_PAYMENT",
+          holdExpiresAt: {
+            gt: now,
+          },
+        },
+      ],
+    },
+    select: {
+      id: true,
+      branchId: true,
+      startTime: true,
+      endTime: true,
     },
   });
 
-  return {
-    id: result.id,
-    staffId: result.staffId,
-    branchId: result.branchId,
-    date: result.date.toISOString().slice(0, 10),
-    startTime: result.startTime,
-    endTime: result.endTime,
-    createdAt: result.createdAt,
-  };
+  // =====================================================
+  // 6. CHECK REGULAR SCHEDULE COMPATIBILITY
+  // =====================================================
+
+  for (const appointment of appointments) {
+    const appointmentStart = toMinutes(appointment.startTime);
+    const appointmentEnd = toMinutes(appointment.endTime);
+
+    const matchesRegularSchedule = regularSchedules.some(
+      (schedule) =>
+        schedule.branchId === appointment.branchId &&
+        appointmentStart >= toMinutes(schedule.startTime) &&
+        appointmentEnd <= toMinutes(schedule.endTime),
+    );
+
+    if (!matchesRegularSchedule) {
+      throw new AppError(
+        "Cannot delete temporary assignment because existing appointments conflict with the regular staff schedule",
+        409,
+      );
+    }
+  }
+
+};
+
+const createStaffScheduleOverride = async (
+  staffId: string,
+  payload: ICreateStaffScheduleOverridePayload,
+  requester: {
+    userId: string;
+    role: Role;
+  },
+) => {
+  return withStaffAvailabilityTransaction(async (tx) => {
+    // =====================================================
+    // 1. AUTHORIZATION
+    // =====================================================
+
+    if (requester.role !== Role.BRAND_OWNER) {
+      throw new AppError(
+        "Only brand owners can create temporary staff assignments",
+        403,
+      );
+    }
+
+    // =====================================================
+    // 2. VALIDATE DATE AND TIME
+    // =====================================================
+
+    const date = new Date(`${payload.date}T00:00:00.000Z`);
+
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(payload.date) ||
+      Number.isNaN(date.getTime()) ||
+      date.toISOString().slice(0, 10) !== payload.date
+    ) {
+      throw new AppError("Invalid assignment date", 400);
+    }
+
+    const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+    const toMinutes = (value: string) => {
+      const [hours, minutes] = value.split(":").map(Number);
+      return hours * 60 + minutes;
+    };
+
+    if (!timeRegex.test(payload.startTime) || !timeRegex.test(payload.endTime)) {
+      throw new AppError("Time must be in HH:mm format", 400);
+    }
+
+    const start = toMinutes(payload.startTime);
+    const end = toMinutes(payload.endTime);
+
+    if (start >= end) {
+      throw new AppError("endTime must be later than startTime", 400);
+    }
+
+    const dayNames = [
+      "SUNDAY",
+      "MONDAY",
+      "TUESDAY",
+      "WEDNESDAY",
+      "THURSDAY",
+      "FRIDAY",
+      "SATURDAY",
+    ] as const;
+
+    const day = dayNames[date.getUTCDay()];
+
+    // =====================================================
+    // 3. CHECK STAFF
+    // =====================================================
+
+    const staff = await tx.staff.findUnique({
+      where: { id: staffId },
+      select: {
+        id: true,
+        status: true,
+      },
+    });
+
+    if (!staff) {
+      throw new AppError("Staff not found", 404);
+    }
+
+    if (staff.status !== "ACTIVE") {
+      throw new AppError("Staff must be active", 400);
+    }
+
+    // =====================================================
+    // 4. CHECK TARGET BRANCH AND BUSINESS HOURS
+    // =====================================================
+
+    const branch = await tx.branch.findUnique({
+      where: { id: payload.branchId },
+      select: {
+        id: true,
+        status: true,
+        businessHours: {
+          where: { day },
+          include: { breaks: true },
+        },
+      },
+    });
+
+    if (!branch) {
+      throw new AppError("Target branch not found", 404);
+    }
+
+    if (branch.status !== "ACTIVE") {
+      throw new AppError("Target branch must be active", 400);
+    }
+
+    const businessHour = branch.businessHours[0];
+
+    if (
+      !businessHour ||
+      businessHour.isClosed ||
+      !businessHour.openTime ||
+      !businessHour.closeTime
+    ) {
+      throw new AppError(
+        "Target branch is closed or has no configured business hours",
+        400,
+      );
+    }
+
+    if (
+      start < toMinutes(businessHour.openTime) ||
+      end > toMinutes(businessHour.closeTime)
+    ) {
+      throw new AppError(
+        "Temporary shift must be within branch business hours",
+        400,
+      );
+    }
+
+    // Branch breaks cannot overlap the assigned shift.
+    // This is conservative: split shifts are not yet supported.
+
+    const overlaps = (
+      aStart: number,
+      aEnd: number,
+      bStart: number,
+      bEnd: number,
+    ) => aStart < bEnd && aEnd > bStart;
+
+    const overlapsBusinessBreak = businessHour.breaks.some((item) =>
+      overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
+    );
+
+    if (overlapsBusinessBreak) {
+      throw new AppError("Temporary shift overlaps a branch business break", 409);
+    }
+
+    // =====================================================
+    // 5. CHECK DUPLICATE OVERRIDE
+    // =====================================================
+
+    const existing = await tx.staffScheduleOverride.findUnique({
+      where: {
+        staffId_date: {
+          staffId,
+          date,
+        },
+      },
+    });
+
+    if (existing) {
+      throw new AppError(
+        "A temporary assignment already exists for this staff and date",
+        409,
+      );
+    }
+
+    // =====================================================
+    // 6. CHECK EXISTING STAFF UNAVAILABILITY
+    // =====================================================
+
+    const unavailability = await tx.staffUnavailability.findMany({
+      where: {
+        staffId,
+        date,
+      },
+      select: {
+        startTime: true,
+        endTime: true,
+      },
+    });
+
+    if (
+      unavailability.some((item) =>
+        overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
+      )
+    ) {
+      throw new AppError(
+        "Temporary assignment conflicts with staff unavailability",
+        409,
+      );
+    }
+
+    // =====================================================
+    // 7. CHECK EXISTING APPOINTMENTS ACROSS ALL BRANCHES
+    // =====================================================
+
+    const now = new Date();
+
+    const appointments = await tx.appointment.findMany({
+      where: {
+        staffId,
+        date,
+        OR: [
+          {
+            appointmentStatus: {
+              in: ["RESERVED", "CONFIRMED", "COMPLETED"],
+            },
+          },
+          {
+            appointmentStatus: "PENDING_PAYMENT",
+            holdExpiresAt: { gt: now },
+          },
+        ],
+      },
+      select: {
+        branchId: true,
+        startTime: true,
+        endTime: true,
+      },
+    });
+
+    const hasAppointmentConflict = appointments.some((appointment) => {
+      return (
+        appointment.branchId !== payload.branchId ||
+        toMinutes(appointment.startTime) < start ||
+        toMinutes(appointment.endTime) > end
+      );
+    });
+
+    if (hasAppointmentConflict) {
+      throw new AppError(
+        "Existing appointments conflict with the temporary assignment",
+        409,
+      );
+    }
+
+    // =====================================================
+    // 8. CREATE OVERRIDE
+    // =====================================================
+
+    const result = await tx.staffScheduleOverride.create({
+      data: {
+        staffId,
+        branchId: payload.branchId,
+        date,
+        startTime: payload.startTime,
+        endTime: payload.endTime,
+      },
+    });
+
+    return {
+      id: result.id,
+      staffId: result.staffId,
+      branchId: result.branchId,
+      date: result.date.toISOString().slice(0, 10),
+      startTime: result.startTime,
+      endTime: result.endTime,
+      createdAt: result.createdAt,
+    };
+  });
 };
 
 const getStaffScheduleOverrides = async (
@@ -5887,288 +6042,295 @@ const updateStaffScheduleOverride = async (
     role: Role;
   },
 ) => {
-  // =====================================================
-  // 1. AUTHORIZATION
-  // =====================================================
+  return withStaffAvailabilityTransaction(async (tx) => {
+    // =====================================================
+    // 1. AUTHORIZATION
+    // =====================================================
 
-  if (requester.role !== Role.BRAND_OWNER) {
-    throw new AppError(
-      "Only brand owners can update temporary staff assignments",
-      403,
-    );
-  }
+    if (requester.role !== Role.BRAND_OWNER) {
+      throw new AppError(
+        "Only brand owners can update temporary staff assignments",
+        403,
+      );
+    }
 
-  // =====================================================
-  // 2. FIND EXISTING OVERRIDE
-  // =====================================================
+    // =====================================================
+    // 2. FIND EXISTING OVERRIDE
+    // =====================================================
 
-  const existing = await prisma.staffScheduleOverride.findFirst({
-    where: {
-      id: overrideId,
-      staffId,
-    },
-  });
+    const existing = await tx.staffScheduleOverride.findFirst({
+      where: {
+        id: overrideId,
+        staffId,
+      },
+    });
 
-  if (!existing) {
-    throw new AppError("Temporary staff assignment not found", 404);
-  }
+    if (!existing) {
+      throw new AppError("Temporary staff assignment not found", 404);
+    }
 
-  // =====================================================
-  // 3. RESOLVE UPDATED VALUES
-  // =====================================================
+    // =====================================================
+    // 3. RESOLVE UPDATED VALUES
+    // =====================================================
 
-  const branchId = payload.branchId ?? existing.branchId;
+    const branchId = payload.branchId ?? existing.branchId;
 
-  const dateString = payload.date ?? existing.date.toISOString().slice(0, 10);
+    const dateString = payload.date ?? existing.date.toISOString().slice(0, 10);
 
-  const startTime = payload.startTime ?? existing.startTime;
-  const endTime = payload.endTime ?? existing.endTime;
+    const startTime = payload.startTime ?? existing.startTime;
+    const endTime = payload.endTime ?? existing.endTime;
 
-  const date = new Date(`${dateString}T00:00:00.000Z`);
+    const date = new Date(`${dateString}T00:00:00.000Z`);
 
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(dateString) ||
-    Number.isNaN(date.getTime()) ||
-    date.toISOString().slice(0, 10) !== dateString
-  ) {
-    throw new AppError("Invalid assignment date", 400);
-  }
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(dateString) ||
+      Number.isNaN(date.getTime()) ||
+      date.toISOString().slice(0, 10) !== dateString
+    ) {
+      throw new AppError("Invalid assignment date", 400);
+    }
 
-  const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+    const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-  const toMinutes = (value: string) => {
-    const [hours, minutes] = value.split(":").map(Number);
-    return hours * 60 + minutes;
-  };
+    const toMinutes = (value: string) => {
+      const [hours, minutes] = value.split(":").map(Number);
+      return hours * 60 + minutes;
+    };
 
-  if (!timeRegex.test(startTime) || !timeRegex.test(endTime)) {
-    throw new AppError("Time must be in HH:mm format", 400);
-  }
+    if (!timeRegex.test(startTime) || !timeRegex.test(endTime)) {
+      throw new AppError("Time must be in HH:mm format", 400);
+    }
 
-  const start = toMinutes(startTime);
-  const end = toMinutes(endTime);
+    const start = toMinutes(startTime);
+    const end = toMinutes(endTime);
 
-  if (start >= end) {
-    throw new AppError("endTime must be later than startTime", 400);
-  }
+    if (start >= end) {
+      throw new AppError("endTime must be later than startTime", 400);
+    }
 
-  // =====================================================
-  // 4. VALIDATE STAFF
-  // =====================================================
+    // =====================================================
+    // 4. VALIDATE STAFF
+    // =====================================================
 
-  const staff = await prisma.staff.findUnique({
-    where: { id: staffId },
-    select: {
-      id: true,
-      status: true,
-    },
-  });
+    const staff = await tx.staff.findUnique({
+      where: { id: staffId },
+      select: {
+        id: true,
+        status: true,
+      },
+    });
 
-  if (!staff) {
-    throw new AppError("Staff not found", 404);
-  }
+    if (!staff) {
+      throw new AppError("Staff not found", 404);
+    }
 
-  if (staff.status !== "ACTIVE") {
-    throw new AppError("Staff must be active", 400);
-  }
+    if (staff.status !== "ACTIVE") {
+      throw new AppError("Staff must be active", 400);
+    }
 
-  // =====================================================
-  // 5. VALIDATE TARGET BRANCH BUSINESS HOURS
-  // =====================================================
+    // =====================================================
+    // 5. VALIDATE TARGET BRANCH BUSINESS HOURS
+    // =====================================================
 
-  const dayNames = [
-    "SUNDAY",
-    "MONDAY",
-    "TUESDAY",
-    "WEDNESDAY",
-    "THURSDAY",
-    "FRIDAY",
-    "SATURDAY",
-  ] as const;
+    const dayNames = [
+      "SUNDAY",
+      "MONDAY",
+      "TUESDAY",
+      "WEDNESDAY",
+      "THURSDAY",
+      "FRIDAY",
+      "SATURDAY",
+    ] as const;
 
-  const day = dayNames[date.getUTCDay()];
+    const day = dayNames[date.getUTCDay()];
 
-  const branch = await prisma.branch.findUnique({
-    where: { id: branchId },
-    select: {
-      id: true,
-      status: true,
-      businessHours: {
-        where: { day },
-        include: {
-          breaks: true,
+    const branch = await tx.branch.findUnique({
+      where: { id: branchId },
+      select: {
+        id: true,
+        status: true,
+        businessHours: {
+          where: { day },
+          include: {
+            breaks: true,
+          },
         },
       },
-    },
-  });
+    });
 
-  if (!branch) {
-    throw new AppError("Target branch not found", 404);
-  }
+    if (!branch) {
+      throw new AppError("Target branch not found", 404);
+    }
 
-  if (branch.status !== "ACTIVE") {
-    throw new AppError("Target branch must be active", 400);
-  }
+    if (branch.status !== "ACTIVE") {
+      throw new AppError("Target branch must be active", 400);
+    }
 
-  const businessHour = branch.businessHours[0];
+    const businessHour = branch.businessHours[0];
 
-  if (
-    !businessHour ||
-    businessHour.isClosed ||
-    !businessHour.openTime ||
-    !businessHour.closeTime
-  ) {
-    throw new AppError(
-      "Target branch is closed or has no configured business hours",
-      400,
+    if (
+      !businessHour ||
+      businessHour.isClosed ||
+      !businessHour.openTime ||
+      !businessHour.closeTime
+    ) {
+      throw new AppError(
+        "Target branch is closed or has no configured business hours",
+        400,
+      );
+    }
+
+    if (
+      start < toMinutes(businessHour.openTime) ||
+      end > toMinutes(businessHour.closeTime)
+    ) {
+      throw new AppError(
+        "Temporary shift must be within branch business hours",
+        400,
+      );
+    }
+
+    const overlaps = (
+      aStart: number,
+      aEnd: number,
+      bStart: number,
+      bEnd: number,
+    ) => aStart < bEnd && aEnd > bStart;
+
+    // Keep consistent with the existing CREATE API policy.
+    const conflictsWithBranchBreak = businessHour.breaks.some((item) =>
+      overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
     );
-  }
 
-  if (
-    start < toMinutes(businessHour.openTime) ||
-    end > toMinutes(businessHour.closeTime)
-  ) {
-    throw new AppError(
-      "Temporary shift must be within branch business hours",
-      400,
-    );
-  }
+    if (conflictsWithBranchBreak) {
+      throw new AppError("Temporary shift overlaps a branch business break", 409);
+    }
 
-  const overlaps = (
-    aStart: number,
-    aEnd: number,
-    bStart: number,
-    bEnd: number,
-  ) => aStart < bEnd && aEnd > bStart;
+    // =====================================================
+    // 6. CHECK DUPLICATE STAFF + DATE
+    // =====================================================
 
-  // Keep consistent with the existing CREATE API policy.
-  const conflictsWithBranchBreak = businessHour.breaks.some((item) =>
-    overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
-  );
+    const duplicate = await tx.staffScheduleOverride.findUnique({
+      where: {
+        staffId_date: {
+          staffId,
+          date,
+        },
+      },
+    });
 
-  if (conflictsWithBranchBreak) {
-    throw new AppError("Temporary shift overlaps a branch business break", 409);
-  }
+    if (duplicate && duplicate.id !== overrideId) {
+      throw new AppError(
+        "A temporary assignment already exists for this staff and date",
+        409,
+      );
+    }
 
-  // =====================================================
-  // 6. CHECK DUPLICATE STAFF + DATE
-  // =====================================================
+    // =====================================================
+    // 7. CHECK STAFF UNAVAILABILITY
+    // =====================================================
 
-  const duplicate = await prisma.staffScheduleOverride.findUnique({
-    where: {
-      staffId_date: {
+    const unavailability = await tx.staffUnavailability.findMany({
+      where: {
         staffId,
         date,
       },
-    },
-  });
+      select: {
+        startTime: true,
+        endTime: true,
+      },
+    });
 
-  if (duplicate && duplicate.id !== overrideId) {
-    throw new AppError(
-      "A temporary assignment already exists for this staff and date",
-      409,
+    const hasUnavailabilityConflict = unavailability.some((item) =>
+      overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
     );
-  }
 
-  // =====================================================
-  // 7. CHECK STAFF UNAVAILABILITY
-  // =====================================================
+    if (hasUnavailabilityConflict) {
+      throw new AppError(
+        "Temporary assignment conflicts with staff unavailability",
+        409,
+      );
+    }
 
-  const unavailability = await prisma.staffUnavailability.findMany({
-    where: {
-      staffId,
-      date,
-    },
-    select: {
-      startTime: true,
-      endTime: true,
-    },
-  });
+    // =====================================================
+    // 8. CHECK EXISTING APPOINTMENTS
+    // =====================================================
 
-  const hasUnavailabilityConflict = unavailability.some((item) =>
-    overlaps(start, end, toMinutes(item.startTime), toMinutes(item.endTime)),
-  );
+    const now = new Date();
 
-  if (hasUnavailabilityConflict) {
-    throw new AppError(
-      "Temporary assignment conflicts with staff unavailability",
-      409,
-    );
-  }
-
-  // =====================================================
-  // 8. CHECK EXISTING APPOINTMENTS
-  // =====================================================
-
-  const now = new Date();
-
-  const appointments = await prisma.appointment.findMany({
-    where: {
-      staffId,
-      date,
-      OR: [
-        {
-          appointmentStatus: {
-            in: ["RESERVED", "CONFIRMED", "COMPLETED"],
+    const appointments = await tx.appointment.findMany({
+      where: {
+        staffId,
+        date,
+        OR: [
+          {
+            appointmentStatus: {
+              in: ["RESERVED", "CONFIRMED", "COMPLETED"],
+            },
           },
-        },
-        {
-          appointmentStatus: "PENDING_PAYMENT",
-          holdExpiresAt: { gt: now },
-        },
-      ],
-    },
-    select: {
-      branchId: true,
-      startTime: true,
-      endTime: true,
-    },
-  });
+          {
+            appointmentStatus: "PENDING_PAYMENT",
+            holdExpiresAt: { gt: now },
+          },
+        ],
+      },
+      select: {
+        branchId: true,
+        startTime: true,
+        endTime: true,
+      },
+    });
 
-  const hasAppointmentConflict = appointments.some(
-    (appointment) =>
-      appointment.branchId !== branchId ||
-      toMinutes(appointment.startTime) < start ||
-      toMinutes(appointment.endTime) > end,
-  );
-
-  if (hasAppointmentConflict) {
-    throw new AppError(
-      "Existing appointments conflict with the temporary assignment",
-      409,
+    const hasAppointmentConflict = appointments.some(
+      (appointment) =>
+        appointment.branchId !== branchId ||
+        toMinutes(appointment.startTime) < start ||
+        toMinutes(appointment.endTime) > end,
     );
-  }
 
-  // =====================================================
-  // 9. UPDATE OVERRIDE
-  // =====================================================
+    if (hasAppointmentConflict) {
+      throw new AppError(
+        "Existing appointments conflict with the temporary assignment",
+        409,
+      );
+    }
 
-  const updated = await prisma.staffScheduleOverride.update({
-    where: {
-      id: overrideId,
-    },
-    data: {
-      branchId,
-      date,
-      startTime,
-      endTime,
-    },
+    // =====================================================
+    // 9. UPDATE OVERRIDE
+    // =====================================================
+
+    // Moving an override also removes the original date's effective shift.
+    if (existing.date.getTime() !== date.getTime()) {
+      await assertOverrideRemovalSafe(tx, staffId, existing.date);
+    }
+
+    const updated = await tx.staffScheduleOverride.update({
+      where: {
+        id: overrideId,
+      },
+      data: {
+        branchId,
+        date,
+        startTime,
+        endTime,
+      },
+    });
+
+    // =====================================================
+    // 10. RESPONSE
+    // =====================================================
+
+    return {
+      id: updated.id,
+      staffId: updated.staffId,
+      branchId: updated.branchId,
+      date: updated.date.toISOString().slice(0, 10),
+      startTime: updated.startTime,
+      endTime: updated.endTime,
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt,
+    };
   });
-
-  // =====================================================
-  // 10. RESPONSE
-  // =====================================================
-
-  return {
-    id: updated.id,
-    staffId: updated.staffId,
-    branchId: updated.branchId,
-    date: updated.date.toISOString().slice(0, 10),
-    startTime: updated.startTime,
-    endTime: updated.endTime,
-    createdAt: updated.createdAt,
-    updatedAt: updated.updatedAt,
-  };
 };
 
 const deleteStaffScheduleOverride = async (
@@ -6179,145 +6341,57 @@ const deleteStaffScheduleOverride = async (
     role: Role;
   },
 ) => {
-  // =====================================================
-  // 1. AUTHORIZATION
-  // =====================================================
+  return withStaffAvailabilityTransaction(async (tx) => {
+    // =====================================================
+    // 1. AUTHORIZATION
+    // =====================================================
 
-  if (requester.role !== Role.BRAND_OWNER) {
-    throw new AppError(
-      "Only brand owners can delete temporary staff assignments",
-      403,
-    );
-  }
-
-  // =====================================================
-  // 2. FIND EXISTING OVERRIDE
-  // =====================================================
-
-  const existing = await prisma.staffScheduleOverride.findFirst({
-    where: {
-      id: overrideId,
-      staffId,
-    },
-  });
-
-  if (!existing) {
-    throw new AppError("Temporary staff assignment not found", 404);
-  }
-
-  // =====================================================
-  // 3. RESOLVE DAY OF WEEK
-  // =====================================================
-
-  const dayNames = [
-    "SUNDAY",
-    "MONDAY",
-    "TUESDAY",
-    "WEDNESDAY",
-    "THURSDAY",
-    "FRIDAY",
-    "SATURDAY",
-  ] as const;
-
-  const day = dayNames[existing.date.getUTCDay()];
-
-  const toMinutes = (value: string) => {
-    const [hours, minutes] = value.split(":").map(Number);
-    return hours * 60 + minutes;
-  };
-
-  // =====================================================
-  // 4. FETCH REGULAR STAFF SCHEDULES
-  // =====================================================
-
-  const regularSchedules = await prisma.staffSchedule.findMany({
-    where: {
-      staffId,
-      day,
-    },
-    select: {
-      branchId: true,
-      startTime: true,
-      endTime: true,
-    },
-  });
-
-  // =====================================================
-  // 5. FETCH EXISTING APPOINTMENTS
-  // =====================================================
-
-  const now = new Date();
-
-  const appointments = await prisma.appointment.findMany({
-    where: {
-      staffId,
-      date: existing.date,
-      OR: [
-        {
-          appointmentStatus: {
-            in: ["RESERVED", "CONFIRMED", "COMPLETED"],
-          },
-        },
-        {
-          appointmentStatus: "PENDING_PAYMENT",
-          holdExpiresAt: {
-            gt: now,
-          },
-        },
-      ],
-    },
-    select: {
-      id: true,
-      branchId: true,
-      startTime: true,
-      endTime: true,
-    },
-  });
-
-  // =====================================================
-  // 6. CHECK REGULAR SCHEDULE COMPATIBILITY
-  // =====================================================
-
-  for (const appointment of appointments) {
-    const appointmentStart = toMinutes(appointment.startTime);
-    const appointmentEnd = toMinutes(appointment.endTime);
-
-    const matchesRegularSchedule = regularSchedules.some(
-      (schedule) =>
-        schedule.branchId === appointment.branchId &&
-        appointmentStart >= toMinutes(schedule.startTime) &&
-        appointmentEnd <= toMinutes(schedule.endTime),
-    );
-
-    if (!matchesRegularSchedule) {
+    if (requester.role !== Role.BRAND_OWNER) {
       throw new AppError(
-        "Cannot delete temporary assignment because existing appointments conflict with the regular staff schedule",
-        409,
+        "Only brand owners can delete temporary staff assignments",
+        403,
       );
     }
-  }
 
-  // =====================================================
-  // 7. DELETE TEMPORARY OVERRIDE
-  // =====================================================
+    // =====================================================
+    // 2. FIND EXISTING OVERRIDE
+    // =====================================================
 
-  await prisma.staffScheduleOverride.delete({
-    where: {
-      id: overrideId,
-    },
+    const existing = await tx.staffScheduleOverride.findFirst({
+      where: {
+        id: overrideId,
+        staffId,
+      },
+    });
+
+    if (!existing) {
+      throw new AppError("Temporary staff assignment not found", 404);
+    }
+
+    await assertOverrideRemovalSafe(tx, staffId, existing.date);
+
+    // =====================================================
+    // 7. DELETE TEMPORARY OVERRIDE
+    // =====================================================
+
+    await tx.staffScheduleOverride.delete({
+      where: {
+        id: overrideId,
+      },
+    });
+
+    // =====================================================
+    // 8. RESPONSE
+    // =====================================================
+
+    return {
+      id: existing.id,
+      staffId: existing.staffId,
+      branchId: existing.branchId,
+      date: existing.date.toISOString().slice(0, 10),
+      deleted: true,
+    };
   });
-
-  // =====================================================
-  // 8. RESPONSE
-  // =====================================================
-
-  return {
-    id: existing.id,
-    staffId: existing.staffId,
-    branchId: existing.branchId,
-    date: existing.date.toISOString().slice(0, 10),
-    deleted: true,
-  };
 };
 
 const getEffectiveStaffSchedule = async (

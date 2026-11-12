@@ -1,4 +1,6 @@
 import { bookNowFixture, providerEvent, policyTestControl } from './book-now-fixture.mjs';
+import { staffScheduleFixture } from './staff-schedule-fixture.mjs';
+import { staffAvailabilityFixture } from './staff-availability-fixture.mjs';
 import { businessEmailTestControl } from './business-email-fixture.mjs';
 import { myOrdersFixture } from './my-orders-fixture.mjs';
 // Bundled only by build-cloudflare --test. Never included in the deployed entry.
@@ -23,6 +25,10 @@ export class SalonTestDatabase extends SalonDatabase {
   async sendMail(message) { this.outbox.push(message); return { messageId: 'test' }; }
   connectSmtp(address, options) { return emailMockSocket(address, options); }
   async fetch(request) {
+    if (new URL(request.url).pathname === '/__staff-availability-test') return this.enqueue(async () =>
+      Response.json(await staffAvailabilityFixture(this.db, this.ctx.storage, await request.json())));
+    if (new URL(request.url).pathname === '/__staff-schedule-test') return this.enqueue(async () =>
+      Response.json(await staffScheduleFixture(this.db, this.ctx.storage, await request.json())));
     if (new URL(request.url).pathname === '/__my-orders-fixture') return this.enqueue(async () =>
       Response.json(await myOrdersFixture(this.db, await request.json())));
     if (new URL(request.url).pathname === '/__business-email-test') return this.enqueue(async () => Response.json(await businessEmailTestControl(this.db, this.ctx.storage, await request.json())));
