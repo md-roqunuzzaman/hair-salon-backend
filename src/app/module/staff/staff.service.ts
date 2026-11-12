@@ -4952,9 +4952,6 @@ const getMyAppointments = async (
   // =====================================================
 
   if (appointmentType === "UPCOMING" || appointmentType === "HISTORY") {
-    // Read only distinct saved timezones.
-    // This query is scoped to the logged-in staff.
-
     const timezoneRows = await prisma.appointment.findMany({
       where: {
         staffId: staff.id,
@@ -4964,10 +4961,6 @@ const getMyAppointments = async (
       },
       distinct: ["timezone"],
     });
-
-    // -------------------------------------------------
-    // GET CURRENT LOCAL DATE/TIME IN A TIMEZONE
-    // -------------------------------------------------
 
     const getCurrentLocalTime = (timezone: string) => {
       const parts = new Intl.DateTimeFormat("en-GB", {
@@ -4991,8 +4984,6 @@ const getMyAppointments = async (
 
       const localTime = `${getPart("hour")}:${getPart("minute")}`;
 
-      // Date-only key, normalized to UTC midnight.
-
       const todayDate = new Date(`${localDate}T00:00:00.000Z`);
 
       return {
@@ -5001,18 +4992,10 @@ const getMyAppointments = async (
       };
     };
 
-    // -------------------------------------------------
-    // BUILD TIMEZONE-SPECIFIC CONDITIONS
-    // -------------------------------------------------
-
     const timezoneFilters: Prisma.AppointmentWhereInput[] = [];
 
     for (const row of timezoneRows) {
       const savedTimezone = row.timezone;
-
-      // Keep the persisted timezone when present.
-      // Legacy null records use brand fallback.
-
       const effectiveTimezone = savedTimezone ?? fallbackTimezone;
 
       const { todayDate, localTime } = getCurrentLocalTime(effectiveTimezone);
@@ -5093,9 +5076,6 @@ const getMyAppointments = async (
       }
     }
 
-    // Empty timezone list must produce no results,
-    // not accidentally remove the type filter.
-
     if (timezoneFilters.length === 0) {
       filters.push({
         id: {
@@ -5135,9 +5115,17 @@ const getMyAppointments = async (
       select: {
         id: true,
         orderNumber: true,
+
         bookingMethod: true,
         appointmentStatus: true,
         paymentStatus: true,
+
+        // NEW: FINANCIAL FIELDS
+        price: true,
+        currency: true,
+        depositPercentage: true,
+        depositAmount: true,
+        remainingAmount: true,
 
         date: true,
         startTime: true,
@@ -5281,12 +5269,18 @@ const getMyAppointments = async (
 
     return {
       id: appointment.id,
-      orderNumber: appointment.orderNumber, // NEW
+      orderNumber: appointment.orderNumber,
+
       bookingMethod: appointment.bookingMethod,
-
       appointmentStatus: appointment.appointmentStatus,
-
       paymentStatus: appointment.paymentStatus,
+
+      // NEW: FINANCIAL RESPONSE
+      price: Number(appointment.price),
+      currency: appointment.currency,
+      depositPercentage: Number(appointment.depositPercentage ?? 0),
+      depositAmount: Number(appointment.depositAmount ?? 0),
+      remainingAmount: Number(appointment.remainingAmount ?? 0),
 
       branch: {
         id: appointment.branch.id,
@@ -5320,7 +5314,6 @@ const getMyAppointments = async (
 
       // Booking-time timezone snapshot.
       // Legacy records may return null.
-
       timezone: appointment.timezone,
 
       durationMinutes: appointment.durationMinutes,
