@@ -6294,6 +6294,22 @@ const getBranchAppointments = async (
   // 8. BUILD PRISMA FILTER
   // =====================================================
 
+  // NEW:
+  // For manager/owner, NO_SHOW filter includes EXPIRED.
+  // Original database statuses remain unchanged.
+
+  const isManagerView =
+    role === Role.BRANCH_MANAGER || role === Role.BRAND_OWNER;
+
+  const appointmentStatusFilter: Prisma.AppointmentWhereInput["appointmentStatus"] =
+    status === AppointmentStatus.NO_SHOW && isManagerView
+      ? {
+          in: [AppointmentStatus.NO_SHOW, AppointmentStatus.EXPIRED],
+        }
+      : status
+        ? (status as AppointmentStatus)
+        : undefined;
+
   const where: Prisma.AppointmentWhereInput = {
     branchId,
 
@@ -6301,8 +6317,8 @@ const getBranchAppointments = async (
       date: appointmentDate,
     }),
 
-    ...(status && {
-      appointmentStatus: status as AppointmentStatus,
+    ...(appointmentStatusFilter && {
+      appointmentStatus: appointmentStatusFilter,
     }),
 
     ...(query.bookingMethod && {
@@ -6360,7 +6376,6 @@ const getBranchAppointments = async (
         qrToken: true,
         qrVerifiedAt: true,
 
-        // NEW: Parent group purchase financial context.
         groupPurchase: {
           select: {
             id: true,
@@ -6604,7 +6619,6 @@ const getBranchAppointments = async (
 
     const remainingAmount = Number(appointment.remainingAmount ?? 0);
 
-    // NEW: Current outstanding balance.
     const outstandingBalance = calculateOutstandingBalance(appointment);
 
     const groupPurchaseTotal = appointment.groupPurchase
@@ -6676,6 +6690,19 @@ const getBranchAppointments = async (
       : null;
 
     // =================================================
+    // NEW: MANAGER DISPLAY STATUS
+    // =================================================
+
+    // EXPIRED is displayed as NO_SHOW in manager/owner UI.
+    // Keep the original appointmentStatus for business logic.
+
+    const displayStatus =
+      isManagerView &&
+      appointment.appointmentStatus === AppointmentStatus.EXPIRED
+        ? AppointmentStatus.NO_SHOW
+        : appointment.appointmentStatus;
+
+    // =================================================
     // RESPONSE
     // =================================================
 
@@ -6684,7 +6711,12 @@ const getBranchAppointments = async (
       orderNumber: appointment.orderNumber,
 
       bookingMethod: appointment.bookingMethod,
+
+      // Original database status.
       appointmentStatus: appointment.appointmentStatus,
+
+      // NEW: Manager-facing display status.
+      displayStatus,
 
       paymentStatus: appointment.paymentStatus,
       paymentDisplayStatus,
@@ -6741,7 +6773,7 @@ const getBranchAppointments = async (
       depositAmount,
       remainingAmount,
 
-      // NEW: Financial display fields.
+      // Financial display fields.
       outstandingBalance,
       groupPurchaseTotal,
 
