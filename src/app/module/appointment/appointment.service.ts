@@ -2613,12 +2613,6 @@ const getMyAppointments = async (
   // 4. RESOLVE APPOINTMENT TIMEZONES
   // =====================================================
 
-  // A customer may have appointments created under
-  // different brand timezones.
-  //
-  // Find distinct persisted timezone values before
-  // building the database-level date filters.
-
   const timezoneRows = await prisma.appointment.findMany({
     where: {
       customerId,
@@ -2653,9 +2647,6 @@ const getMyAppointments = async (
 
     const localTime = `${getPart("hour")}:${getPart("minute")}`;
 
-    // Appointment.date is a date-only calendar key
-    // stored as UTC midnight, not an instant.
-
     const todayDate = new Date(`${localDate}T00:00:00.000Z`);
 
     return {
@@ -2672,9 +2663,6 @@ const getMyAppointments = async (
 
   for (const row of timezoneRows) {
     const savedTimezone = row.timezone;
-
-    // Legacy appointments with null timezone use
-    // the current brand timezone as a fallback.
 
     const effectiveTimezone = savedTimezone ?? brand.timezone;
 
@@ -2729,9 +2717,6 @@ const getMyAppointments = async (
         ],
       });
     } else {
-      // Preserve original behavior:
-      // Any type other than UPCOMING uses HISTORY.
-
       timezoneFilters.push({
         AND: [
           timezoneCondition,
@@ -2765,9 +2750,6 @@ const getMyAppointments = async (
 
   const where: Prisma.AppointmentWhereInput = {
     customerId,
-
-    // If no appointments exist, return an empty result.
-    // Do not accidentally query every appointment.
 
     ...(timezoneFilters.length > 0
       ? {
@@ -2862,7 +2844,6 @@ const getMyAppointments = async (
               where: {
                 status: "SUCCEEDED",
               },
-
               select: {
                 amount: true,
               },
@@ -3111,13 +3092,15 @@ const getMyAppointments = async (
 
       price,
 
-      // Persisted booking-time snapshots.
       currency: appointment.currency,
       timezone: appointment.timezone,
 
       depositPercentage,
       depositAmount,
       remainingAmount,
+
+      // NEW: Actual outstanding balance
+      outstandingBalance: amountDue,
 
       amountPaid,
       amountDue,
@@ -3313,10 +3296,6 @@ const getAppointmentById = async (
   // 4. QR STATE
   // =====================================================
 
-  // QR availability for all supported booking methods.
-  // A QR must exist, remain unused, and the appointment
-  // must be in an eligible state.
-
   const qrEligibleStatuses: AppointmentStatus[] = [
     AppointmentStatus.RESERVED,
     AppointmentStatus.CONFIRMED,
@@ -3472,7 +3451,6 @@ const getAppointmentById = async (
       break;
 
     case PaymentStatus.PARTIALLY_REFUNDED:
-      // Refund does not automatically reopen payment obligation.
       amountDue = 0;
       break;
 
@@ -3565,20 +3543,15 @@ const getAppointmentById = async (
 
     price,
 
-    // ===================================================
-    // BOOKING-TIME CURRENCY AND TIMEZONE SNAPSHOTS
-    // ===================================================
-
     currency: appointment.currency,
-
-    // Use the timezone saved when the appointment was created.
-    // Do not substitute the brand's current timezone.
-    // Legacy appointments may have a null timezone.
     timezone: appointment.timezone,
 
     depositPercentage,
     depositAmount,
     remainingAmount,
+
+    // NEW: Actual outstanding balance
+    outstandingBalance: amountDue,
 
     amountPaid,
     amountDue,

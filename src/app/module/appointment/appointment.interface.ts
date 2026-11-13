@@ -132,6 +132,69 @@ export interface IMyAppointmentItem {
   qrAvailable: boolean;
 }
 
+export interface IMyAppointmentsQuery {
+  type: AppointmentListType;
+  page?: string;
+  limit?: string;
+}
+
+export interface IMyAppointmentItem {
+  id: string;
+  orderNumber: string | null;
+
+  paymentDisplayStatus: PaymentDisplayStatus;
+
+  bookingMethod: BookingMethodType;
+  appointmentStatus: AppointmentStatusType;
+  paymentStatus: PaymentStatusType;
+
+  branch: {
+    id: string;
+    name: string;
+  };
+
+  service: {
+    id: string;
+    name: string;
+  } | null;
+
+  package: {
+    id: string;
+    name: string;
+  } | null;
+
+  staff: {
+    id: string;
+    name: string;
+  };
+
+  date: string;
+  startTime: string;
+  endTime: string;
+
+  price: number;
+
+  // Currency and timezone saved with appointment
+  currency: string;
+  timezone: string | null;
+
+  // =====================================================
+  // DEPOSIT & PAYMENT SUMMARY
+  // =====================================================
+
+  depositPercentage: number;
+  depositAmount: number | null;
+  remainingAmount: number;
+
+  // Current calculated outstanding balance
+  outstandingBalance: number;
+
+  amountPaid: number;
+  amountDue: number;
+
+  qrAvailable: boolean;
+}
+
 export interface IMyAppointmentsResult {
   items: IMyAppointmentItem[];
 
@@ -148,7 +211,9 @@ export interface IMyAppointmentsResult {
 export interface IAppointmentDetails {
   id: string;
   orderNumber: string | null;
+
   paymentDisplayStatus: PaymentDisplayStatus;
+
   bookingMethod: BookingMethodType;
   appointmentStatus: AppointmentStatusType;
   paymentStatus: PaymentStatusType;
@@ -192,8 +257,11 @@ export interface IAppointmentDetails {
   // Null for non-DEPOSIT bookings
   depositAmount: number | null;
 
-  // Current outstanding balance; 0 when fully paid
+  // Current calculated remaining balance
   remainingAmount: number;
+
+  // NEW: Outstanding balance for customer payment UI
+  outstandingBalance: number;
 
   amountPaid: number;
   amountDue: number;
