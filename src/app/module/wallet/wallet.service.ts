@@ -36,7 +36,10 @@ import {
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationTemplates } from "../notification/notification.templates.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
-import { generateAvailableOrderNumber, retryOrderNumberTransaction } from "../../utils/generateOrderNumber.js";
+import {
+  generateAvailableOrderNumber,
+  retryOrderNumberTransaction,
+} from "../../utils/generateOrderNumber.js";
 
 const getMyWallet = async (customerId: string): Promise<IWalletResponse> => {
   let wallet = await prisma.wallet.findUnique({
@@ -743,45 +746,50 @@ const createTopup = async (
   // Store promotion amount and bonus as snapshots.
   // Future promotion edits must not change this top-up.
 
-  const { topup, payment } = await retryOrderNumberTransaction(() => prisma.$transaction(async (tx) => {
-    const orderNumber = await generateAvailableOrderNumber(tx);
-    const topup = await tx.walletTopup.create({
-      data: {
-        walletId: wallet.id,
+  const { topup, payment } = await retryOrderNumberTransaction(() =>
+    prisma.$transaction(
+      async (tx) => {
+        const orderNumber = await generateAvailableOrderNumber(tx);
+        const topup = await tx.walletTopup.create({
+          data: {
+            walletId: wallet.id,
 
-        promotionId: promotion.id,
+            promotionId: promotion.id,
 
-        amount: topupAmount,
+            amount: topupAmount,
 
-        potentialBonus: bonusAmount,
+            potentialBonus: bonusAmount,
 
-        status: WalletTopupStatus.PENDING,
+            status: WalletTopupStatus.PENDING,
+          },
+        });
+
+        const payment = await tx.payment.create({
+          data: {
+            customerId,
+
+            walletTopupId: topup.id,
+
+            orderNumber,
+
+            purpose: PaymentPurpose.WALLET_TOP_UP,
+
+            amount: topupAmount,
+
+            currency,
+
+            status: PaymentStatus.PENDING,
+          },
+        });
+
+        return {
+          topup,
+          payment,
+        };
       },
-    });
-
-    const payment = await tx.payment.create({
-      data: {
-        customerId,
-
-        walletTopupId: topup.id,
-
-        orderNumber,
-
-        purpose: PaymentPurpose.WALLET_TOP_UP,
-
-        amount: topupAmount,
-
-        currency,
-
-        status: PaymentStatus.PENDING,
-      },
-    });
-
-    return {
-      topup,
-      payment,
-    };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    ),
+  );
 
   // =====================================================
   // 5. CREATE STRIPE PAYMENT INTENT
@@ -998,14 +1006,28 @@ const payAppointmentWithWallet = async (
   appointmentId: string,
   payload: IPayAppointmentWithWalletPayload,
 ): Promise<IPayAppointmentWithWalletResponse> => {
-  // Retry serialization conflicts (P2034)
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await prisma.$transaction(
         async (tx) => {
-          // ==========================================
-          // 1. FIND APPOINTMENT
-          // ==========================================
+          // =====================================================
+          // 1. LOCK APPOINTMENT
+          // =====================================================
+
+          const locked = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM "Appointment"
+            WHERE "id" = ${appointmentId}
+            FOR UPDATE
+          `;
+
+          if (locked.length !== 1) {
+            throw new AppError("APPOINTMENT_NOT_FOUND", 404);
+          }
+
+          // =====================================================
+          // 2. FIND APPOINTMENT
+          // =====================================================
 
           const appointment = await tx.appointment.findUnique({
             where: {
@@ -1019,6 +1041,8 @@ const payAppointmentWithWallet = async (
               appointmentStatus: true,
               paymentStatus: true,
               price: true,
+              depositAmount: true,
+              remainingAmount: true,
               currency: true,
               holdExpiresAt: true,
             },
@@ -1028,9 +1052,9 @@ const payAppointmentWithWallet = async (
             throw new AppError("APPOINTMENT_NOT_FOUND", 404);
           }
 
-          // ==========================================
-          // 2. OWNERSHIP
-          // ==========================================
+          // =====================================================
+          // 3. VERIFY OWNERSHIP
+          // =====================================================
 
           if (appointment.customerId !== customerId) {
             throw new AppError(
@@ -1039,7 +1063,6 @@ const payAppointmentWithWallet = async (
             );
           }
 
-          // Group Purchase uses its own payment flow.
           if (appointment.groupPurchaseId !== null) {
             throw new AppError(
               "Group Purchase-linked appointments must use the Group Purchase payment flow",
@@ -1047,20 +1070,24 @@ const payAppointmentWithWallet = async (
             );
           }
 
-          // ==========================================
-          // 3. BOOKING METHOD VALIDATION
-          // ==========================================
+          // =====================================================
+          // 4. VALIDATE BOOKING METHOD
+          // =====================================================
 
-          if (appointment.bookingMethod !== BookingMethod.PAY_NOW) {
+          const isPayNow = appointment.bookingMethod === BookingMethod.PAY_NOW;
+
+          const isDeposit = appointment.bookingMethod === BookingMethod.DEPOSIT;
+
+          if (!isPayNow && !isDeposit) {
             throw new AppError(
-              "Wallet payment is only supported for Pay Now appointments",
+              "Wallet payment is only supported for PAY_NOW and DEPOSIT initial payments",
               409,
             );
           }
 
-          // ==========================================
-          // 4. PAYMENT STATUS VALIDATION
-          // ==========================================
+          // =====================================================
+          // 5. VALIDATE APPOINTMENT STATUS
+          // =====================================================
 
           if (
             appointment.paymentStatus === PaymentStatus.PAID ||
@@ -1080,9 +1107,9 @@ const payAppointmentWithWallet = async (
             throw new AppError("INVALID_PAYMENT_STATUS", 409);
           }
 
-          // ==========================================
-          // 5. HOLD EXPIRY VALIDATION
-          // ==========================================
+          // =====================================================
+          // 6. VALIDATE HOLD EXPIRY
+          // =====================================================
 
           const now = new Date();
 
@@ -1090,16 +1117,63 @@ const payAppointmentWithWallet = async (
             throw new AppError("SLOT_HOLD_EXPIRED", 409);
           }
 
-          // ==========================================
-          // 6. CHECK EXISTING PAYMENTS
-          // ==========================================
+          // =====================================================
+          // 7. CALCULATE PAYMENT AMOUNT
+          // =====================================================
+
+          if (!appointment.price.isFinite() || appointment.price.lte(0)) {
+            throw new AppError("INVALID_APPOINTMENT_PRICE", 409);
+          }
+
+          const depositAmount =
+            appointment.depositAmount ?? new Prisma.Decimal(0);
+
+          let paymentAmount: Prisma.Decimal;
+          let paymentPurpose: PaymentPurpose;
+
+          if (isDeposit) {
+            if (
+              !depositAmount.isFinite() ||
+              depositAmount.lte(0) ||
+              depositAmount.gte(appointment.price)
+            ) {
+              throw new AppError("INVALID_DEPOSIT_AMOUNT", 409);
+            }
+
+            const calculatedRemaining = appointment.price.minus(depositAmount);
+
+            if (
+              calculatedRemaining.lte(0) ||
+              (appointment.remainingAmount !== null &&
+                !appointment.remainingAmount.equals(calculatedRemaining))
+            ) {
+              throw new AppError("INVALID_REMAINING_AMOUNT", 409);
+            }
+
+            paymentAmount = depositAmount;
+            paymentPurpose = PaymentPurpose.APPOINTMENT_DEPOSIT;
+          } else {
+            paymentAmount = appointment.price;
+            paymentPurpose = PaymentPurpose.APPOINTMENT;
+          }
+
+          assertCurrencyAmount(paymentAmount, appointment.currency);
+
+          // =====================================================
+          // 8. CHECK EXISTING PAYMENTS
+          // =====================================================
 
           const existingPayments = await tx.payment.findMany({
             where: {
               appointmentId: appointment.id,
-              purpose: PaymentPurpose.APPOINTMENT,
+              purpose: paymentPurpose,
               status: {
-                in: [PaymentStatus.PENDING, PaymentStatus.PAID],
+                in: [
+                  PaymentStatus.PENDING,
+                  PaymentStatus.PAID,
+                  PaymentStatus.PARTIALLY_REFUNDED,
+                  PaymentStatus.REFUNDED,
+                ],
               },
             },
             select: {
@@ -1111,14 +1185,18 @@ const payAppointmentWithWallet = async (
 
           if (
             existingPayments.some(
-              (payment) => payment.status === PaymentStatus.PAID,
+              (payment) =>
+                payment.status === PaymentStatus.PAID ||
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+                payment.status === PaymentStatus.REFUNDED,
             )
           ) {
             throw new AppError("PAYMENT_ALREADY_COMPLETED", 409);
           }
 
-          // Prevent wallet payment while a Stripe payment
-          // may still complete asynchronously.
+          // A Stripe PaymentIntent may still capture funds.
+          // Never settle using Wallet while it is pending.
+
           if (
             existingPayments.some(
               (payment) =>
@@ -1129,45 +1207,68 @@ const payAppointmentWithWallet = async (
             throw new AppError("STRIPE_PAYMENT_ALREADY_PENDING", 409);
           }
 
-          // ==========================================
-          // 7. ATOMIC WALLET DEDUCTION
-          // ==========================================
+          if (
+            existingPayments.some(
+              (payment) => payment.status === PaymentStatus.PENDING,
+            )
+          ) {
+            throw new AppError("PAYMENT_ATTEMPT_ALREADY_PENDING", 409);
+          }
+
+          // =====================================================
+          // 9. CREATE WALLET PAYMENT
+          // =====================================================
 
           const payment = await tx.payment.create({
             data: {
               customerId,
               appointmentId: appointment.id,
-              purpose: PaymentPurpose.APPOINTMENT,
+              purpose: paymentPurpose,
               provider: PaymentProvider.WALLET,
-              amount: appointment.price,
+              amount: paymentAmount,
               currency: appointment.currency,
-              status: PaymentStatus.PAID,
-              paidAt: now,
+              status: PaymentStatus.PENDING,
             },
           });
+
+          // =====================================================
+          // 10. ATOMIC WALLET DEDUCTION
+          // =====================================================
 
           const walletResult = await deductWalletBalance(
             tx,
             customerId,
-            appointment.price,
+            paymentAmount,
             payload.useBonus,
             "APPOINTMENT_PAYMENT",
             appointment.id,
             payment.id,
           );
 
-          // ==========================================
-          // 8. GENERATE QR + GUARDED APPOINTMENT UPDATE
-          // ==========================================
+          // =====================================================
+          // 11. DETERMINE NEXT BOOKING STATE
+          // =====================================================
+
+          const nextAppointmentStatus = isDeposit
+            ? AppointmentStatus.RESERVED
+            : AppointmentStatus.CONFIRMED;
+
+          const nextPaymentStatus = isDeposit
+            ? PaymentStatus.PARTIALLY_PAID
+            : PaymentStatus.PAID;
 
           const qrToken = crypto.randomBytes(32).toString("hex");
+
+          // =====================================================
+          // 12. GUARDED APPOINTMENT UPDATE
+          // =====================================================
 
           const updated = await tx.appointment.updateMany({
             where: {
               id: appointment.id,
               customerId,
               groupPurchaseId: null,
-              bookingMethod: BookingMethod.PAY_NOW,
+              bookingMethod: appointment.bookingMethod,
               appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
               paymentStatus: PaymentStatus.PENDING,
               holdExpiresAt: {
@@ -1175,12 +1276,10 @@ const payAppointmentWithWallet = async (
               },
             },
             data: {
-              paymentStatus: PaymentStatus.PAID,
-              appointmentStatus: AppointmentStatus.CONFIRMED,
+              paymentStatus: nextPaymentStatus,
+              appointmentStatus: nextAppointmentStatus,
               holdExpiresAt: null,
               emailPaymentConfirmedAt: now,
-
-              // QR is available only after successful payment.
               qrToken,
               qrVerifiedAt: null,
               qrVerifiedBy: null,
@@ -1191,25 +1290,58 @@ const payAppointmentWithWallet = async (
             throw new AppError("APPOINTMENT_PAYMENT_CONFLICT", 409);
           }
 
-          // ==========================================
-          // 10. BOOKING CONFIRMED NOTIFICATION
-          // ==========================================
+          // =====================================================
+          // 13. MARK PAYMENT PAID
+          // =====================================================
 
-          await notificationService.createNotification(
-            {
-              appointmentId: appointment.id,
-              userId: customerId,
-              type: "BOOKING_CONFIRMED",
-              title: "Booking confirmed",
-              message: "Your appointment has been confirmed successfully.",
-              translations: notificationTemplates.BOOKING_CONFIRMED_SUCCESS(),
+          await tx.payment.update({
+            where: {
+              id: payment.id,
             },
-            tx,
-          );
+            data: {
+              status: PaymentStatus.PAID,
+              paidAt: now,
+            },
+          });
 
-          // ==========================================
-          // 11. RESPONSE
-          // ==========================================
+          // =====================================================
+          // 14. CUSTOMER NOTIFICATION
+          // =====================================================
+
+          if (isDeposit) {
+            const translations = notificationTemplates.DEPOSIT_RECEIVED(
+              Number(paymentAmount),
+              appointment.currency,
+            );
+
+            await notificationService.createNotification(
+              {
+                appointmentId: appointment.id,
+                userId: customerId,
+                type: "DEPOSIT_RECEIVED",
+                title: translations.en!.title!,
+                message: translations.en!.message!,
+                translations,
+              },
+              tx,
+            );
+          } else {
+            await notificationService.createNotification(
+              {
+                appointmentId: appointment.id,
+                userId: customerId,
+                type: "BOOKING_CONFIRMED",
+                title: "Booking confirmed",
+                message: "Your appointment has been confirmed successfully.",
+                translations: notificationTemplates.BOOKING_CONFIRMED_SUCCESS(),
+              },
+              tx,
+            );
+          }
+
+          // =====================================================
+          // 15. RETURN RESPONSE
+          // =====================================================
 
           return {
             paymentStatus: "PAID" as const,
@@ -1641,7 +1773,7 @@ const payAppointmentRemainingWithWallet = async (
           });
 
           // =====================================================
-          // 3. CUSTOMER OWNERSHIP
+          // 3. VERIFY CUSTOMER OWNERSHIP
           // =====================================================
 
           if (appointment.customerId !== customerId) {
@@ -1649,7 +1781,7 @@ const payAppointmentRemainingWithWallet = async (
           }
 
           // =====================================================
-          // 4. NORMAL DEPOSIT ONLY
+          // 4. VALIDATE BOOKING METHOD
           // =====================================================
 
           if (appointment.groupPurchaseId !== null) {
@@ -1659,20 +1791,29 @@ const payAppointmentRemainingWithWallet = async (
             );
           }
 
-          if (appointment.bookingMethod !== BookingMethod.DEPOSIT) {
+          const isDeposit = appointment.bookingMethod === BookingMethod.DEPOSIT;
+
+          const isReserveNow =
+            appointment.bookingMethod === BookingMethod.RESERVE_NOW;
+
+          if (!isDeposit && !isReserveNow) {
             throw new AppError(
-              "REMAINING_PAYMENT_ONLY_FOR_DEPOSIT_BOOKINGS",
+              "REMAINING_PAYMENT_ONLY_FOR_DEPOSIT_OR_RESERVE_NOW",
               409,
             );
           }
 
           // =====================================================
-          // 5. APPOINTMENT MUST BE CONFIRMED
+          // 5. VERIFY APPOINTMENT STATUS
           // =====================================================
+
+          const expectedPaymentStatus = isDeposit
+            ? PaymentStatus.PARTIALLY_PAID
+            : PaymentStatus.UNPAID;
 
           if (
             appointment.appointmentStatus !== AppointmentStatus.CONFIRMED ||
-            appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID
+            appointment.paymentStatus !== expectedPaymentStatus
           ) {
             throw new AppError(
               "APPOINTMENT_NOT_ELIGIBLE_FOR_REMAINING_PAYMENT",
@@ -1685,14 +1826,35 @@ const payAppointmentRemainingWithWallet = async (
           }
 
           // =====================================================
-          // 6. VALIDATE REMAINING AMOUNT
+          // 6. VALIDATE PAYMENT AMOUNT
           // =====================================================
 
-          const depositAmount = appointment.depositAmount;
+          if (!appointment.price.isFinite() || appointment.price.lte(0)) {
+            throw new AppError("INVALID_APPOINTMENT_PRICE", 409);
+          }
 
-          if (!depositAmount || depositAmount.lte(0)) {
+          const depositAmount =
+            appointment.depositAmount ?? new Prisma.Decimal(0);
+
+          if (!depositAmount.isFinite()) {
             throw new AppError("INVALID_DEPOSIT_AMOUNT", 409);
           }
+
+          if (isDeposit) {
+            if (depositAmount.lte(0) || depositAmount.gte(appointment.price)) {
+              throw new AppError("INVALID_DEPOSIT_AMOUNT", 409);
+            }
+          }
+
+          if (isReserveNow && !depositAmount.isZero()) {
+            throw new AppError("RESERVE_NOW_MUST_NOT_HAVE_DEPOSIT", 409);
+          }
+
+          // DEPOSIT:
+          // remaining = total price - deposit
+          //
+          // RESERVE_NOW:
+          // remaining = total price
 
           const calculatedRemaining = appointment.price.minus(depositAmount);
 
@@ -1710,7 +1872,63 @@ const payAppointmentRemainingWithWallet = async (
           assertCurrencyAmount(remainingAmount, appointment.currency);
 
           // =====================================================
-          // 7. CHECK EXISTING REMAINING PAYMENTS
+          // 7. VERIFY INITIAL PAYMENT
+          // =====================================================
+
+          if (isDeposit) {
+            const originalDeposit = await tx.payment.findFirst({
+              where: {
+                appointmentId,
+                customerId,
+                purpose: PaymentPurpose.APPOINTMENT_DEPOSIT,
+                status: {
+                  in: [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED],
+                },
+              },
+              orderBy: {
+                createdAt: "desc",
+              },
+            });
+
+            if (
+              !originalDeposit ||
+              !originalDeposit.amount.equals(depositAmount) ||
+              originalDeposit.currency !== appointment.currency
+            ) {
+              throw new AppError(
+                "ORIGINAL_DEPOSIT_PAYMENT_NOT_FOUND_OR_MISMATCH",
+                409,
+              );
+            }
+          } else {
+            // RESERVE_NOW should not have a settled initial
+            // PAY_NOW or DEPOSIT payment.
+
+            const initialPayment = await tx.payment.findFirst({
+              where: {
+                appointmentId,
+                purpose: {
+                  in: [
+                    PaymentPurpose.APPOINTMENT,
+                    PaymentPurpose.APPOINTMENT_DEPOSIT,
+                  ],
+                },
+                status: {
+                  in: [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED],
+                },
+              },
+              select: {
+                id: true,
+              },
+            });
+
+            if (initialPayment) {
+              throw new AppError("RESERVE_NOW_INITIAL_PAYMENT_CONFLICT", 409);
+            }
+          }
+
+          // =====================================================
+          // 8. CHECK EXISTING REMAINING PAYMENTS
           // =====================================================
 
           const existingPayments = await tx.payment.findMany({
@@ -1722,6 +1940,7 @@ const payAppointmentRemainingWithWallet = async (
                   PaymentStatus.PENDING,
                   PaymentStatus.PAID,
                   PaymentStatus.PARTIALLY_REFUNDED,
+                  PaymentStatus.REFUNDED,
                 ],
               },
             },
@@ -1736,14 +1955,16 @@ const payAppointmentRemainingWithWallet = async (
             existingPayments.some(
               (payment) =>
                 payment.status === PaymentStatus.PAID ||
-                payment.status === PaymentStatus.PARTIALLY_REFUNDED,
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+                payment.status === PaymentStatus.REFUNDED,
             )
           ) {
             throw new AppError("REMAINING_PAYMENT_ALREADY_COMPLETED", 409);
           }
 
-          // A pending Stripe payment must be resolved or
-          // safely cancelled before Wallet settlement.
+          // Never charge Wallet while an outstanding Stripe
+          // payment may still succeed asynchronously.
+
           if (
             existingPayments.some(
               (payment) =>
@@ -1763,7 +1984,7 @@ const payAppointmentRemainingWithWallet = async (
           }
 
           // =====================================================
-          // 8. CREATE PAYMENT RECORD
+          // 9. CREATE PENDING WALLET PAYMENT
           // =====================================================
 
           const payment = await tx.payment.create({
@@ -1779,7 +2000,7 @@ const payAppointmentRemainingWithWallet = async (
           });
 
           // =====================================================
-          // 9. ATOMIC WALLET DEDUCTION
+          // 10. ATOMIC WALLET DEDUCTION
           // =====================================================
 
           const walletResult = await deductWalletBalance(
@@ -1793,7 +2014,7 @@ const payAppointmentRemainingWithWallet = async (
           );
 
           // =====================================================
-          // 10. GUARDED APPOINTMENT SETTLEMENT
+          // 11. GUARDED APPOINTMENT SETTLEMENT
           // =====================================================
 
           const updated = await tx.appointment.updateMany({
@@ -1801,9 +2022,9 @@ const payAppointmentRemainingWithWallet = async (
               id: appointmentId,
               customerId,
               groupPurchaseId: null,
-              bookingMethod: BookingMethod.DEPOSIT,
+              bookingMethod: appointment.bookingMethod,
               appointmentStatus: AppointmentStatus.CONFIRMED,
-              paymentStatus: PaymentStatus.PARTIALLY_PAID,
+              paymentStatus: expectedPaymentStatus,
               qrVerifiedAt: {
                 not: null,
               },
@@ -1818,7 +2039,7 @@ const payAppointmentRemainingWithWallet = async (
           }
 
           // =====================================================
-          // 11. MARK PAYMENT PAID
+          // 12. MARK PAYMENT PAID
           // =====================================================
 
           await tx.payment.update({
@@ -1832,7 +2053,7 @@ const payAppointmentRemainingWithWallet = async (
           });
 
           // =====================================================
-          // 12. MULTILINGUAL NOTIFICATION
+          // 13. MULTILINGUAL NOTIFICATION
           // =====================================================
 
           const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
@@ -1853,7 +2074,7 @@ const payAppointmentRemainingWithWallet = async (
           );
 
           // =====================================================
-          // 13. AUDIT LOG
+          // 14. AUDIT LOG
           // =====================================================
 
           await auditLogService.createAuditLog(
@@ -1866,7 +2087,7 @@ const payAppointmentRemainingWithWallet = async (
                 paymentId: payment.id,
                 provider: PaymentProvider.WALLET,
                 bookingMethod: appointment.bookingMethod,
-                previousPaymentStatus: PaymentStatus.PARTIALLY_PAID,
+                previousPaymentStatus: expectedPaymentStatus,
                 newPaymentStatus: PaymentStatus.PAID,
                 totalPrice: Number(appointment.price),
                 depositAmount: Number(depositAmount),
@@ -1879,14 +2100,14 @@ const payAppointmentRemainingWithWallet = async (
           );
 
           // =====================================================
-          // 14. RESPONSE
+          // 15. RESPONSE
           // =====================================================
 
           return {
             appointmentId,
             paymentId: payment.id,
             bookingMethod: appointment.bookingMethod,
-            appointmentStatus: appointment.appointmentStatus,
+            appointmentStatus: AppointmentStatus.CONFIRMED,
             paymentStatus: PaymentStatus.PAID,
             amountPaid: Number(remainingAmount),
             currency: appointment.currency,
@@ -1962,14 +2183,34 @@ const payGroupPurchaseRemainingWithWallet = async (
           }
 
           // =====================================================
-          // 4. DEPOSIT BOOKING ONLY
+          // 4. VALIDATE PURCHASE FLOW AND BOOKING METHOD
           // =====================================================
 
-          if (purchase.bookingMethod !== BookingMethod.DEPOSIT) {
-            throw new AppError("REMAINING_PAYMENT_ONLY_FOR_DEPOSIT", 409);
+          if (purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK) {
+            throw new AppError("REMAINING_PAYMENT_REQUIRES_DIRECT_BOOK", 409);
           }
 
-          if (purchase.paymentStatus !== PaymentStatus.PARTIALLY_PAID) {
+          const isDeposit = purchase.bookingMethod === BookingMethod.DEPOSIT;
+
+          const isReserveNow =
+            purchase.bookingMethod === BookingMethod.RESERVE_NOW;
+
+          if (!isDeposit && !isReserveNow) {
+            throw new AppError(
+              "REMAINING_PAYMENT_ONLY_FOR_DEPOSIT_OR_RESERVE_NOW",
+              409,
+            );
+          }
+
+          // =====================================================
+          // 5. VERIFY PURCHASE PAYMENT STATUS
+          // =====================================================
+
+          const expectedPaymentStatus = isDeposit
+            ? PaymentStatus.PARTIALLY_PAID
+            : PaymentStatus.UNPAID;
+
+          if (purchase.paymentStatus !== expectedPaymentStatus) {
             throw new AppError(
               "GROUP_PURCHASE_NOT_ELIGIBLE_FOR_REMAINING_PAYMENT",
               409,
@@ -1977,7 +2218,7 @@ const payGroupPurchaseRemainingWithWallet = async (
           }
 
           // =====================================================
-          // 5. VERIFY LINKED APPOINTMENT
+          // 6. VERIFY LINKED APPOINTMENT
           // =====================================================
 
           if (purchase.appointments.length !== 1) {
@@ -1989,29 +2230,52 @@ const payGroupPurchaseRemainingWithWallet = async (
           if (
             appointment.customerId !== customerId ||
             appointment.groupPurchaseId !== purchaseId ||
-            appointment.bookingMethod !== BookingMethod.DEPOSIT ||
+            appointment.bookingMethod !== purchase.bookingMethod ||
             appointment.appointmentStatus !== AppointmentStatus.CONFIRMED ||
-            appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID ||
+            appointment.paymentStatus !== expectedPaymentStatus ||
             !appointment.qrVerifiedAt
           ) {
-            throw new AppError("APPOINTMENT_QR_VERIFICATION_REQUIRED", 409);
+            throw new AppError(
+              "APPOINTMENT_NOT_ELIGIBLE_FOR_REMAINING_PAYMENT",
+              409,
+            );
           }
 
           // =====================================================
-          // 6. CALCULATE PURCHASE-LEVEL REMAINING AMOUNT
+          // 7. CALCULATE PURCHASE-LEVEL OUTSTANDING AMOUNT
           // =====================================================
 
           const totalAmount = new Prisma.Decimal(purchase.amount);
 
           const depositAmount = new Prisma.Decimal(purchase.depositAmount ?? 0);
 
+          if (
+            !totalAmount.isFinite() ||
+            totalAmount.lte(0) ||
+            !depositAmount.isFinite()
+          ) {
+            throw new AppError("INVALID_GROUP_PURCHASE_AMOUNT", 409);
+          }
+
+          if (isDeposit) {
+            if (depositAmount.lte(0) || depositAmount.gte(totalAmount)) {
+              throw new AppError("INVALID_DEPOSIT_AMOUNT", 409);
+            }
+          }
+
+          if (isReserveNow && !depositAmount.isZero()) {
+            throw new AppError("RESERVE_NOW_MUST_NOT_HAVE_DEPOSIT", 409);
+          }
+
+          // DEPOSIT:
+          // outstanding = total purchase amount - deposit
+          //
+          // RESERVE_NOW:
+          // outstanding = full purchase amount
+
           const remainingAmount = totalAmount.minus(depositAmount);
 
-          if (
-            totalAmount.lte(0) ||
-            depositAmount.lte(0) ||
-            remainingAmount.lte(0)
-          ) {
+          if (!remainingAmount.isFinite() || remainingAmount.lte(0)) {
             throw new AppError("INVALID_GROUP_PURCHASE_REMAINING_AMOUNT", 409);
           }
 
@@ -2025,23 +2289,48 @@ const payGroupPurchaseRemainingWithWallet = async (
             throw new AppError("GROUP_PURCHASE_REMAINING_AMOUNT_MISMATCH", 409);
           }
 
+          const currency = await getPurchaseCurrency(tx, purchase.id);
+
+          assertCurrencyAmount(remainingAmount, currency);
+
           // =====================================================
-          // 7. VERIFY INITIAL DEPOSIT PAYMENT
+          // 8. VERIFY INITIAL PAYMENT
           // =====================================================
 
-          const initialDepositPaid = purchase.payments.some(
-            (payment) =>
-              payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
-              payment.status === PaymentStatus.PAID &&
-              new Prisma.Decimal(payment.amount).equals(depositAmount),
-          );
+          if (isDeposit) {
+            const initialDepositPaid = purchase.payments.some(
+              (payment) =>
+                payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
+                (payment.status === PaymentStatus.PAID ||
+                  payment.status === PaymentStatus.PARTIALLY_REFUNDED) &&
+                payment.currency === currency &&
+                new Prisma.Decimal(payment.amount).equals(depositAmount),
+            );
 
-          if (!initialDepositPaid) {
-            throw new AppError("GROUP_PURCHASE_DEPOSIT_PAYMENT_NOT_FOUND", 409);
+            if (!initialDepositPaid) {
+              throw new AppError(
+                "GROUP_PURCHASE_DEPOSIT_PAYMENT_NOT_FOUND",
+                409,
+              );
+            }
+          } else {
+            // RESERVE_NOW must not already have a settled
+            // initial purchase payment.
+
+            const unexpectedPayment = purchase.payments.some(
+              (payment) =>
+                payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
+                (payment.status === PaymentStatus.PAID ||
+                  payment.status === PaymentStatus.PARTIALLY_REFUNDED),
+            );
+
+            if (unexpectedPayment) {
+              throw new AppError("RESERVE_NOW_INITIAL_PAYMENT_CONFLICT", 409);
+            }
           }
 
           // =====================================================
-          // 8. CHECK EXISTING REMAINING PAYMENTS
+          // 9. CHECK EXISTING REMAINING PAYMENT ATTEMPTS
           // =====================================================
 
           const existingRemainingPayment = purchase.payments.find(
@@ -2050,7 +2339,8 @@ const payGroupPurchaseRemainingWithWallet = async (
               new Prisma.Decimal(payment.amount).equals(remainingAmount) &&
               (payment.status === PaymentStatus.PENDING ||
                 payment.status === PaymentStatus.PAID ||
-                payment.status === PaymentStatus.PARTIALLY_REFUNDED),
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+                payment.status === PaymentStatus.REFUNDED),
           );
 
           if (existingRemainingPayment) {
@@ -2060,8 +2350,22 @@ const payGroupPurchaseRemainingWithWallet = async (
             );
           }
 
+          // Prevent wallet settlement while a Stripe
+          // payment could still succeed asynchronously.
+
+          const pendingStripePayment = purchase.payments.some(
+            (payment) =>
+              payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
+              payment.provider === PaymentProvider.STRIPE &&
+              payment.status === PaymentStatus.PENDING,
+          );
+
+          if (pendingStripePayment) {
+            throw new AppError("STRIPE_GROUP_PURCHASE_PAYMENT_PENDING", 409);
+          }
+
           // =====================================================
-          // 9. CREATE PENDING PAYMENT
+          // 10. CREATE PENDING WALLET PAYMENT
           // =====================================================
 
           const payment = await tx.payment.create({
@@ -2072,13 +2376,13 @@ const payGroupPurchaseRemainingWithWallet = async (
               purpose: PaymentPurpose.GROUP_PURCHASE,
               provider: PaymentProvider.WALLET,
               amount: remainingAmount,
-              currency: await getPurchaseCurrency(tx, purchase.id),
+              currency,
               status: PaymentStatus.PENDING,
             },
           });
 
           // =====================================================
-          // 10. DEDUCT WALLET BALANCE
+          // 11. ATOMIC WALLET DEDUCTION
           // =====================================================
 
           const walletResult = await deductWalletBalance(
@@ -2092,15 +2396,16 @@ const payGroupPurchaseRemainingWithWallet = async (
           );
 
           // =====================================================
-          // 11. GUARDED GROUP PURCHASE UPDATE
+          // 12. GUARDED GROUP PURCHASE UPDATE
           // =====================================================
 
           const updatedPurchase = await tx.groupPurchase.updateMany({
             where: {
               id: purchaseId,
               customerId,
-              bookingMethod: BookingMethod.DEPOSIT,
-              paymentStatus: PaymentStatus.PARTIALLY_PAID,
+              purchaseFlow: GroupPurchaseFlow.DIRECT_BOOK,
+              bookingMethod: purchase.bookingMethod,
+              paymentStatus: expectedPaymentStatus,
             },
             data: {
               paymentStatus: PaymentStatus.PAID,
@@ -2115,7 +2420,7 @@ const payGroupPurchaseRemainingWithWallet = async (
           }
 
           // =====================================================
-          // 12. GUARDED APPOINTMENT UPDATE
+          // 13. GUARDED APPOINTMENT UPDATE
           // =====================================================
 
           const updatedAppointment = await tx.appointment.updateMany({
@@ -2123,9 +2428,9 @@ const payGroupPurchaseRemainingWithWallet = async (
               id: appointment.id,
               groupPurchaseId: purchaseId,
               customerId,
-              bookingMethod: BookingMethod.DEPOSIT,
+              bookingMethod: purchase.bookingMethod,
               appointmentStatus: AppointmentStatus.CONFIRMED,
-              paymentStatus: PaymentStatus.PARTIALLY_PAID,
+              paymentStatus: expectedPaymentStatus,
               qrVerifiedAt: {
                 not: null,
               },
@@ -2143,7 +2448,7 @@ const payGroupPurchaseRemainingWithWallet = async (
           }
 
           // =====================================================
-          // 13. MARK PAYMENT AS PAID
+          // 14. MARK PAYMENT PAID
           // =====================================================
 
           const paidPayment = await tx.payment.update({
@@ -2157,12 +2462,12 @@ const payGroupPurchaseRemainingWithWallet = async (
           });
 
           // =====================================================
-          // 14. NOTIFICATION
+          // 15. MULTILINGUAL NOTIFICATION
           // =====================================================
 
           const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
             Number(remainingAmount),
-            payment.currency,
+            currency,
           );
 
           await notificationService.createNotification(
@@ -2178,7 +2483,7 @@ const payGroupPurchaseRemainingWithWallet = async (
           );
 
           // =====================================================
-          // 15. AUDIT LOG
+          // 16. AUDIT LOG
           // =====================================================
 
           await auditLogService.createAuditLog(
@@ -2191,7 +2496,9 @@ const payGroupPurchaseRemainingWithWallet = async (
                 paymentId: paidPayment.id,
                 appointmentId: appointment.id,
                 provider: PaymentProvider.WALLET,
-                bookingMethod: BookingMethod.DEPOSIT,
+                bookingMethod: purchase.bookingMethod,
+                previousPaymentStatus: expectedPaymentStatus,
+                newPaymentStatus: PaymentStatus.PAID,
                 totalAmount: Number(totalAmount),
                 depositAmount: Number(depositAmount),
                 remainingAmount: Number(remainingAmount),
@@ -2203,24 +2510,20 @@ const payGroupPurchaseRemainingWithWallet = async (
           );
 
           // =====================================================
-          // 16. RESPONSE
+          // 17. RESPONSE
           // =====================================================
 
           return {
             purchaseId,
             appointmentId: appointment.id,
             paymentId: paidPayment.id,
-
-            bookingMethod: BookingMethod.DEPOSIT,
+            bookingMethod: purchase.bookingMethod,
             paymentStatus: PaymentStatus.PAID,
             appointmentStatus: AppointmentStatus.CONFIRMED,
-
             totalAmount: Number(totalAmount),
             depositAmount: Number(depositAmount),
             amountPaid: Number(remainingAmount),
-
-            currency: await getPurchaseCurrency(tx, purchase.id),
-
+            currency,
             ...walletResult,
           };
         },

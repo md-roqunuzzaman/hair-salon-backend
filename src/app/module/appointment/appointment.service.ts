@@ -5080,16 +5080,16 @@ const verifyQr = async (
     }
   }
 
-  if (appointment.bookingMethod === BookingMethod.RESERVE_NOW) {
-    if (!isGroupPurchaseAppointment && !payload.paymentMethod) {
-      throw new AppError(
-        "Payment method is required for reservation verification",
-        400,
-      );
-    }
+  // RESERVE_NOW:
+  // No payment method is required.
+  // Payment will be collected through a separate API.
 
+  if (appointment.bookingMethod === BookingMethod.RESERVE_NOW) {
     if (appointment.paymentStatus !== PaymentStatus.UNPAID) {
-      throw new AppError("Reservation payment has already been recorded", 409);
+      throw new AppError(
+        "Reservation payment state is invalid for QR verification",
+        409,
+      );
     }
   }
 
@@ -5116,7 +5116,6 @@ const verifyQr = async (
       ? appointment.endTime
       : appointment.startTime;
 
-  // NEW: Fetch Brand timezone
   const brand = await prisma.brand.findFirst({
     select: {
       timezone: true,
@@ -5127,7 +5126,6 @@ const verifyQr = async (
     throw new AppError("Brand not found", 404);
   }
 
-  // NEW: Timezone-aware QR expiry
   const qrExpiryDateTime = createDateTimeInTimezone(
     appointmentDate,
     expiryTime,
@@ -5283,6 +5281,7 @@ const verifyQr = async (
 
             if (current.bookingMethod === BookingMethod.GROUP_PURCHASE) {
               // BUY_NOW_BOOK_LATER
+
               if (
                 purchase.purchaseFlow !==
                   GroupPurchaseFlow.BUY_NOW_BOOK_LATER ||
@@ -5295,6 +5294,7 @@ const verifyQr = async (
               }
             } else {
               // DIRECT_BOOK
+
               if (
                 purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK ||
                 purchase.bookingMethod !== current.bookingMethod
@@ -5378,7 +5378,6 @@ const verifyQr = async (
               ? current.endTime
               : current.startTime;
 
-          // NEW: Fetch timezone inside transaction
           const transactionBrand = await tx.brand.findFirst({
             select: {
               timezone: true,
@@ -5389,7 +5388,6 @@ const verifyQr = async (
             throw new AppError("Brand not found", 404);
           }
 
-          // NEW: Timezone-aware final expiry
           const currentQrExpiryDateTime = createDateTimeInTimezone(
             currentDate,
             currentExpiryTime,
@@ -5422,17 +5420,13 @@ const verifyQr = async (
             }
           }
 
-          if (current.bookingMethod === BookingMethod.RESERVE_NOW) {
-            if (!currentIsGroupPurchase && !payload.paymentMethod) {
-              throw new AppError(
-                "Payment method is required for reservation verification",
-                400,
-              );
-            }
+          // RESERVE_NOW:
+          // QR verification must not settle payment.
 
+          if (current.bookingMethod === BookingMethod.RESERVE_NOW) {
             if (current.paymentStatus !== PaymentStatus.UNPAID) {
               throw new AppError(
-                "Reservation payment has already been recorded",
+                "Reservation payment state is invalid for QR verification",
                 409,
               );
             }
@@ -5461,22 +5455,14 @@ const verifyQr = async (
               qrVerifiedAt: null,
 
               appointmentStatus: currentExpectedStatus,
-
               paymentStatus: current.paymentStatus,
             },
 
             data: {
+              // Confirm appointment only.
+              // Preserve existing payment status.
+
               appointmentStatus: AppointmentStatus.CONFIRMED,
-
-              // Only normal RESERVE_NOW collects
-              // full salon payment during QR verification.
-
-              ...(current.bookingMethod === BookingMethod.RESERVE_NOW &&
-              !currentIsGroupPurchase
-                ? {
-                    paymentStatus: PaymentStatus.PAID,
-                  }
-                : {}),
 
               qrVerifiedAt,
               qrVerifiedBy: userId,
@@ -5491,38 +5477,7 @@ const verifyQr = async (
           }
 
           // =============================================
-          // 18. RECORD NORMAL RESERVE_NOW PAYMENT
-          // =============================================
-
-          let paymentId: string | null = null;
-
-          if (
-            current.bookingMethod === BookingMethod.RESERVE_NOW &&
-            !currentIsGroupPurchase
-          ) {
-            const payment = await tx.payment.create({
-              data: {
-                customerId: current.customerId,
-                appointmentId: current.id,
-
-                purpose: PaymentPurpose.APPOINTMENT,
-                provider: PaymentProvider.SALON,
-
-                salonPaymentMethod: payload.paymentMethod!,
-
-                amount: assertCurrencyAmount(current.price, current.currency),
-                currency: current.currency,
-
-                status: PaymentStatus.PAID,
-                paidAt: qrVerifiedAt,
-              },
-            });
-
-            paymentId = payment.id;
-          }
-
-          // =============================================
-          // 19. GET UPDATED APPOINTMENT
+          // 18. GET UPDATED APPOINTMENT
           // =============================================
 
           const updatedAppointment = await tx.appointment.findUniqueOrThrow({
@@ -5540,12 +5495,8 @@ const verifyQr = async (
           });
 
           // =============================================
-          // 20. CUSTOMER NOTIFICATION
+          // 19. CUSTOMER NOTIFICATION
           // =============================================
-
-          // PAY_NOW and GROUP_PURCHASE redemption
-          // are already confirmed.
-          // Avoid duplicate confirmation notifications.
 
           if (
             current.bookingMethod !== BookingMethod.PAY_NOW &&
@@ -5573,7 +5524,7 @@ const verifyQr = async (
           }
 
           // =============================================
-          // 21. AUDIT LOG
+          // 20. AUDIT LOG
           // =============================================
 
           await auditLogService.createAuditLog(
@@ -5585,37 +5536,25 @@ const verifyQr = async (
 
               metadata: {
                 previousStatus: current.appointmentStatus,
-
                 newStatus: updatedAppointment.appointmentStatus,
 
                 previousPaymentStatus: current.paymentStatus,
-
                 newPaymentStatus: updatedAppointment.paymentStatus,
 
                 branchId: current.branchId,
-
                 bookingMethod: current.bookingMethod,
-
                 groupPurchaseId: current.groupPurchaseId,
 
-                paymentId,
+                // Payment settlement is handled by
+                // dedicated payment APIs.
 
-                paymentMethod:
-                  current.bookingMethod === BookingMethod.RESERVE_NOW &&
-                  !currentIsGroupPurchase
-                    ? payload.paymentMethod
-                    : null,
-
-                paymentProvider:
-                  current.bookingMethod === BookingMethod.RESERVE_NOW &&
-                  !currentIsGroupPurchase
-                    ? PaymentProvider.SALON
-                    : null,
+                paymentId: null,
+                paymentMethod: null,
+                paymentProvider: null,
 
                 qrVerifiedAt: qrVerifiedAt.toISOString(),
 
                 performedByRole: role,
-
                 qrVerificationRule: currentQrRule,
               },
             },
@@ -5624,14 +5563,13 @@ const verifyQr = async (
 
           return updatedAppointment;
         },
-
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         },
       );
 
       // =====================================================
-      // 22. FINAL RESPONSE
+      // 21. FINAL RESPONSE
       // =====================================================
 
       if (!result.qrVerifiedAt) {
@@ -7256,18 +7194,27 @@ const recordRemainingPayment = async (
           // 4. VALIDATE BOOKING METHOD
           // =====================================================
 
-          if (appointment.bookingMethod !== BookingMethod.DEPOSIT) {
+          const isDeposit = appointment.bookingMethod === BookingMethod.DEPOSIT;
+
+          const isReserveNow =
+            appointment.bookingMethod === BookingMethod.RESERVE_NOW;
+
+          if (!isDeposit && !isReserveNow) {
             throw new AppError(
-              "Remaining payment is only available for deposit appointments",
+              "Remaining payment is only available for DEPOSIT or RESERVE_NOW appointments",
               httpStatus.BAD_REQUEST,
             );
           }
+
+          const expectedPaymentStatus = isDeposit
+            ? PaymentStatus.PARTIALLY_PAID
+            : PaymentStatus.UNPAID;
 
           // =====================================================
           // 5. VALIDATE APPOINTMENT STATE
           // =====================================================
 
-          if (appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID) {
+          if (appointment.paymentStatus !== expectedPaymentStatus) {
             throw new AppError(
               "Appointment does not have an outstanding remaining payment",
               409,
@@ -7310,7 +7257,7 @@ const recordRemainingPayment = async (
             );
           }
 
-          // Prevent salon payment while Stripe payment
+          // Prevent offline payment while Stripe payment
           // may still succeed asynchronously.
 
           if (
@@ -7337,15 +7284,32 @@ const recordRemainingPayment = async (
 
           const totalPrice = appointment.price;
 
-          const depositAmount =
-            appointment.depositAmount ?? new Prisma.Decimal(0);
+          const depositAmount = isDeposit
+            ? (appointment.depositAmount ?? new Prisma.Decimal(0))
+            : new Prisma.Decimal(0);
 
-          if (
-            !totalPrice.isFinite() ||
-            !depositAmount.isFinite() ||
-            depositAmount.lte(0)
-          ) {
-            throw new AppError("Invalid appointment deposit amount", 409);
+          if (!totalPrice.isFinite() || totalPrice.lte(0)) {
+            throw new AppError("Invalid appointment total price", 409);
+          }
+
+          if (isDeposit) {
+            if (
+              !depositAmount.isFinite() ||
+              depositAmount.lte(0) ||
+              depositAmount.gte(totalPrice)
+            ) {
+              throw new AppError("Invalid appointment deposit amount", 409);
+            }
+          } else {
+            if (
+              appointment.depositAmount !== null &&
+              !appointment.depositAmount.isZero()
+            ) {
+              throw new AppError(
+                "RESERVE_NOW appointment cannot have a deposit amount",
+                409,
+              );
+            }
           }
 
           const remainingAmount = totalPrice.minus(depositAmount);
@@ -7361,10 +7325,6 @@ const recordRemainingPayment = async (
             throw new AppError("Appointment remaining amount mismatch", 409);
           }
 
-          // Dynamic currency:
-          // Use the original appointment's saved currency.
-          // No hardcoded HKD restriction.
-
           // =====================================================
           // 8. GUARDED APPOINTMENT SETTLEMENT
           // =====================================================
@@ -7373,9 +7333,9 @@ const recordRemainingPayment = async (
             where: {
               id: appointmentId,
               groupPurchaseId: null,
-              bookingMethod: BookingMethod.DEPOSIT,
+              bookingMethod: appointment.bookingMethod,
               appointmentStatus: AppointmentStatus.CONFIRMED,
-              paymentStatus: PaymentStatus.PARTIALLY_PAID,
+              paymentStatus: expectedPaymentStatus,
               qrVerifiedAt: {
                 not: null,
               },
@@ -7458,7 +7418,7 @@ const recordRemainingPayment = async (
               entityId: appointment.id,
               metadata: {
                 paymentId: payment.id,
-                previousPaymentStatus: PaymentStatus.PARTIALLY_PAID,
+                previousPaymentStatus: expectedPaymentStatus,
                 newPaymentStatus: PaymentStatus.PAID,
                 bookingMethod: appointment.bookingMethod,
                 totalPrice: Number(totalPrice),
@@ -7481,7 +7441,7 @@ const recordRemainingPayment = async (
             appointmentStatus: updatedAppointment.appointmentStatus,
             paymentStatus: updatedAppointment.paymentStatus,
             price: Number(updatedAppointment.price),
-            depositAmount: Number(updatedAppointment.depositAmount ?? 0),
+            depositAmount: Number(depositAmount),
             remainingAmount: Number(remainingAmount),
             remainingPayment: {
               id: payment.id,
@@ -7878,20 +7838,29 @@ const recordGroupPurchaseRemainingPayment = async (
           });
 
           // =====================================================
-          // 3. VALIDATE PURCHASE FLOW
+          // 3. VALIDATE PURCHASE FLOW & BOOKING METHOD
           // =====================================================
+
+          const isDeposit = purchase.bookingMethod === BookingMethod.DEPOSIT;
+
+          const isReserveNow =
+            purchase.bookingMethod === BookingMethod.RESERVE_NOW;
 
           if (
             purchase.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK ||
-            purchase.bookingMethod !== BookingMethod.DEPOSIT
+            (!isDeposit && !isReserveNow)
           ) {
             throw new AppError(
-              "Remaining payment is only available for Group Purchase DEPOSIT bookings",
+              "Remaining payment is only available for DIRECT_BOOK DEPOSIT or RESERVE_NOW Group Purchases",
               409,
             );
           }
 
-          if (purchase.paymentStatus !== PaymentStatus.PARTIALLY_PAID) {
+          const expectedPaymentStatus = isDeposit
+            ? PaymentStatus.PARTIALLY_PAID
+            : PaymentStatus.UNPAID;
+
+          if (purchase.paymentStatus !== expectedPaymentStatus) {
             throw new AppError(
               "Group Purchase does not have an outstanding remaining payment",
               409,
@@ -7911,13 +7880,13 @@ const recordGroupPurchaseRemainingPayment = async (
           if (
             appointment.groupPurchaseId !== purchaseId ||
             appointment.customerId !== purchase.customerId ||
-            appointment.bookingMethod !== BookingMethod.DEPOSIT ||
+            appointment.bookingMethod !== purchase.bookingMethod ||
             appointment.appointmentStatus !== AppointmentStatus.CONFIRMED ||
-            appointment.paymentStatus !== PaymentStatus.PARTIALLY_PAID ||
+            appointment.paymentStatus !== expectedPaymentStatus ||
             !appointment.qrVerifiedAt
           ) {
             throw new AppError(
-              "Group Purchase appointment must be QR verified and confirmed",
+              "Group Purchase appointment must be QR verified and confirmed with an outstanding payment",
               409,
             );
           }
@@ -7928,16 +7897,38 @@ const recordGroupPurchaseRemainingPayment = async (
 
           const totalAmount = purchase.amount;
 
-          const depositAmount = purchase.depositAmount ?? new Prisma.Decimal(0);
+          const savedDepositAmount =
+            purchase.depositAmount ?? new Prisma.Decimal(0);
+
+          if (!totalAmount.isFinite() || totalAmount.lte(0)) {
+            throw new AppError("Invalid Group Purchase total amount", 409);
+          }
+
+          if (!savedDepositAmount.isFinite()) {
+            throw new AppError("Invalid Group Purchase deposit amount", 409);
+          }
+
+          if (isDeposit) {
+            if (
+              savedDepositAmount.lte(0) ||
+              savedDepositAmount.gte(totalAmount)
+            ) {
+              throw new AppError("Invalid Group Purchase deposit amount", 409);
+            }
+          } else if (!savedDepositAmount.isZero()) {
+            throw new AppError(
+              "RESERVE_NOW Group Purchase cannot have a deposit amount",
+              409,
+            );
+          }
+
+          const depositAmount = isDeposit
+            ? savedDepositAmount
+            : new Prisma.Decimal(0);
 
           const remainingAmount = totalAmount.minus(depositAmount);
 
-          if (
-            !totalAmount.isFinite() ||
-            !depositAmount.isFinite() ||
-            depositAmount.lte(0) ||
-            remainingAmount.lte(0)
-          ) {
+          if (!remainingAmount.isFinite() || remainingAmount.lte(0)) {
             throw new AppError("Invalid Group Purchase remaining amount", 409);
           }
 
@@ -7953,19 +7944,31 @@ const recordGroupPurchaseRemainingPayment = async (
           // 6. VERIFY INITIAL DEPOSIT PAYMENT
           // =====================================================
 
-          const initialDepositPaid = purchase.payments.some(
-            (payment) =>
-              payment.id === purchase.settledPaymentId &&
-              payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
-              payment.status === PaymentStatus.PAID &&
-              payment.amount.equals(depositAmount),
-          );
-
-          if (!initialDepositPaid) {
-            throw new AppError(
-              "Initial Group Purchase deposit payment not found",
-              409,
+          if (isDeposit) {
+            const initialDepositPaid = purchase.payments.some(
+              (payment) =>
+                payment.id === purchase.settledPaymentId &&
+                payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
+                payment.status === PaymentStatus.PAID &&
+                payment.amount.equals(depositAmount),
             );
+
+            if (!initialDepositPaid) {
+              throw new AppError(
+                "Initial Group Purchase deposit payment not found",
+                409,
+              );
+            }
+          } else {
+            // RESERVE_NOW must not already have a settled
+            // initial payment.
+
+            if (purchase.settledPaymentId !== null) {
+              throw new AppError(
+                "RESERVE_NOW Group Purchase has an unexpected settled payment",
+                409,
+              );
+            }
           }
 
           // =====================================================
@@ -7994,6 +7997,9 @@ const recordGroupPurchaseRemainingPayment = async (
               409,
             );
           }
+
+          // Prevent offline settlement while Stripe payment
+          // may still complete asynchronously.
 
           if (
             existingRemainingPayments.some(
@@ -8027,8 +8033,8 @@ const recordGroupPurchaseRemainingPayment = async (
             where: {
               id: purchaseId,
               purchaseFlow: GroupPurchaseFlow.DIRECT_BOOK,
-              bookingMethod: BookingMethod.DEPOSIT,
-              paymentStatus: PaymentStatus.PARTIALLY_PAID,
+              bookingMethod: purchase.bookingMethod,
+              paymentStatus: expectedPaymentStatus,
             },
             data: {
               paymentStatus: PaymentStatus.PAID,
@@ -8050,9 +8056,9 @@ const recordGroupPurchaseRemainingPayment = async (
             where: {
               id: appointment.id,
               groupPurchaseId: purchaseId,
-              bookingMethod: BookingMethod.DEPOSIT,
+              bookingMethod: purchase.bookingMethod,
               appointmentStatus: AppointmentStatus.CONFIRMED,
-              paymentStatus: PaymentStatus.PARTIALLY_PAID,
+              paymentStatus: expectedPaymentStatus,
               qrVerifiedAt: {
                 not: null,
               },
@@ -8077,6 +8083,9 @@ const recordGroupPurchaseRemainingPayment = async (
             appointment.currency,
             await getPurchaseCurrency(tx, purchase.id),
           );
+
+          const now = new Date();
+
           const payment = await tx.payment.create({
             data: {
               customerId: purchase.customerId,
@@ -8089,12 +8098,9 @@ const recordGroupPurchaseRemainingPayment = async (
                 remainingAmount,
                 appointment.currency,
               ),
-
-              // Dynamic saved appointment currency
               currency: appointment.currency,
-
               status: PaymentStatus.PAID,
-              paidAt: new Date(),
+              paidAt: now,
             },
           });
 
@@ -8134,10 +8140,11 @@ const recordGroupPurchaseRemainingPayment = async (
                 appointmentId: appointment.id,
                 provider: PaymentProvider.SALON,
                 paymentMethod: payload.paymentMethod,
+                bookingMethod: purchase.bookingMethod,
                 totalAmount: Number(totalAmount),
                 depositAmount: Number(depositAmount),
                 remainingAmount: Number(remainingAmount),
-                previousPaymentStatus: PaymentStatus.PARTIALLY_PAID,
+                previousPaymentStatus: expectedPaymentStatus,
                 newPaymentStatus: PaymentStatus.PAID,
               },
             },
@@ -8151,7 +8158,7 @@ const recordGroupPurchaseRemainingPayment = async (
           return {
             purchaseId,
             appointmentId: appointment.id,
-            bookingMethod: BookingMethod.DEPOSIT,
+            bookingMethod: purchase.bookingMethod,
             appointmentStatus: AppointmentStatus.CONFIRMED,
             paymentStatus: PaymentStatus.PAID,
             totalAmount: Number(totalAmount),
