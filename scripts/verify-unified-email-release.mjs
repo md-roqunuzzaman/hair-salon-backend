@@ -18,7 +18,10 @@ const config = JSON.parse(await readFile('wrangler.jsonc','utf8'));
 assert.equal(config.vars.EMAIL_OUTBOX_ENABLED,'false');
 assert.ok(['false','true'].includes(config.env.staging.vars.EMAIL_OUTBOX_ENABLED));
 assert.equal(config.main,'cloudflare/.build/worker.mjs');
-assert.equal(migrations.length,40);
+assert.equal(migrations.length,41);
+assert.match(migrations[40].sql,/"staffId" TEXT,/);
+assert.match(migrations[40].sql,/CREATE TRIGGER "money_Appointment_price_INSERT"/);
+assert.match(migrations[40].sql,/CREATE TRIGGER "required_Appointment_orderNumber_INSERT"/);
 assert.match(migrations[39].sql,/CREATE TABLE "StaffScheduleOverride"/);
 assert.match(migrations[39].sql,/CREATE UNIQUE INDEX "StaffScheduleOverride_staffId_date_key"/);
 assert.match(migrations[38].sql,/ALTER TABLE "GroupPurchase" ADD COLUMN "orderNumber" TEXT/);
@@ -66,6 +69,7 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
     if(name==='0037_group_purchase_currency_required.sql'||name==='20261106100703_group_purchase_currency_required')continue;
     if(name==='0039_group_purchase_order_number.sql'||name==='20261110030317_add_group_purchase_order_number')continue;
     if(name==='0040_staff_schedule_override.sql'||name==='20261110090200_add_staff_schedule_override')continue;
+    if(name==='0041_appointment_staff_optional.sql'||name==='20261116061818_support_staff_optional_booking')continue;
     // Current PostgreSQL index candidates are retained verbatim; Workers use v32 SQLite.
     if(directory==='prisma/migrations'&&['20261102082512_email_outbox_stale_lock_index','20261102083831_email_outbox_stale_lock_index'].includes(name))continue;
     const file = `${directory}/${name}${directory.startsWith('prisma')?'/migration.sql':''}`;
@@ -78,6 +82,7 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
 }
 const metadata=JSON.parse(await readFile('cloudflare/runtime/model-metadata.json','utf8'));
 assert.equal(metadata.Appointment.scalars.timezone,'String');
+assert.match(sqliteSchema.match(/model Appointment\s*\{([\s\S]*?)\n\}/)[1],/\n\s+staffId\s+String\?/);
 assert.equal(metadata.GroupPurchase.scalars.currency,'String');
 assert.equal(metadata.GroupPurchase.scalars.orderNumber,'String');
 assert.equal(metadata.StaffScheduleOverride.scalars.date,'DateTime');
@@ -117,7 +122,7 @@ for (const required of ['brand-email-setting.sender.ts','brand-email-setting.aut
 assert.ok((await readFile('cloudflare/.build/templates.mjs','utf8')).includes('"verify-email.ejs"'),'Verification template missing from compiled templates');
 // MIME composition is intentionally shared by Worker SMTP and Graph. Only the
 // native Node SMTP transport/connection and local fixtures must be absent.
-for (const excluded of ['runtime/integration-fixture.mjs','runtime/business-email-fixture.mjs','runtime/email-test-fixture.mjs','src/app/lib/merchant-smtp.ts','nodemailer/dist/esm/smtp-transport/','nodemailer/dist/esm/smtp-connection/','nodemailer/lib/smtp-transport/','nodemailer/lib/smtp-connection/']) assert.ok(!map.sources.some(source=>source.includes(excluded)),`Unsupported production source: ${excluded}`);
+for (const excluded of ['runtime/optional-staff-migration-fixture.mjs','runtime/no-show-fixture.mjs','runtime/integration-fixture.mjs','runtime/business-email-fixture.mjs','runtime/email-test-fixture.mjs','src/app/lib/merchant-smtp.ts','nodemailer/dist/esm/smtp-transport/','nodemailer/dist/esm/smtp-connection/','nodemailer/lib/smtp-transport/','nodemailer/lib/smtp-connection/']) assert.ok(!map.sources.some(source=>source.includes(excluded)),`Unsupported production source: ${excluded}`);
 const report = {
   scope:'LOCAL_ONLY_NO_DEPLOY',createdAt:new Date().toISOString(),
   packageLockSha256:hash(packageLock),nodeVersion:process.version,toolVersions,

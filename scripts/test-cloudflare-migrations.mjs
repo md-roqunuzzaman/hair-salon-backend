@@ -7,5 +7,5 @@ try {
   const response = await mf.dispatchFetch('https://test/');
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { preserved: true, repeatable: true, foreignKey: true, checksumProtected: true, currencyRequired: true });
-  console.log('Existing databases upgrade to v40: staff schedule overrides, uniqueness, foreign keys, cascades and repeated startup pass; every prior migration check remains included.');
+  console.log('Existing databases upgrade to v41: optional appointment staff, populated relation preservation, atomic rollback, money guards and repeated startup pass; every prior migration check remains included.');
 } finally { await mf.dispose(); }

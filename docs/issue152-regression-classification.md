@@ -1,0 +1,89 @@
+# Issue #152 regression failure classification
+
+Baseline replay on 2026-11-16 reproduced booking **16 passed / 50 failed / 66 total** and API **43 passed / 5 failed / 48 total**. The tables include every failed TAP entry, including failed parent tests whose children failed; parent entries are not separate root causes. No tests were skipped, deleted or disabled.
+
+## Booking baseline: every failed entry
+
+| Exact baseline TAP failure | Classification | Cause and correction |
+| --- | --- | --- |
+| not ok 1 - PAY_NOW preserves booking snapshot, money, hold or QR and isolation | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 2 - PAY_NOW rejects a disabled merchant booking method before writing | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 3 - DEPOSIT preserves booking snapshot, money, hold or QR and isolation | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 4 - DEPOSIT rejects a disabled merchant booking method before writing | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 5 - RESERVE_NOW preserves booking snapshot, money, hold or QR and isolation | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 6 - RESERVE_NOW rejects a disabled merchant booking method before writing | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 7 - package booking uses package duration and price snapshot | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 8 - deposit rejects invalid percentage without creating an appointment | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 9 - a conflict appearing after availability is rechecked inside the transaction | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 10 - availability preserves sorted slots, duration and capacity response | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 15 - no eligible staff and no schedules retain distinct reasons | Outdated test fixture | Use a configured INACTIVE stylist to represent no eligible staff; an empty configuration now intentionally allows staff-free booking. Distinct unavailable reasons remain asserted. |
+| not ok 16 - schedule and branch hours constrain the entire service duration | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 17 - leave and staff appointments block overlapping slots but allow touching endpoints | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 18 - capacity counts unrelated staff and every touched clock hour | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 19 - minimum notice can exclude otherwise valid future slots | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 20 - package duration and auto staff deduplication are preserved | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 21 - rescheduling excludes its appointment and queries only active holds | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 24 - HTTP requests run all three real booking services through controller and validation | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 25 - AUTO zero daily counts: deterministic random can select every candidate, not just ASC first | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 26 - AUTO unique minimum is always chosen without random selection | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 27 - AUTO tied minimum randomizes only among the minimum-count candidates | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 1 - leave | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 2 - shortSchedule | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 3 - conflict | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 28 - AUTO filters unavailable minimum before comparing daily workload | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 1 - inactive | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 2 - branch | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 3 - service | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 4 - package | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 29 - AUTO excludes inactive, other-branch and ineligible-service/package minimum candidates | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 30 - AUTO workload uses only selected date and all services/packages and assignment methods | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 1 - RESERVED | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 2 - CONFIRMED | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 3 - COMPLETED | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 4 - PENDING_PAYMENT | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 5 - CANCELLED | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 6 - EXPIRED | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 7 - NO_SHOW | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 31 - AUTO counts each qualifying status and excludes holds/cancelled/expired/no-show | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 32 - AUTO active PENDING_PAYMENT hold blocks the full slot while expired hold does not | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 33 - manual staff ignores fairness/randomness and retains existing unavailable error | Mock incompatibility | Mock required where.status even when absent and discarded returned status; honor the actual Prisma query/projection. |
+| not ok 34 - consecutive AUTO RESERVE_NOW bookings recalculate counts inside existing serializable transactions | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 35 - reported AUTO slot remains bookable; preview staff is not the assigned staff | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 36 - reported slot manual booking still selects the explicit staff; root POST is not a booking contract | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 37 - reported slot returns the exact 409 if availability changes before POST | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 38 - reported slot retains exact 409 on exhausted serializable retries | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 39 - branch breaks exclude full-duration overlap while allowing touching endpoints | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 40 - multiple branch breaks apply equally to manual and AUTO staff selection | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 41 - New York availability excludes DST gap/fold slots on 2026-03-08 | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+| not ok 42 - New York availability excludes DST gap/fold slots on 2026-11-01 | Outdated test fixture | Configured staff projection omitted ACTIVE status; supply status in the baseline and explicit staff-list overrides. Existing behavior assertions remain unchanged. |
+
+## API baseline: every failed entry
+
+| Exact baseline TAP failure | Classification | Cause and correction |
+| --- | --- | --- |
+| not ok 16 - Worker breaks block every normal and group booking path while preserving boundary bookings and funds | Outdated test fixture | Commit 1da2954 retired DIRECT_BOOK creation. Assert explicit 400 validation plus unchanged state; retain real break rejection and successful boundary redemption for paid vouchers. |
+| not ok 25 - My Orders retains the public contract, filters, localized names and canonical logical order numbers | Outdated test fixture | Committed My Orders contract adds quantity. Keep the exact key assertion, add quantity and assert 2 for the linked group purchase and null for other orders. |
+| not ok 3 - Group purchase remaining via wallet | Outdated test fixture | Seed a historical DIRECT_BOOK deposit rather than create a retired flow. Real QR verification, ownership, wallet/Stripe remaining settlement, exact amounts, replay and duplicate-payment checks remain. |
+| not ok 4 - Group purchase remaining via stripe | Outdated test fixture | Seed a historical DIRECT_BOOK deposit rather than create a retired flow. Real QR verification, ownership, wallet/Stripe remaining settlement, exact amounts, replay and duplicate-payment checks remain. |
+| not ok 34 - remaining payment APIs on Cloudflare: normal/group deposits via wallet and Stripe | Outdated test fixture | Seed a historical DIRECT_BOOK deposit rather than create a retired flow. Real QR verification, ownership, wallet/Stripe remaining settlement, exact amounts, replay and duplicate-payment checks remain. |
+
+## Additional Worker discovery run: every failed entry
+
+The broader Worker run found five further failed TAP entries (including one parent). They all exercised retired DIRECT_BOOK creation. Current voucher redemption now exercises the same component eligibility and all nine cross-product overlap combinations, retaining 409/no-write assertions. The routing test explicitly rejects every retired creation method with 400 and unchanged state, while delisted paid-voucher redemption remains successful. Historical DIRECT_BOOK financial settlement is covered separately by the persisted-deposit fixture.
+
+| Exact baseline TAP failure | Classification | Cause and correction |
+| --- | --- | --- |
+| not ok 27 - approved package routing preserves all dedicated Direct Book methods and delisted voucher redemption | Outdated test fixture | Use the committed voucher-only purchase/redemption contract. Preserve package eligibility, all nine staff-conflict combinations and unchanged-state assertions; explicitly assert retired creation rejection. |
+| not ok 28 - package components are enforced by both discovery and final availability validation | Outdated test fixture | Use the committed voucher-only purchase/redemption contract. Preserve package eligibility, all nine staff-conflict combinations and unchanged-state assertions; explicitly assert retired creation rejection. |
+| not ok 3 - Service -> Group | Outdated test fixture | Use the committed voucher-only purchase/redemption contract. Preserve package eligibility, all nine staff-conflict combinations and unchanged-state assertions; explicitly assert retired creation rejection. |
+| not ok 6 - Standard -> Group | Outdated test fixture | Use the committed voucher-only purchase/redemption contract. Preserve package eligibility, all nine staff-conflict combinations and unchanged-state assertions; explicitly assert retired creation rejection. |
+| not ok 35 - all nine Service/Standard/Group booking combinations reject overlapping staff appointments | Outdated test fixture | Use the committed voucher-only purchase/redemption contract. Preserve package eligibility, all nine staff-conflict combinations and unchanged-state assertions; explicitly assert retired creation rejection. |
+
+## Real application regressions found by additional tests
+
+1. A date-specific move removed the original branch's persistent assignment from configuration detection and incorrectly exposed NO_STAFF availability. Transactional booking also ignored incoming overrides, so the destination preview could disagree with persisted staff assignment. Preserve persistent configuration and include incoming overrides consistently in both availability and the transaction; use schedules to determine actual availability. The new temporary-branch-move Worker test failed before the fix and passes after it, checking original-branch 409/no writes and destination AUTO/manual assignment.
+2. Package configuration detection filtered out assigned stylists missing a required service skill, incorrectly converting an ineligible configured package into a staff-free product. Detect package assignment first, then apply service skills to eligibility. The new configured-package Worker test failed before the fix and passes after it, retaining no slots, 409 and unchanged state.
+
+The original 55 failed TAP entries were fixture/mock compatibility problems; the two application bugs above were found through added regression coverage, not by relaxing the original failures. Current creation remains voucher-only, and historical DIRECT_BOOK remaining-payment behavior remains covered.
+
+Full baseline and final command output, exit codes and summary JSON are retained under `node_modules/.cloudflare-test/issue152/`. See [the release preparation report](optional-appointment-staff-cloudflare.md) for final counts and limits.

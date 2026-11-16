@@ -9,12 +9,11 @@ test('remaining payment APIs on Cloudflare: normal/group deposits via wallet and
     await t.test(`${group ? 'Group purchase' : 'Appointment'} remaining via ${provider}`, async () => {
       let appointmentId, purchaseId;
       if (group) {
-        const created = (await api('/api/v1/group-purchases', { status: 201, body: {
-          ...fixture, quantity: 2, purchaseFlow: 'DIRECT_BOOK', bookingMethod: 'DEPOSIT', startTime: provider === 'wallet' ? '20:00' : '22:00',
-        } })).data;
+        const created = await api('/__policy-test', { body: { legacyGroupDeposit: {
+          ...fixture, customerId: customer, startTime: provider === 'wallet' ? '20:00' : '22:00',
+        } } });
         purchaseId = created.purchaseId;
-        appointmentId = created.firstAppointment.appointmentId;
-        await api(`/api/v1/group-purchases/${purchaseId}/pay-with-wallet`, { body: { useBonus: false } });
+        appointmentId = created.appointmentId;
         const appointment = (await state()).appointments.find(row => row.id === appointmentId);
         await api('/api/v1/appointments/verify-qr', { body: { qrToken: appointment.qrToken, branchId: fixture.branchId }, roleToken: ownerToken });
       } else {

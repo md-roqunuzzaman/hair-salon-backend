@@ -11,12 +11,13 @@ test('My Orders retains the public contract, filters, localized names and canoni
   assert.ok(!all.items.some(row => row.id === seeded.otherPayment.id));
   const fields = ['id', 'orderId', 'orderNumber', 'category', 'itemName', 'services', 'amount', 'currency', 'paymentStatus',
     'provider', 'providerPaymentId', 'appointmentId', 'groupPurchaseId', 'walletTopupId', 'createdAt', 'purpose', 'label',
-    'refundedAmount', 'canRefund', 'refundBlockedReason'];
+    'refundedAmount', 'canRefund', 'refundBlockedReason', 'quantity'];
   for (const row of all.items) {
     assert.deepEqual(Object.keys(row).sort(), [...fields].sort());
     assert.match(row.orderNumber, /^[A-HJ-NP-Z2-9]{6}$/);
     assert.equal(typeof row.amount, 'number');
     assert.equal(row.currency, 'HKD');
+    assert.equal(row.quantity, row.category === 'GROUP_PURCHASE' && row.orderId === seeded.purchaseId ? 2 : null);
   }
   for (const category of ['GROUP_PURCHASE', 'REGULAR_PURCHASE', 'WALLET_TOPUP']) {
     const filtered = (await ctx.api('/api/v1/payments/my?category=' + category + '&limit=100')).data;

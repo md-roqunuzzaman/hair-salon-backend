@@ -88,6 +88,30 @@ export async function policyTestControl(db,body,storage){
     }
     return { staffIds: ids };
   }
+  if (body.legacyGroupDeposit) {
+    // DIRECT_BOOK creation was retired; existing deposits still need settlement.
+    // Seed the historical persisted state, then exercise real payment/QR APIs.
+    const { customerId, branchId, staffId, packageId, date, startTime } = body.legacyGroupDeposit;
+    const purchase = await db.groupPurchase.create({ data: {
+      customerId, packageId, purchaseBranchId: branchId, orderNumber: generateOrderNumber(),
+      purchaseFlow: 'DIRECT_BOOK', bookingMethod: 'DEPOSIT', quantity: 2,
+      unitPrice: 100.25, amount: 200.5, currency: 'HKD', depositPercentage: 30,
+      depositAmount: 60.15, remainingAmount: 140.35, paymentStatus: 'PARTIALLY_PAID', purchasedAt: new Date(),
+    } });
+    const appointment = await db.appointment.create({ data: {
+      customerId, branchId, staffId, packageId, groupPurchaseId: purchase.id, orderNumber: generateOrderNumber(),
+      bookingMethod: 'DEPOSIT', appointmentStatus: 'RESERVED', paymentStatus: 'PARTIALLY_PAID',
+      date: new Date(date), startTime, endTime: `${String(Number(startTime.slice(0,2)) + 1).padStart(2,'0')}:00`,
+      durationMinutes: 60, itemName: 'Legacy group deposit', price: 200.5, currency: 'HKD', timezone: 'Asia/Hong_Kong',
+      depositPercentage: 30, depositAmount: 60.15, remainingAmount: 140.35, qrToken: crypto.randomUUID(),
+    } });
+    const deposit = await db.payment.create({ data: {
+      customerId, groupPurchaseId: purchase.id, appointmentId: appointment.id, purpose: 'GROUP_PURCHASE',
+      provider: 'WALLET', status: 'PAID', amount: 60.15, currency: 'HKD', paidAt: new Date(),
+    } });
+    await db.groupPurchase.update({ where: { id: purchase.id }, data: { settledPaymentId: deposit.id } });
+    return { purchaseId: purchase.id, appointmentId: appointment.id };
+  }
   if (body.remainingDeposit) {
     const { customerId, branchId, staffId, serviceId, date } = body.remainingDeposit;
     const appointment = await db.appointment.create({ data: {

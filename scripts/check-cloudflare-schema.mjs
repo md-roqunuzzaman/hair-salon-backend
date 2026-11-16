@@ -63,6 +63,9 @@ try {
   await apply(actual, await readFile('cloudflare/migrations/0038_service_booking_windows.sql','utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0039_group_purchase_order_number.sql','utf8'));
   await apply(actual, await readFile('cloudflare/migrations/0040_staff_schedule_override.sql','utf8'));
+  const [optionalStaffUpgrade, ...optionalStaffTriggers] = (await readFile('cloudflare/migrations/0041_appointment_staff_optional.sql','utf8')).split(/(?=CREATE TRIGGER)/);
+  await apply(actual, optionalStaffUpgrade);
+  for (const trigger of optionalStaffTriggers) await actual.prepare(trigger).run();
   // v16 enforces this required field with triggers to retain the referenced table.
   // Verify both exact definitions before treating their enforcement as NOT NULL.
   for (const trigger of requiredTriggers) {

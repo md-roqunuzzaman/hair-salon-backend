@@ -56,6 +56,7 @@ export class SalonDatabase {
           ['appointment-expiry', () => appointmentService.expirePendingAppointments()],
           ['group-expiry', () => groupPurchaseExpiryService.expirePendingGroupPurchases()],
           ['completion', () => retryIdempotentDatabaseOperation(() => appointmentService.completeEligibleAppointments())],
+          ['no-show', () => retryIdempotentDatabaseOperation(() => appointmentService.autoMarkNoShowAppointments())],
           ['reminders', () => sendAppointmentReminders()],
           ['merchant-email', () => processBusinessEmailBatch(2)],
           ['session-cleanup', () => this.sessions.cleanup()],

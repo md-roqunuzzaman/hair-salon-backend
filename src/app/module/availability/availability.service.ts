@@ -80,19 +80,33 @@ const getAvailableSlots = async (
     serviceId,
     packageId,
     staffId,
+    staffPreference,
     date,
     excludeAppointmentId,
   } = query;
 
   // =====================================================
-  // AUTO STAFF MODE
+  // 1. VALIDATE BOOKING REQUEST
   // =====================================================
 
-  const isAutoStaff = !staffId;
-  const staffSelectionMode = isAutoStaff ? "AUTO" : "SELECTED";
+  if (Boolean(serviceId) === Boolean(packageId)) {
+    throw new AppError("Provide exactly one serviceId or packageId", 400);
+  }
+
+  if (staffPreference === "SELECT_STAFF" && !staffId) {
+    throw new AppError("staffId is required for SELECT_STAFF", 400);
+  }
+
+  if (staffPreference === "AUTO_ASSIGN" && staffId) {
+    throw new AppError("staffId cannot be used with AUTO_ASSIGN", 400);
+  }
+
+  if (staffPreference === "NO_STAFF" && staffId) {
+    throw new AppError("staffId cannot be used with NO_STAFF", 400);
+  }
 
   // =====================================================
-  // 1. BRANCH + BOOKING POLICY
+  // 2. BRANCH + BOOKING POLICY
   // =====================================================
 
   const branch = await prisma.branch.findUnique({
@@ -114,8 +128,12 @@ const getAvailableSlots = async (
 
   const bookingPolicy = branch.bookingPolicy;
 
+  if (bookingPolicy.slotIntervalMinutes <= 0) {
+    throw new AppError("Invalid booking slot interval", 400);
+  }
+
   // =====================================================
-  // 2. BRAND TIMEZONE
+  // 3. BRAND TIMEZONE
   // =====================================================
 
   const brand = await prisma.brand.findFirst({
@@ -129,7 +147,26 @@ const getAvailableSlots = async (
   const brandTimezone = brand.timezone;
 
   // =====================================================
-  // 3. BOOKING DATE POLICY
+  // 4. STAFF MODE — INITIAL RESOLUTION
+  // =====================================================
+
+  let staffSelectionMode: "SELECTED" | "AUTO" | "NO_STAFF" = staffId
+    ? "SELECTED"
+    : staffPreference === "NO_STAFF"
+      ? "NO_STAFF"
+      : "AUTO";
+
+  const emptyResult = (
+    reason: NonNullable<IAvailabilityResult["unavailableReason"]>,
+  ): IAvailabilityResult => ({
+    date,
+    staffSelectionMode,
+    slots: [],
+    unavailableReason: reason,
+  });
+
+  // =====================================================
+  // 5. DATE POLICY
   // =====================================================
 
   const currentBrandDate = getDateInTimezone(brandTimezone);
@@ -138,45 +175,41 @@ const getAvailableSlots = async (
 
   const requestedDateOnly = new Date(`${date}T00:00:00.000Z`);
 
+  if (
+    Number.isNaN(requestedDateOnly.getTime()) ||
+    requestedDateOnly.toISOString().slice(0, 10) !== date
+  ) {
+    throw new AppError("Invalid booking date", 400);
+  }
+
   const dayDifference = Math.floor(
-    (requestedDateOnly.getTime() - currentDateOnly.getTime()) /
-      (1000 * 60 * 60 * 24),
+    (requestedDateOnly.getTime() - currentDateOnly.getTime()) / 86400000,
   );
 
   if (dayDifference < 0) {
-    return {
-      date,
-      staffSelectionMode,
-      slots: [],
-      unavailableReason: "DATE_IN_PAST",
-    };
+    return emptyResult("DATE_IN_PAST");
   }
 
   if (dayDifference > bookingPolicy.maximumAdvanceBookingDays) {
-    return {
-      date,
-      staffSelectionMode,
-      slots: [],
-      unavailableReason: "BOOKING_WINDOW_EXCEEDED",
-    };
+    return emptyResult("BOOKING_WINDOW_EXCEEDED");
   }
 
+  const day = getDayOfWeek(date);
+  const dateOnly = requestedDateOnly;
+
   // =====================================================
-  // 4. SERVICE / PACKAGE + CUSTOM BOOKING WINDOWS
+  // 6. SERVICE / PACKAGE
   // =====================================================
 
   let durationMinutes: number;
-
   let serviceBookingHoursEnabled = false;
-
-  let requiredPackageServiceIds: string[] = [];
 
   let serviceBookingWindows: Array<{
     start: number;
     end: number;
   }> = [];
 
-  const day = getDayOfWeek(date);
+  let requiredPackageServiceIds: string[] = [];
 
   if (serviceId) {
     const service = await prisma.service.findUnique({
@@ -230,28 +263,16 @@ const getAvailableSlots = async (
         start: parseTimeToMinutes(window.startTime),
         end: parseTimeToMinutes(window.endTime),
       }));
-
-      // Enabled but no windows for the selected day:
-      // service cannot be booked on this day.
-      if (serviceBookingWindows.length === 0) {
-        return {
-          date,
-          staffSelectionMode,
-          slots: [],
-          unavailableReason: "NO_AVAILABLE_SLOTS",
-        };
-      }
     }
   } else {
-    // ===================================================
-    // PACKAGE — PRESERVE EXISTING BEHAVIOR
-    // ===================================================
-
     const packageData = await prisma.package.findUnique({
       where: { id: packageId! },
 
       include: {
-        services: { select: { serviceId: true } },
+        services: {
+          select: { serviceId: true },
+        },
+
         branches: {
           where: { branchId },
           select: { branchId: true },
@@ -272,27 +293,34 @@ const getAvailableSlots = async (
     }
 
     durationMinutes = packageData.durationMinutes;
-    requiredPackageServiceIds = packageData.services.map((item) => item.serviceId);
+
+    requiredPackageServiceIds = packageData.services.map(
+      (item) => item.serviceId,
+    );
   }
 
-  // Internal reschedule callers use the immutable booked duration. HTTP query
-  // validation never forwards this option from customer input.
+  // Preserve immutable booked duration for rescheduling.
   if (options.durationMinutes !== undefined) {
-    if (!Number.isSafeInteger(options.durationMinutes) || options.durationMinutes <= 0) {
+    if (
+      !Number.isSafeInteger(options.durationMinutes) ||
+      options.durationMinutes <= 0
+    ) {
       throw new AppError("Invalid appointment duration", 400);
     }
+
     durationMinutes = options.durationMinutes;
   }
 
+  if (!Number.isSafeInteger(durationMinutes) || durationMinutes <= 0) {
+    throw new AppError("Invalid service/package duration", 400);
+  }
+
   // =====================================================
-  // 5. BRANCH BUSINESS HOURS + BREAKS
+  // 7. BRANCH BUSINESS HOURS + BREAKS
   // =====================================================
 
   const businessHour = await prisma.branchBusinessHour.findFirst({
-    where: {
-      branchId,
-      day,
-    },
+    where: { branchId, day },
 
     include: {
       breaks: {
@@ -301,9 +329,7 @@ const getAvailableSlots = async (
           endTime: true,
         },
 
-        orderBy: {
-          startTime: "asc",
-        },
+        orderBy: { startTime: "asc" },
       },
     },
   });
@@ -314,56 +340,57 @@ const getAvailableSlots = async (
     !businessHour.openTime ||
     !businessHour.closeTime
   ) {
-    return {
-      date,
-      staffSelectionMode,
-      slots: [],
-      unavailableReason: "BRANCH_CLOSED",
-    };
+    return emptyResult("BRANCH_CLOSED");
   }
 
   const branchOpenMinutes = parseTimeToMinutes(businessHour.openTime);
 
   const branchCloseMinutes = parseTimeToMinutes(businessHour.closeTime);
 
-  const branchBreakIntervals = businessHour.breaks.map((businessBreak) => ({
-    start: parseTimeToMinutes(businessBreak.startTime),
-    end: parseTimeToMinutes(businessBreak.endTime),
+  const branchBreakIntervals = businessHour.breaks.map((item) => ({
+    start: parseTimeToMinutes(item.startTime),
+    end: parseTimeToMinutes(item.endTime),
   }));
 
   // =====================================================
-  // 6. HOURLY CAPACITY
+  // 8. BRANCH HOURLY CAPACITY
   // =====================================================
 
   const hourlyCapacity = await prisma.branchHourlyCapacity.findUnique({
     where: {
-      branchId_day: {
-        branchId,
-        day,
-      },
+      branchId_day: { branchId, day },
     },
   });
 
   if (!hourlyCapacity) {
-    return {
-      date,
-      staffSelectionMode,
-      slots: [],
-      unavailableReason: "CAPACITY_NOT_CONFIGURED",
-    };
+    return emptyResult("CAPACITY_NOT_CONFIGURED");
   }
 
   const maxBookingsPerHour = hourlyCapacity.maxBookingsPerHour;
 
+  if (maxBookingsPerHour <= 0) {
+    return emptyResult("NO_AVAILABLE_SLOTS");
+  }
+
   // =====================================================
-  // 7. RESOLVE ELIGIBLE STAFF
+  // 9. RESOLVE CONFIGURED STAFF
   // =====================================================
 
   // =====================================================
-  // 7. RESOLVE ELIGIBLE STAFF
+  // 9. RESOLVE CONFIGURED STAFF
   // =====================================================
 
-  const dateOnly = new Date(`${date}T00:00:00.000Z`);
+  // Staff-free booking is allowed only when no staff is
+  // configured for the service/package at this branch.
+  //
+  // IMPORTANT:
+  // A staff member who is inactive, on leave, has no
+  // schedule, or is temporarily unavailable must NOT
+  // automatically enable staff-free booking.
+  //
+  // Keep persistent assignments when detecting configuration, even when an
+  // override moves their availability elsewhere. Also include staff temporarily
+  // assigned here, so the preview and transactional booking use the same set.
 
   const effectiveBranchEligibility = {
     OR: [
@@ -377,291 +404,335 @@ const getAvailableSlots = async (
       },
       {
         branches: {
-          some: {
-            branchId,
-          },
-        },
-        scheduleOverrides: {
-          none: {
-            date: dateOnly,
-          },
+          some: { branchId },
         },
       },
     ],
   };
 
-  let staffIds: string[] = [];
+  const configuredStaff = await prisma.staff.findMany({
+    where: {
+      ...effectiveBranchEligibility,
 
-  if (staffId) {
-    const staffMember = await prisma.staff.findUnique({
-      where: { id: staffId },
+      ...(serviceId
+        ? {
+            services: {
+              some: { serviceId },
+            },
+          }
+        : {
+            packages: {
+              some: { packageId: packageId! },
+            },
 
-      include: {
-        branches: {
-          where: { branchId },
-          select: { branchId: true },
-        },
+          }),
+    },
 
-        scheduleOverrides: {
-          where: { date: dateOnly },
-          select: { branchId: true },
-        },
+    select: {
+      id: true,
+      status: true,
+      services: { select: { serviceId: true } },
+    },
 
-        services: serviceId
-          ? {
-              where: { serviceId },
-              select: { serviceId: true },
-            }
-          : packageId
-            ? { select: { serviceId: true } }
-            : false,
+    orderBy: {
+      id: "asc",
+    },
+  });
 
-        packages: packageId
-          ? {
-              where: { packageId },
-              select: { packageId: true },
-            }
-          : false,
-      },
-    });
+  const hasConfiguredStaff = configuredStaff.length > 0;
 
-    if (!staffMember) {
-      throw new AppError("Staff not found", 404);
-    }
+  // =====================================================
+  // 10. AUTOMATIC STAFF-FREE FALLBACK
+  // =====================================================
 
-    if (staffMember.status !== StaffStatus.ACTIVE) {
-      throw new AppError("Staff is not eligible", 400);
-    }
-
-    const override = staffMember.scheduleOverrides[0];
-
-    const eligibleForBranch = override
-      ? override.branchId === branchId
-      : staffMember.branches.length > 0;
-
-    if (!eligibleForBranch) {
+  if (!hasConfiguredStaff) {
+    if (staffId) {
       throw new AppError(
-        "Staff is not eligible for this branch on the selected date",
+        "No staff is configured for this service or package",
         400,
       );
     }
 
-    if (
-      serviceId &&
-      (!staffMember.services || staffMember.services.length === 0)
-    ) {
-      throw new AppError("Staff is not eligible for this service", 400);
+    staffSelectionMode = "NO_STAFF";
+  } else if (staffPreference === "NO_STAFF") {
+    throw new AppError(
+      "Staff-free booking is not available because staff is configured",
+      400,
+    );
+  }
+
+  // =====================================================
+  // 10. AUTOMATIC STAFF-FREE FALLBACK
+  // =====================================================
+
+  if (!hasConfiguredStaff) {
+    if (staffId) {
+      throw new AppError(
+        "No staff is configured for this service or package",
+        400,
+      );
     }
 
-    if (
-      packageId &&
-      (!staffMember.packages || staffMember.packages.length === 0)
-    ) {
-      throw new AppError("Staff is not eligible for this package", 400);
-    }
+    staffSelectionMode = "NO_STAFF";
+  } else if (staffPreference === "NO_STAFF") {
+    // Boss-confirmed behavior:
+    // NO_STAFF is only for unassigned services/packages.
+    throw new AppError(
+      "Staff-free booking is not available because staff is configured",
+      400,
+    );
+  }
 
-    if (packageId) {
-      const assigned = new Set(staffMember.services?.map((item) => item.serviceId));
-      if (requiredPackageServiceIds.some((id) => !assigned.has(id))) {
+  if (serviceBookingHoursEnabled && serviceBookingWindows.length === 0) {
+    return emptyResult("NO_AVAILABLE_SLOTS");
+  }
+
+  // =====================================================
+  // 11. RESOLVE ELIGIBLE STAFF
+  // =====================================================
+
+  let staffIds: string[] = [];
+
+  if (staffSelectionMode !== "NO_STAFF") {
+    if (staffId) {
+      const staffMember = await prisma.staff.findUnique({
+        where: { id: staffId },
+
+        include: {
+          branches: {
+            where: { branchId },
+            select: { branchId: true },
+          },
+
+          scheduleOverrides: {
+            where: { date: dateOnly },
+            select: { branchId: true },
+          },
+
+          services: serviceId
+            ? {
+                where: { serviceId },
+                select: { serviceId: true },
+              }
+            : packageId
+              ? {
+                  select: { serviceId: true },
+                }
+              : false,
+
+          packages: packageId
+            ? {
+                where: { packageId },
+                select: { packageId: true },
+              }
+            : false,
+        },
+      });
+
+      if (!staffMember) {
+        throw new AppError("Staff not found", 404);
+      }
+
+      if (staffMember.status !== StaffStatus.ACTIVE) {
+        throw new AppError("Staff is not eligible", 400);
+      }
+
+      const override = staffMember.scheduleOverrides[0];
+
+      const eligibleForBranch = override
+        ? override.branchId === branchId
+        : staffMember.branches.length > 0;
+
+      if (!eligibleForBranch) {
+        throw new AppError(
+          "Staff is not eligible for this branch on the selected date",
+          400,
+        );
+      }
+
+      if (
+        serviceId &&
+        (!staffMember.services || staffMember.services.length === 0)
+      ) {
+        throw new AppError("Staff is not eligible for this service", 400);
+      }
+
+      if (
+        packageId &&
+        (!staffMember.packages || staffMember.packages.length === 0)
+      ) {
         throw new AppError("Staff is not eligible for this package", 400);
       }
+
+      if (packageId) {
+        const assigned = new Set(
+          staffMember.services?.map((item) => item.serviceId),
+        );
+
+        if (requiredPackageServiceIds.some((id) => !assigned.has(id))) {
+          throw new AppError("Staff is not eligible for this package", 400);
+        }
+      }
+
+      staffIds = [staffMember.id];
+    } else {
+      staffIds = configuredStaff
+        .filter((staff) => staff.status === StaffStatus.ACTIVE &&
+          requiredPackageServiceIds.every(id => staff.services.some(item => item.serviceId === id)))
+        .map((staff) => staff.id);
+
+      if (staffIds.length === 0) {
+        return emptyResult("NO_ELIGIBLE_STAFF");
+      }
     }
+  }
 
-    staffIds = [staffMember.id];
+  // =====================================================
+  // 12. STAFF SCHEDULES
+  // =====================================================
+
+  type EffectiveSchedule = {
+    staffId: string | null;
+    startTime: string;
+    endTime: string;
+  };
+
+  let schedules: EffectiveSchedule[] = [];
+
+  if (staffSelectionMode === "NO_STAFF") {
+    // Staff-free booking uses branch hours.
+    // No staff schedule or leave check is required.
+    schedules = [
+      {
+        staffId: null,
+        startTime: businessHour.openTime,
+        endTime: businessHour.closeTime,
+      },
+    ];
   } else {
-    const eligibleStaff = await prisma.staff.findMany({
+    const overrides = await prisma.staffScheduleOverride.findMany({
       where: {
-        status: StaffStatus.ACTIVE,
-
-        ...effectiveBranchEligibility,
-
-        ...(serviceId
-          ? {
-              services: {
-                some: { serviceId },
-              },
-            }
-          : {
-              packages: {
-                some: { packageId: packageId! },
-              },
-              AND: requiredPackageServiceIds.map((id) => ({ services: { some: { serviceId: id } } })),
-            }),
+        staffId: { in: staffIds },
+        date: dateOnly,
       },
 
-      select: { id: true },
-
-      orderBy: { id: "asc" },
+      select: {
+        staffId: true,
+        branchId: true,
+        startTime: true,
+        endTime: true,
+      },
     });
 
-    staffIds = eligibleStaff.map((staff) => staff.id);
+    const overriddenStaffIds = new Set(overrides.map((item) => item.staffId));
 
-    if (staffIds.length === 0) {
-      return {
-        date,
-        staffSelectionMode: "AUTO",
-        slots: [],
-        unavailableReason: "NO_ELIGIBLE_STAFF",
-      };
+    const regularSchedules = await prisma.staffSchedule.findMany({
+      where: {
+        staffId: {
+          in: staffIds.filter((id) => !overriddenStaffIds.has(id)),
+        },
+        branchId,
+        day,
+      },
+
+      select: {
+        staffId: true,
+        branchId: true,
+        startTime: true,
+        endTime: true,
+      },
+
+      orderBy: [{ startTime: "asc" }, { staffId: "asc" }],
+    });
+
+    const branchOverrides = overrides.filter(
+      (item) => item.branchId === branchId,
+    );
+
+    schedules = [...regularSchedules, ...branchOverrides].sort(
+      (a, b) =>
+        a.startTime.localeCompare(b.startTime) ||
+        a.staffId.localeCompare(b.staffId),
+    );
+
+    if (schedules.length === 0) {
+      return emptyResult("NO_STAFF_SCHEDULE");
     }
   }
 
   // =====================================================
-  // 8. STAFF SCHEDULES
+  // 13. STAFF UNAVAILABILITY
   // =====================================================
 
-  // =====================================================
-  // 8. EFFECTIVE STAFF SCHEDULES
-  // =====================================================
-
-  // -----------------------------------------------------
-  // 8.1 FETCH TEMPORARY OVERRIDES FOR SELECTED DATE
-  // -----------------------------------------------------
-
-  const overrides = await prisma.staffScheduleOverride.findMany({
-    where: {
-      staffId: {
-        in: staffIds,
-      },
-      date: dateOnly,
-    },
-
-    select: {
-      staffId: true,
-      branchId: true,
-      startTime: true,
-      endTime: true,
-    },
-  });
-
-  // Every override replaces the staff's regular schedule
-  // for the entire selected date, across all branches.
-  const overriddenStaffIds = new Set(
-    overrides.map((override) => override.staffId),
-  );
-
-  // -----------------------------------------------------
-  // 8.2 FETCH REGULAR WEEKLY SCHEDULES
-  // -----------------------------------------------------
-
-  const regularSchedules = await prisma.staffSchedule.findMany({
-    where: {
-      staffId: {
-        in: staffIds.filter((id) => !overriddenStaffIds.has(id)),
-      },
-      branchId,
-      day,
-    },
-
-    select: {
-      staffId: true,
-      branchId: true,
-      startTime: true,
-      endTime: true,
-    },
-
-    orderBy: [{ startTime: "asc" }, { staffId: "asc" }],
-  });
-
-  // -----------------------------------------------------
-  // 8.3 INCLUDE OVERRIDES FOR SELECTED BRANCH
-  // -----------------------------------------------------
-
-  const branchOverrides = overrides.filter(
-    (override) => override.branchId === branchId,
-  );
-
-  // -----------------------------------------------------
-  // 8.4 BUILD EFFECTIVE SCHEDULES
-  // -----------------------------------------------------
-
-  const schedules = [...regularSchedules, ...branchOverrides].sort(
-    (a, b) =>
-      a.startTime.localeCompare(b.startTime) ||
-      a.staffId.localeCompare(b.staffId),
-  );
-
-  // -----------------------------------------------------
-  // 8.5 NO STAFF SCHEDULE
-  // -----------------------------------------------------
-
-  if (schedules.length === 0) {
-    return {
-      date,
-      staffSelectionMode,
-      slots: [],
-      unavailableReason: "NO_STAFF_SCHEDULE",
-    };
-  }
+  const unavailability =
+    staffSelectionMode === "NO_STAFF"
+      ? []
+      : await prisma.staffUnavailability.findMany({
+          where: {
+            staffId: { in: staffIds },
+            date: dateOnly,
+          },
+        });
 
   // =====================================================
-  // 9. STAFF UNAVAILABILITY
-  // =====================================================
-
-  const unavailability = await prisma.staffUnavailability.findMany({
-    where: {
-      staffId: { in: staffIds },
-      date: dateOnly,
-    },
-  });
-
-  // =====================================================
-  // 10. STAFF-BLOCKING APPOINTMENTS
+  // 14. BLOCKING APPOINTMENTS
   // =====================================================
 
   const now = new Date();
 
-  const staffBlockingAppointments = await prisma.appointment.findMany({
-    where: {
-      ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
+  const blockingStatusFilter = {
+    OR: [
+      {
+        appointmentStatus: {
+          in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
+        },
+      },
+      {
+        appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
 
-      staffId: { in: staffIds },
-      date: dateOnly,
+        holdExpiresAt: { gt: now },
+      },
+    ],
+  };
 
-      OR: [
-        {
-          appointmentStatus: {
-            in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
+  const staffBlockingAppointments =
+    staffSelectionMode === "NO_STAFF"
+      ? []
+      : await prisma.appointment.findMany({
+          where: {
+            ...(excludeAppointmentId
+              ? {
+                  id: {
+                    not: excludeAppointmentId,
+                  },
+                }
+              : {}),
+
+            staffId: { in: staffIds },
+            date: dateOnly,
+            ...blockingStatusFilter,
           },
-        },
-        {
-          appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
 
-          holdExpiresAt: { gt: now },
-        },
-      ],
-    },
-
-    select: {
-      staffId: true,
-      startTime: true,
-      endTime: true,
-    },
-  });
-
-  // =====================================================
-  // 11. BRANCH-BLOCKING APPOINTMENTS
-  // =====================================================
+          select: {
+            staffId: true,
+            startTime: true,
+            endTime: true,
+          },
+        });
 
   const branchBlockingAppointments = await prisma.appointment.findMany({
     where: {
-      ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
+      ...(excludeAppointmentId
+        ? {
+            id: {
+              not: excludeAppointmentId,
+            },
+          }
+        : {}),
 
       branchId,
       date: dateOnly,
-
-      OR: [
-        {
-          appointmentStatus: {
-            in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
-          },
-        },
-        {
-          appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
-
-          holdExpiresAt: { gt: now },
-        },
-      ],
+      ...blockingStatusFilter,
     },
 
     select: {
@@ -672,8 +743,11 @@ const getAvailableSlots = async (
   });
 
   // =====================================================
-  // 12. BRANCH CAPACITY HELPER
+  // 15. BRANCH CAPACITY HELPER
   // =====================================================
+
+  // Preserve the existing per-hour capacity semantics.
+  // All appointments count, including staffId = null.
 
   const getCapacityUsageForSlot = (slotStart: number, slotEnd: number) => {
     let maxUsed = 0;
@@ -719,23 +793,19 @@ const getAvailableSlots = async (
   };
 
   // =====================================================
-  // 13. GENERATE STAFF-CANDIDATE SLOTS
+  // 16. GENERATE CANDIDATE SLOTS
   // =====================================================
 
   const candidateSlots: IAvailabilitySlot[] = [];
 
   const minimumAllowedTime = new Date(
-    now.getTime() + bookingPolicy.minimumBookingNoticeMinutes * 60 * 1000,
+    now.getTime() + bookingPolicy.minimumBookingNoticeMinutes * 60000,
   );
 
   for (const schedule of schedules) {
     const scheduleStart = parseTimeToMinutes(schedule.startTime);
 
     const scheduleEnd = parseTimeToMinutes(schedule.endTime);
-
-    // ===================================================
-    // SERVICE WINDOWS OR NORMAL STAFF SCHEDULE
-    // ===================================================
 
     const allowedWindows = serviceBookingHoursEnabled
       ? serviceBookingWindows
@@ -747,11 +817,6 @@ const getAvailableSlots = async (
         ];
 
     for (const allowedWindow of allowedWindows) {
-      // ===============================================
-      // INTERSECTION:
-      // BRANCH + STAFF + SERVICE WINDOW
-      // ===============================================
-
       const effectiveStart = Math.max(
         branchOpenMinutes,
         scheduleStart,
@@ -768,10 +833,6 @@ const getAvailableSlots = async (
         continue;
       }
 
-      // ===============================================
-      // GENERATE BOOKING SLOTS
-      // ===============================================
-
       for (
         let start = effectiveStart;
         start + durationMinutes <= effectiveEnd;
@@ -779,9 +840,9 @@ const getAvailableSlots = async (
       ) {
         const end = start + durationMinutes;
 
-        // =============================================
+        // ---------------------------------------------
         // BRANCH BREAK CHECK
-        // =============================================
+        // ---------------------------------------------
 
         const hasBranchBreakConflict = branchBreakIntervals.some(
           (businessBreak) =>
@@ -800,9 +861,9 @@ const getAvailableSlots = async (
         const startTime = minutesToTime(start);
         const endTime = minutesToTime(end);
 
-        // =============================================
-        // MINIMUM BOOKING NOTICE + TIMEZONE
-        // =============================================
+        // ---------------------------------------------
+        // TIMEZONE + MINIMUM NOTICE
+        // ---------------------------------------------
 
         let slotDateTime: Date;
 
@@ -839,56 +900,55 @@ const getAvailableSlots = async (
           continue;
         }
 
-        // =============================================
+        // ---------------------------------------------
         // STAFF UNAVAILABILITY
-        // =============================================
+        // ---------------------------------------------
 
-        const hasUnavailabilityConflict = unavailability.some((item) => {
-          if (item.staffId !== schedule.staffId) {
-            return false;
-          }
-
-          const unavailableStart = parseTimeToMinutes(item.startTime);
-
-          const unavailableEnd = parseTimeToMinutes(item.endTime);
-
-          return intervalsOverlap(start, end, unavailableStart, unavailableEnd);
-        });
-
-        if (hasUnavailabilityConflict) {
-          continue;
-        }
-
-        // =============================================
-        // STAFF APPOINTMENT CONFLICT
-        // =============================================
-
-        const hasAppointmentConflict = staffBlockingAppointments.some(
-          (appointment) => {
-            if (appointment.staffId !== schedule.staffId) {
+        if (schedule.staffId !== null) {
+          const hasUnavailabilityConflict = unavailability.some((item) => {
+            if (item.staffId !== schedule.staffId) {
               return false;
             }
-
-            const appointmentStart = parseTimeToMinutes(appointment.startTime);
-
-            const appointmentEnd = parseTimeToMinutes(appointment.endTime);
 
             return intervalsOverlap(
               start,
               end,
-              appointmentStart,
-              appointmentEnd,
+              parseTimeToMinutes(item.startTime),
+              parseTimeToMinutes(item.endTime),
             );
-          },
-        );
+          });
 
-        if (hasAppointmentConflict) {
-          continue;
+          if (hasUnavailabilityConflict) {
+            continue;
+          }
+
+          // -------------------------------------------
+          // STAFF APPOINTMENT CONFLICT
+          // -------------------------------------------
+
+          const hasAppointmentConflict = staffBlockingAppointments.some(
+            (appointment) => {
+              if (appointment.staffId !== schedule.staffId) {
+                return false;
+              }
+
+              return intervalsOverlap(
+                start,
+                end,
+                parseTimeToMinutes(appointment.startTime),
+                parseTimeToMinutes(appointment.endTime),
+              );
+            },
+          );
+
+          if (hasAppointmentConflict) {
+            continue;
+          }
         }
 
-        // =============================================
-        // BRANCH HOURLY CAPACITY
-        // =============================================
+        // ---------------------------------------------
+        // BRANCH CAPACITY
+        // ---------------------------------------------
 
         const capacity = getCapacityUsageForSlot(start, end);
 
@@ -896,9 +956,9 @@ const getAvailableSlots = async (
           continue;
         }
 
-        // =============================================
-        // VALID CANDIDATE SLOT
-        // =============================================
+        // ---------------------------------------------
+        // VALID SLOT
+        // ---------------------------------------------
 
         candidateSlots.push({
           startTime,
@@ -921,12 +981,12 @@ const getAvailableSlots = async (
   }
 
   // =====================================================
-  // 14. AUTO / ANY STAFF MODE
+  // 17. AUTO / NO-STAFF / SELECTED RESULT
   // =====================================================
 
   let slots: IAvailabilitySlot[];
 
-  if (isAutoStaff) {
+  if (staffSelectionMode === "AUTO") {
     const uniqueSlots = new Map<string, IAvailabilitySlot>();
 
     for (const slot of candidateSlots) {
@@ -943,7 +1003,7 @@ const getAvailableSlots = async (
   }
 
   // =====================================================
-  // 15. SORT RESULT
+  // 18. SORT
   // =====================================================
 
   slots.sort((a, b) => {
@@ -953,11 +1013,11 @@ const getAvailableSlots = async (
       return timeCompare;
     }
 
-    return a.staffId.localeCompare(b.staffId);
+    return (a.staffId ?? "").localeCompare(b.staffId ?? "");
   });
 
   // =====================================================
-  // 16. FINAL RESPONSE
+  // 19. FINAL RESPONSE
   // =====================================================
 
   return {

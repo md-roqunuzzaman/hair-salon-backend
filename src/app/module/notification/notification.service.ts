@@ -1,9 +1,16 @@
-import { Prisma, Role, type Notification } from "../../../../generated/prisma/client.js";
+import {
+  Prisma,
+  Role,
+  type Notification,
+} from "../../../../generated/prisma/client.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
-import { localizeNotification, notificationEventTitle } from './notification.localization.js';
-import { notificationName } from './notification.names.js';
+import {
+  localizeNotification,
+  notificationEventTitle,
+} from "./notification.localization.js";
+import { notificationName } from "./notification.names.js";
 import {
   ICreateNotificationPayload,
   IGetNotificationsQuery,
@@ -13,56 +20,107 @@ const notifyAppointmentTeam = async (
   appointmentId: string,
   event: Pick<ICreateNotificationPayload, "type" | "title" | "translations">,
   tx: Prisma.TransactionClient,
-  previousStaffId?: string,
+  previousStaffId?: string | null,
 ) => {
   const appointment = await tx.appointment.findUnique({
     where: { id: appointmentId },
-    select: { id: true, customerId: true, branchId: true, staffId: true, appointmentStatus: true, itemName: true, itemNameTranslations: true, date: true, startTime: true },
+    select: {
+      id: true,
+      customerId: true,
+      branchId: true,
+      staffId: true,
+      appointmentStatus: true,
+      itemName: true,
+      itemNameTranslations: true,
+      date: true,
+      startTime: true,
+    },
   });
   if (!appointment) throw new AppError("Appointment not found", 404);
   // Pending bookings are visible to management; staff receive actionable bookings.
-  const staffIds = (event.type === "BOOKING_CREATED" && appointment.appointmentStatus === "PENDING_PAYMENT") || event.type === "BOOKING_EXPIRED"
-    ? []
-    : [...new Set([appointment.staffId, previousStaffId].filter((id): id is string => Boolean(id)))];
+  const staffIds =
+    (event.type === "BOOKING_CREATED" &&
+      appointment.appointmentStatus === "PENDING_PAYMENT") ||
+    event.type === "BOOKING_EXPIRED"
+      ? []
+      : [
+          ...new Set(
+            [appointment.staffId, previousStaffId].filter((id): id is string =>
+              Boolean(id),
+            ),
+          ),
+        ];
   const users = await tx.user.findMany({
     where: {
       status: "ACTIVE",
       id: { not: appointment.customerId },
       OR: [
         { role: Role.BRAND_OWNER },
-        { role: Role.BRANCH_MANAGER, managedBranches: { some: { branchId: appointment.branchId } } },
-        { role: Role.STAFF, staffProfile: { is: { id: { in: staffIds }, status: "ACTIVE" } } },
+        {
+          role: Role.BRANCH_MANAGER,
+          managedBranches: { some: { branchId: appointment.branchId } },
+        },
+        {
+          role: Role.STAFF,
+          staffProfile: { is: { id: { in: staffIds }, status: "ACTIVE" } },
+        },
       ],
     },
     select: { id: true },
   });
-  const recipients = [...new Set(users.map(user => user.id))].filter(id => id !== appointment.customerId);
+  const recipients = [...new Set(users.map((user) => user.id))].filter(
+    (id) => id !== appointment.customerId,
+  );
   if (!recipients.length) return;
   const date = appointment.date.toISOString().slice(0, 10);
-  const translations = Object.fromEntries((["en", "zh-CN", "zh-HK"] as const).map(language => {
-    const itemName = notificationName(appointment.itemNameTranslations, language, appointment.itemName, 'service');
-    const title = event.translations?.[language]?.title || notificationEventTitle(event.type, language);
-    const message = language === "en"
-      ? `Appointment ${appointment.id}: ${itemName}, ${date} at ${appointment.startTime}.`
-      : language === "zh-CN"
-        ? `预约 ${appointment.id}：${itemName}，${date} ${appointment.startTime}。`
-        : `預約 ${appointment.id}：${itemName}，${date} ${appointment.startTime}。`;
-    return [language, { title, message }];
-  }));
-  await tx.notification.createMany({ data: recipients.map(userId => ({
-    userId, type: event.type, title: translations.en.title, message: translations.en.message,
-    translations: translations as Prisma.InputJsonObject,
-  })) });
+  const translations = Object.fromEntries(
+    (["en", "zh-CN", "zh-HK"] as const).map((language) => {
+      const itemName = notificationName(
+        appointment.itemNameTranslations,
+        language,
+        appointment.itemName,
+        "service",
+      );
+      const title =
+        event.translations?.[language]?.title ||
+        notificationEventTitle(event.type, language);
+      const message =
+        language === "en"
+          ? `Appointment ${appointment.id}: ${itemName}, ${date} at ${appointment.startTime}.`
+          : language === "zh-CN"
+            ? `预约 ${appointment.id}：${itemName}，${date} ${appointment.startTime}。`
+            : `預約 ${appointment.id}：${itemName}，${date} ${appointment.startTime}。`;
+      return [language, { title, message }];
+    }),
+  );
+  await tx.notification.createMany({
+    data: recipients.map((userId) => ({
+      userId,
+      type: event.type,
+      title: translations.en.title,
+      message: translations.en.message,
+      translations: translations as Prisma.InputJsonObject,
+    })),
+  });
 };
 
 const createNotification = async (
   payload: ICreateNotificationPayload,
   tx?: Prisma.TransactionClient,
 ): Promise<Notification> => {
+  // =====================================================
+  // 1. ENSURE APPOINTMENT NOTIFICATION IS TRANSACTIONAL
+  // =====================================================
+
   if (payload.appointmentId && !tx) {
-    return prisma.$transaction(client => createNotification(payload, client));
+    return prisma.$transaction((client) => createNotification(payload, client));
   }
+
   const client = tx ?? prisma;
+
+  // =====================================================
+  // 2. CREATE NOTIFICATION
+  // =====================================================
 
   const notification = await client.notification.create({
     data: {
@@ -70,7 +128,12 @@ const createNotification = async (
       type: payload.type,
       title: payload.title,
       message: payload.message,
-      ...(payload.emailIntent ? { emailIntent: payload.emailIntent as Prisma.InputJsonObject } : {}),
+
+      ...(payload.emailIntent
+        ? {
+            emailIntent: payload.emailIntent as Prisma.InputJsonObject,
+          }
+        : {}),
 
       ...(payload.translations !== undefined && {
         translations: {
@@ -79,7 +142,31 @@ const createNotification = async (
       }),
     },
   });
-  if (payload.appointmentId && tx) await notifyAppointmentTeam(payload.appointmentId, payload, tx, payload.previousStaffId);
+
+  // =====================================================
+  // 3. NOTIFY APPOINTMENT TEAM
+  // =====================================================
+
+  // ISSUE #152:
+  // previousStaffId may be null for staff-free bookings.
+  // Pass it unchanged to notifyAppointmentTeam().
+  //
+  // The helper must handle null without attempting
+  // staff-specific notification for a missing staff member.
+
+  if (payload.appointmentId && tx) {
+    await notifyAppointmentTeam(
+      payload.appointmentId,
+      payload,
+      tx,
+      payload.previousStaffId,
+    );
+  }
+
+  // =====================================================
+  // 4. FINAL RESPONSE
+  // =====================================================
+
   return notification;
 };
 

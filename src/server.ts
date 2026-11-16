@@ -9,6 +9,7 @@ import { seedInitialData } from "./app/utils/seed.js";
 import { logUnexpectedError } from "./app/utils/normalize-error.js";
 import { installFatalErrorHandlers } from "./app/utils/process-errors.js";
 import { startAppointmentCompletionJob } from "./app/jobs/appointment-completion.job.js";
+import { startAppointmentNoShowJob } from "./app/jobs/appointment-no-show.job.js";
 
 // Preserve Node's fail-fast behavior without printing secrets from raw errors.
 installFatalErrorHandlers();
@@ -30,6 +31,8 @@ const main = async () => {
       startGroupPurchaseExpiryJob();
       startAppointmentCompletionJob();
       startEmailOutboxJob();
+      // New job
+      startAppointmentNoShowJob();
     });
   } catch (error) {
     logUnexpectedError(error, { source: "src/server.ts:39" });

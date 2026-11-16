@@ -6,6 +6,7 @@ import { myOrdersFixture } from './my-orders-fixture.mjs';
 // Bundled only by build-cloudflare --test. Never included in the deployed entry.
 import { runGroupSafety } from './group-safety-fixture.mjs';
 import { completionFixture } from './completion-fixture.mjs';
+import { noShowFixture } from './no-show-fixture.mjs';
 import { emailTestControl, emailMockSocket } from './email-test-fixture.mjs';
 import { authSessionTestControl } from './auth-session-fixture.mjs';
 import { captureSecurityLog, securityTestControl } from './security-fixture.mjs';
@@ -25,6 +26,8 @@ export class SalonTestDatabase extends SalonDatabase {
   async sendMail(message) { this.outbox.push(message); return { messageId: 'test' }; }
   connectSmtp(address, options) { return emailMockSocket(address, options); }
   async fetch(request) {
+    if (new URL(request.url).pathname === '/__no-show-test') return this.enqueue(async () =>
+      Response.json(await noShowFixture(this.db, this.ctx.storage, await request.json())));
     if (new URL(request.url).pathname === '/__staff-availability-test') return this.enqueue(async () =>
       Response.json(await staffAvailabilityFixture(this.db, this.ctx.storage, await request.json())));
     if (new URL(request.url).pathname === '/__staff-schedule-test') return this.enqueue(async () =>

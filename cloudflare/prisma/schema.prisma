@@ -91,11 +91,11 @@ model GroupPurchaseCancellationPolicy {
 }
 
 model Appointment {
-  id          String @id @default(uuid())
-  orderNumber String @unique
+  id          String  @id @default(uuid())
+  orderNumber String  @unique
   customerId  String
   branchId    String
-  staffId     String
+  staffId     String?
 
   serviceId       String?
   packageId       String?
@@ -143,7 +143,7 @@ model Appointment {
 
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
-  staff Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: Restrict)
 
   service Service? @relation(fields: [serviceId], references: [id], onDelete: Restrict)
 

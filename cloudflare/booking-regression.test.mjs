@@ -57,7 +57,7 @@ function fixture(t) {
     hours: { isClosed: false, openTime: '10:00', closeTime: '13:00', breaks: [] },
     capacity: { maxBookingsPerHour: 2 },
     staff: { id: staffId, status: 'ACTIVE', branches: [{ branchId }], services: [{ serviceId }], packages: [{ packageId: 'package' }], scheduleOverrides: [] },
-    eligible: [{ id: staffId }],
+    eligible: [{ id: staffId, status: 'ACTIVE' }],
     schedules: [{ staffId, startTime: '10:00', endTime: '13:00' }],
     leave: [], overrides: [], staffBookings: [], branchBookings: [],
   };
@@ -231,9 +231,9 @@ test('selected staff must support the branch and service', async t => {
 
 test('no eligible staff and no schedules retain distinct reasons', async t => {
   const { data } = fixture(t);
-  data.eligible = [];
+  data.eligible = [{ id: staffId, status: 'INACTIVE' }];
   assert.equal((await AvailabilityService.getAvailableSlots(query)).unavailableReason, 'NO_ELIGIBLE_STAFF');
-  data.eligible = [{ id: staffId }]; data.schedules = [];
+  data.eligible = [{ id: staffId, status: 'ACTIVE' }]; data.schedules = [];
   assert.equal((await AvailabilityService.getAvailableSlots(query)).unavailableReason, 'NO_STAFF_SCHEDULE');
 });
 
@@ -380,7 +380,7 @@ function autoStaffFixture(t, ids = ['alex','james','saikat']) {
   const tx={
     package:{findUnique:async()=>({services:[]})},
     branchBusinessHour:{findFirst:async()=>({isClosed:false,openTime:'10:00',closeTime:'13:00',breaks:[]})},
-    staff:{findMany:async({where})=>data.staff.filter(s=>s.status===where.status&&(!where.id||s.id===where.id)&&s.branches.includes((where.branches ?? where.OR.find(item=>item.branches).branches).some.branchId)&&(where.services?s.services.includes(where.services.some.serviceId):s.packages.includes(where.packages.some.packageId))).map(({id})=>({id}))},
+    staff:{findMany:async({where})=>data.staff.filter(s=>(!where.status||s.status===where.status)&&(!where.id||s.id===where.id)&&s.branches.includes((where.branches ?? where.OR.find(item=>item.branches).branches).some.branchId)&&(where.services?s.services.includes(where.services.some.serviceId):s.packages.includes(where.packages.some.packageId))).map(({id,status})=>({id,status}))},
     staffSchedule:{findMany:async()=>data.schedules},staffUnavailability:{findMany:async()=>data.leave},
     staffScheduleOverride:{findMany:async()=>[]},
     appointment:{findMany:async args=>{
@@ -469,7 +469,7 @@ test('manual staff ignores fairness/randomness and retains existing unavailable 
 
 test('consecutive AUTO RESERVE_NOW bookings recalculate counts inside existing serializable transactions',async t=>{
  const {data,tx,create}=transactionFixture(t);const ids=['alex','james','saikat'];const rows=[];
- data.eligible=ids.map(id=>({id}));data.schedules=ids.map(staffId=>({staffId,startTime:'10:00',endTime:'13:00'}));
+ data.eligible=ids.map(id=>({id,status:'ACTIVE'}));data.schedules=ids.map(staffId=>({staffId,startTime:'10:00',endTime:'13:00'}));
  tx.appointment.findMany=async args=>args.where.appointmentStatus?rows.filter(a=>args.where.staffId.in.includes(a.staffId)&&a.date.getTime()===args.where.date.getTime()&&args.where.appointmentStatus.in.includes(a.appointmentStatus)):rows;
  tx.appointment.create=async({data:row})=>{const result={id:`row-${rows.length}`,...row};rows.push(result);return result;};
  t.mock.method(crypto,'randomInt',()=>0);
@@ -495,7 +495,7 @@ async function reportedAutoBookingFixture(t) {
   data.service.branches = [{ branchId: request.branchId }];
   data.hours = { isClosed: false, openTime: '10:00', closeTime: '20:00', breaks: [] };
   data.capacity.maxBookingsPerHour = 4;
-  data.eligible = [{ id: david }, { id: other }];
+  data.eligible = [{ id: david, status: 'ACTIVE' }, { id: other, status: 'ACTIVE' }];
   data.schedules = data.eligible.map(({ id }) => ({ staffId: id, startTime: '10:00', endTime: '20:00' }));
   data.staff = { ...data.staff, id: david, branches: [{ branchId: request.branchId }], services: [{ serviceId: request.serviceId }] };
   stubDelegate(t, 'user', 'findUnique', async () => ({ id: 'customer', role: 'CUSTOMER', status: 'ACTIVE', emailVerified:true }));

@@ -38,6 +38,7 @@ import {
   IUpdateBranchStatusPayload,
   IUpdateBusinessHoursPayload,
 } from "./branch.interface.js";
+import { branchLimitConfig } from "../../config/branch-limit.config.js";
 
 // =====================================================
 // BRANCH LOCALIZATION HELPERS
@@ -131,24 +132,7 @@ const createBranch = async (payload: ICreateBranchPayload) => {
   const description = payload.description?.trim() || null;
 
   // =====================================================
-  // 2. DUPLICATE BRANCH CHECK
-  // =====================================================
-
-  const existingBranch = await prisma.branch.findFirst({
-    where: {
-      name: {
-        equals: name,
-        mode: "insensitive",
-      },
-    },
-  });
-
-  if (existingBranch) {
-    throw new AppError("Branch already exists", 409);
-  }
-
-  // =====================================================
-  // 3. BUILD TRANSLATIONS
+  // 2. BUILD TRANSLATIONS
   // =====================================================
 
   const translations = buildBranchTranslations(null, payload.translations, {
@@ -158,7 +142,7 @@ const createBranch = async (payload: ICreateBranchPayload) => {
   });
 
   // =====================================================
-  // 4. DEFAULT BRANCH CONFIGURATION
+  // 3. DEFAULT BRANCH CONFIGURATION
   // =====================================================
 
   const DEFAULT_HOURLY_CAPACITY = 4;
@@ -174,80 +158,141 @@ const createBranch = async (payload: ICreateBranchPayload) => {
   ] as const;
 
   // =====================================================
-  // 5. CREATE BRANCH + DEFAULT CONFIGURATION
+  // 4. CREATE BRANCH TRANSACTIONALLY
   // =====================================================
 
-  const branch = await prisma.$transaction(async (tx) => {
-    // -------------------------------------------------
-    // 5.1 CREATE BRANCH
-    // -------------------------------------------------
+  const branch = await prisma.$transaction(
+    async (tx) => {
+      // ================================================
+      // 4.1 ACQUIRE TRANSACTION-SCOPED ADVISORY LOCK
+      // ================================================
+      // All branch creation requests using this key
+      // are serialized until the transaction ends.
+      //
+      // This requires PostgreSQL.
 
-    const createdBranch = await tx.branch.create({
-      data: {
-        name,
-        address,
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(151, 1)
+      `;
 
-        phone: payload.phone?.trim() || null,
+      // ================================================
+      // 4.2 CHECK MAXIMUM BRANCH LIMIT
+      // ================================================
 
-        description,
+      const maxBranches = branchLimitConfig.maxBranches;
 
-        imageObjectKey: payload.imageObjectKey || null,
+      if (!Number.isSafeInteger(maxBranches) || maxBranches < 1) {
+        throw new AppError("Invalid maximum branch configuration", 500);
+      }
 
-        translations,
+      const currentBranchCount = await tx.branch.count();
 
-        latitude: payload.latitude ?? null,
-        longitude: payload.longitude ?? null,
-      },
-    });
+      if (currentBranchCount >= maxBranches) {
+        throw new AppError(
+          `Maximum ${maxBranches} branches are allowed. Cannot create another branch.`,
+          409,
+        );
+      }
 
-    // -------------------------------------------------
-    // 5.2 CREATE DEFAULT BOOKING POLICY
-    // -------------------------------------------------
+      // ================================================
+      // 4.3 DUPLICATE BRANCH CHECK
+      // ================================================
 
-    await tx.branchBookingPolicy.create({
-      data: {
-        branchId: createdBranch.id,
+      const existingBranch = await tx.branch.findFirst({
+        where: {
+          name: {
+            equals: name,
+            mode: "insensitive",
+          },
+        },
 
-        slotIntervalMinutes: 30,
+        select: {
+          id: true,
+        },
+      });
 
-        minimumBookingNoticeMinutes: 120,
+      if (existingBranch) {
+        throw new AppError("Branch already exists", 409);
+      }
 
-        maximumAdvanceBookingDays: 30,
+      // ================================================
+      // 4.4 CREATE BRANCH
+      // ================================================
 
-        cancellationCutoffMinutes: 720,
+      const createdBranch = await tx.branch.create({
+        data: {
+          name,
+          address,
 
-        rescheduleCutoffMinutes: 720,
+          phone: payload.phone?.trim() || null,
 
-        reserveExpiryRule: "APPOINTMENT_TIME",
+          description,
 
-        qrVerificationRule: "BEFORE_START_TIME",
+          imageObjectKey: payload.imageObjectKey || null,
 
-        allowedBookingMethods: ["PAY_NOW", "DEPOSIT", "RESERVE_NOW"],
+          translations,
 
-        depositEnabled: true,
+          latitude: payload.latitude ?? null,
+          longitude: payload.longitude ?? null,
+        },
+      });
 
-        depositPercentage: 10,
-      },
-    });
+      // ================================================
+      // 4.5 CREATE DEFAULT BOOKING POLICY
+      // ================================================
 
-    // -------------------------------------------------
-    // 5.3 CREATE DEFAULT HOURLY CAPACITY
-    // -------------------------------------------------
+      await tx.branchBookingPolicy.create({
+        data: {
+          branchId: createdBranch.id,
 
-    await tx.branchHourlyCapacity.createMany({
-      data: DAYS_OF_WEEK.map((day) => ({
-        branchId: createdBranch.id,
-        day,
-        maxBookingsPerHour: DEFAULT_HOURLY_CAPACITY,
-      })),
-    });
+          slotIntervalMinutes: 30,
 
-    // -------------------------------------------------
-    // 5.4 RETURN CREATED BRANCH
-    // -------------------------------------------------
+          minimumBookingNoticeMinutes: 120,
 
-    return createdBranch;
-  });
+          maximumAdvanceBookingDays: 30,
+
+          cancellationCutoffMinutes: 720,
+
+          rescheduleCutoffMinutes: 720,
+
+          reserveExpiryRule: "APPOINTMENT_TIME",
+
+          qrVerificationRule: "BEFORE_START_TIME",
+
+          allowedBookingMethods: ["PAY_NOW", "DEPOSIT", "RESERVE_NOW"],
+
+          depositEnabled: true,
+
+          depositPercentage: 10,
+        },
+      });
+
+      // ================================================
+      // 4.6 CREATE DEFAULT HOURLY CAPACITY
+      // ================================================
+
+      await tx.branchHourlyCapacity.createMany({
+        data: DAYS_OF_WEEK.map((day) => ({
+          branchId: createdBranch.id,
+          day,
+          maxBookingsPerHour: DEFAULT_HOURLY_CAPACITY,
+        })),
+      });
+
+      // ================================================
+      // 4.7 RETURN CREATED BRANCH
+      // ================================================
+
+      return createdBranch;
+    },
+    {
+      // Keep PostgreSQL's isolation without reading a PostgreSQL-only enum at
+      // runtime: the Worker adapter provides stronger serialized transactions.
+      isolationLevel: "ReadCommitted",
+      maxWait: 10000,
+      timeout: 15000,
+    },
+  );
 
   return branch;
 };
@@ -2689,6 +2734,7 @@ const getBranchStaffOutput = async (
   query: IBranchStaffOutputQuery,
 ): Promise<IBranchStaffOutputResult> => {
   const currency = await reportingCurrency();
+
   // =====================================================
   // 1. CHECK ROLE
   // =====================================================
@@ -2787,6 +2833,10 @@ const getBranchStaffOutput = async (
   // 5. FETCH APPOINTMENT COUNTS BY STAFF
   // =====================================================
 
+  // Staff-free appointments (staffId = null) must not
+  // be attributed to any individual staff member.
+  // Branch-wide reports continue counting them.
+
   const appointmentGroups = await prisma.appointment.groupBy({
     by: ["staffId", "appointmentStatus"],
 
@@ -2796,6 +2846,10 @@ const getBranchStaffOutput = async (
       date: {
         gte: startDate,
         lte: endDate,
+      },
+
+      staffId: {
+        not: null,
       },
     },
 
@@ -2822,6 +2876,12 @@ const getBranchStaffOutput = async (
   >();
 
   for (const group of appointmentGroups) {
+    // Defensive guard: Prisma groupBy result may retain
+    // nullable staffId typing even with the not-null filter.
+    if (group.staffId === null) {
+      continue;
+    }
+
     const current = staffMap.get(group.staffId) ?? {
       appointmentCount: 0,
       completedCount: 0,
@@ -2847,6 +2907,7 @@ const getBranchStaffOutput = async (
 
   if (staffIds.length === 0) {
     await assertReportingCurrency(currency);
+
     return {
       items: [],
     };
@@ -2873,10 +2934,8 @@ const getBranchStaffOutput = async (
   // 8. FETCH VISIBLE REVIEW RATINGS
   // =====================================================
 
-  // Rating is based on reviews linked to appointments
-  // completed within the selected date range.
-  //
-  // Only VISIBLE reviews are included.
+  // Ratings are based on visible reviews linked to
+  // completed appointments in the selected date range.
 
   const reviewGroups = await prisma.review.groupBy({
     by: ["staffId"],
@@ -2957,10 +3016,12 @@ const getBranchStaffOutput = async (
   // =====================================================
 
   await assertReportingCurrency(currency);
+
   return {
     items,
   };
 };
+
 export const branchService = {
   createBranch,
 

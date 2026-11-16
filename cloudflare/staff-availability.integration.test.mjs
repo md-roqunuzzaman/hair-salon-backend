@@ -130,10 +130,15 @@ test('multi-day leave insert failure rolls back earlier records',async t=>{
   assert.deepEqual(await c.control({}),before);
 });
 
-test('approved package routing preserves all dedicated Direct Book methods and delisted voucher redemption',async t=>{
+test('approved package routing rejects retired Direct Book methods and preserves delisted voucher redemption',async t=>{
   const c=await context(t),{f}=c;
   for(const route of ['pay-now','deposit','reserve'])await c.api(`/api/v1/appointments/${route}`,{body:{branchId:f.branchId,packageId:f.packageId,date:f.date,startTime:'10:00'},status:422});
-  for(const [i,method]of ['PAY_NOW','DEPOSIT','RESERVE_NOW'].entries())await c.api('/api/v1/group-purchases',{body:{branchId:f.branchId,packageId:f.packageId,quantity:1,purchaseFlow:'DIRECT_BOOK',bookingMethod:method,date:f.date,startTime:`${10+i}:00`},status:201});
+  const beforeRetired = await c.state();
+  for(const [i,method]of ['PAY_NOW','DEPOSIT','RESERVE_NOW'].entries()) {
+    const rejected = await c.api('/api/v1/group-purchases',{body:{branchId:f.branchId,packageId:f.packageId,quantity:1,purchaseFlow:'DIRECT_BOOK',bookingMethod:method,date:f.date,startTime:`${10+i}:00`},status:400});
+    assert.ok(rejected.details.some(detail=>detail.path.includes('purchaseFlow')));
+  }
+  assert.deepEqual(await c.state(), beforeRetired);
   const purchase=(await c.api('/api/v1/group-purchases',{body:{branchId:f.branchId,packageId:f.packageId,quantity:1},status:201})).data;
   await c.api(`/api/v1/group-purchases/${purchase.purchaseId}/pay-with-wallet`,{body:{useBonus:false}});
   await c.control({packageListing:'DELISTED'});
@@ -144,13 +149,17 @@ test('approved package routing preserves all dedicated Direct Book methods and d
 
 test('package components are enforced by both discovery and final availability validation',async t=>{
   const c=await context(t),{f}=c;
+  const purchase=(await c.api('/api/v1/group-purchases',{body:{branchId:f.branchId,packageId:f.packageId,quantity:1},status:201})).data;
+  await c.api(`/api/v1/group-purchases/${purchase.purchaseId}/pay-with-wallet`,{body:{useBonus:false}});
   await c.control({staffService:false});
   for(const packageId of [c.standardPackageId,f.packageId]){
     assert.deepEqual(await c.picker({packageId}),[]);
     assert.equal((await c.api(`/api/v1/availability?${new URLSearchParams({branchId:f.branchId,packageId,date:f.date})}`)).data.slots.length,0);
   }
   await c.api(`/api/v1/appointments/reserve`,{body:{branchId:f.branchId,packageId:c.standardPackageId,date:f.date,startTime:'10:00'},status:409});
-  await c.api(`/api/v1/group-purchases`,{body:{branchId:f.branchId,packageId:f.packageId,quantity:1,purchaseFlow:'DIRECT_BOOK',bookingMethod:'RESERVE_NOW',date:f.date,startTime:'10:00'},status:409});
+  const before = await c.state();
+  await c.api(`/api/v1/group-purchases/${purchase.purchaseId}/book-appointment`,{body:{branchId:f.branchId,date:f.date,startTime:'10:00'},status:409});
+  assert.deepEqual(await c.state(), before);
 });
 
 test('fully booked staff disappears for every product and expired holds release the same slots',async t=>{
@@ -230,9 +239,16 @@ test('moving or deleting an override cannot strand appointments on its original 
 test('all nine Service/Standard/Group booking combinations reject overlapping staff appointments',async t=>{
   const c=await context(t),{f}=c;
   const products=[{name:'Service',serviceId:f.serviceId},{name:'Standard',packageId:c.standardPackageId},{name:'Group',packageId:f.packageId}];
-  const book=(product,status)=>product.name==='Group'
-    ?c.api('/api/v1/group-purchases',{body:{branchId:f.branchId,packageId:product.packageId,quantity:1,purchaseFlow:'DIRECT_BOOK',bookingMethod:'RESERVE_NOW',staffId:f.staffId,date:f.date,startTime:'10:00'},status})
-    :c.api('/api/v1/appointments/reserve',{body:{branchId:f.branchId,...(product.serviceId?{serviceId:product.serviceId}:{packageId:product.packageId}),staffId:f.staffId,date:f.date,startTime:'10:00'},status});
+  const purchase=(await c.api('/api/v1/group-purchases',{body:{branchId:f.branchId,packageId:f.packageId,quantity:3},status:201})).data;
+  await c.api(`/api/v1/group-purchases/${purchase.purchaseId}/pay-with-wallet`,{body:{useBonus:false}});
+  const book=async(product,status)=> {
+    const before=status===409?await c.state():null;
+    const response=product.name==='Group'
+      ?await c.api(`/api/v1/group-purchases/${purchase.purchaseId}/book-appointment`,{body:{branchId:f.branchId,staffId:f.staffId,date:f.date,startTime:'10:00'},status})
+      :await c.api('/api/v1/appointments/reserve',{body:{branchId:f.branchId,...(product.serviceId?{serviceId:product.serviceId}:{packageId:product.packageId}),staffId:f.staffId,date:f.date,startTime:'10:00'},status});
+    if(before)assert.deepEqual(await c.state(),before);
+    return response;
+  };
   for(const existing of products){
     await book(existing,201);
     for(const incoming of products)await t.test(`${existing.name} -> ${incoming.name}`,()=>book(incoming,409));

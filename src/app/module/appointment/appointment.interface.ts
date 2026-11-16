@@ -84,54 +84,6 @@ export interface IMyAppointmentsQuery {
   limit?: string;
 }
 
-export interface IMyAppointmentItem {
-  id: string;
-  paymentDisplayStatus: PaymentDisplayStatus;
-
-  bookingMethod: BookingMethodType;
-  appointmentStatus: AppointmentStatusType;
-  paymentStatus: PaymentStatusType;
-
-  branch: {
-    id: string;
-    name: string;
-  };
-
-  service: {
-    id: string;
-    name: string;
-  } | null;
-
-  package: {
-    id: string;
-    name: string;
-  } | null;
-
-  staff: {
-    id: string;
-    name: string;
-  };
-
-  date: string;
-  startTime: string;
-  endTime: string;
-
-  price: number;
-
-  // Dynamic currency saved with the appointment
-  currency: string;
-
-  // Deposit/payment summary
-  depositPercentage: number;
-  depositAmount: number | null;
-  remainingAmount: number;
-
-  amountPaid: number;
-  amountDue: number;
-
-  qrAvailable: boolean;
-}
-
 export interface IMyAppointmentsQuery {
   type: AppointmentListType;
   page?: string;
@@ -163,10 +115,11 @@ export interface IMyAppointmentItem {
     name: string;
   } | null;
 
+  // ISSUE #152: Staff-free booking support
   staff: {
     id: string;
     name: string;
-  };
+  } | null;
 
   date: string;
   startTime: string;
@@ -174,19 +127,14 @@ export interface IMyAppointmentItem {
 
   price: number;
 
-  // Currency and timezone saved with appointment
   currency: string;
   timezone: string | null;
 
-  // =====================================================
-  // DEPOSIT & PAYMENT SUMMARY
-  // =====================================================
-
+  // Deposit/payment summary
   depositPercentage: number;
   depositAmount: number | null;
   remainingAmount: number;
 
-  // Current calculated outstanding balance
   outstandingBalance: number;
 
   amountPaid: number;
@@ -235,10 +183,11 @@ export interface IAppointmentDetails {
     durationMinutes: number;
   } | null;
 
+  // ISSUE #152: Staff-free booking support
   staff: {
     id: string;
     name: string;
-  };
+  } | null;
 
   date: string;
   startTime: string;
@@ -248,19 +197,11 @@ export interface IAppointmentDetails {
   currency: string;
   timezone: string | null;
 
-  // =====================================================
-  // G8 — DEPOSIT & REMAINING BALANCE
-  // =====================================================
-
+  // Deposit & remaining balance
   depositPercentage: number;
-
-  // Null for non-DEPOSIT bookings
   depositAmount: number | null;
-
-  // Current calculated remaining balance
   remainingAmount: number;
 
-  // NEW: Outstanding balance for customer payment UI
   outstandingBalance: number;
 
   amountPaid: number;

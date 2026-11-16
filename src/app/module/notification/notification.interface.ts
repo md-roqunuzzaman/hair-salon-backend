@@ -32,6 +32,25 @@ export interface ICreateNotificationPayload {
   translations?: INotificationTranslations;
   // Internal event context; never persisted as customer notification content.
   appointmentId?: string;
-  previousStaffId?: string;
-  emailIntent?: { appointmentId: string; previous: { date: string; startTime: string; endTime: string; staffId: string }; target: { date: string; startTime: string; endTime: string; staffId: string; revision: number } };
+
+  previousStaffId?: string | null;
+
+  emailIntent?: {
+    appointmentId: string;
+
+    previous: {
+      date: string;
+      startTime: string;
+      endTime: string;
+      staffId: string | null;
+    };
+
+    target: {
+      date: string;
+      startTime: string;
+      endTime: string;
+      staffId: string | null;
+      revision: number;
+    };
+  };
 }

@@ -1,5 +1,7 @@
-import migrations from '../.build/migrations.mjs';
+import allMigrations from '../.build/migrations.mjs';
 import { applyMigrations } from './migrations.mjs';
+import { verifyOptionalStaffUpgrade } from './optional-staff-migration-fixture.mjs';
+const migrations = allMigrations.slice(0, 40);
 export class MigrationFixture {
   constructor(ctx) { this.storage = ctx.storage; }
   async fetch() {
@@ -519,6 +521,7 @@ export class MigrationFixture {
     addOverride('override-staff-cascade','override-staff','branch',1794355200000);
     storage.sql.exec("DELETE FROM Staff WHERE id='override-staff'");
     if(storage.sql.exec('SELECT COUNT(*) AS n FROM StaffScheduleOverride').one().n!==0||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Override staff cascade failed');
+    verifyOptionalStaffUpgrade(storage, allMigrations);
     return Response.json({ preserved: true, repeatable: true, foreignKey: true, checksumProtected: true, currencyRequired: true });
   }
 }

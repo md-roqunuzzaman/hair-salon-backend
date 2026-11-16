@@ -56,6 +56,7 @@ import {
 } from "../cancellation-refund/cancellation-refund.service.js";
 import { getLocalizedContent } from "../../utils/localization.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
+import { cancelRemainingStripeIntent } from "./remaining-stripe-cancellation.js";
 
 const createStripeIntent = async (
   customerId: string,
@@ -5721,6 +5722,187 @@ const createAppointmentRemainingStripeIntent = async (
   }
 };
 
+const cancelRemainingStripePayment = async (
+  customerId: string,
+  paymentId: string,
+) => {
+  // =====================================================
+  // 1. FIND PAYMENT
+  // =====================================================
+
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: {
+      id: true,
+      customerId: true,
+      appointmentId: true,
+      groupPurchaseId: true,
+      purpose: true,
+      provider: true,
+      providerPaymentId: true,
+      status: true,
+      amount: true,
+      currency: true,
+    },
+  });
+
+  if (!payment) {
+    throw new AppError("Payment not found", 404);
+  }
+
+  // =====================================================
+  // 2. VERIFY CUSTOMER OWNERSHIP
+  // =====================================================
+
+  if (payment.customerId !== customerId) {
+    throw new AppError("You are not allowed to cancel this payment", 403);
+  }
+
+  // =====================================================
+  // 3. VERIFY REMAINING PAYMENT IDENTITY
+  // =====================================================
+
+  const isAppointmentRemaining =
+    payment.purpose === PaymentPurpose.APPOINTMENT_REMAINING &&
+    payment.appointmentId !== null &&
+    payment.groupPurchaseId === null;
+
+  let isGroupRemaining = false;
+
+  if (
+    payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
+    payment.groupPurchaseId !== null &&
+    payment.appointmentId === null
+  ) {
+    const purchase = await prisma.groupPurchase.findUnique({
+      where: { id: payment.groupPurchaseId },
+      select: {
+        id: true,
+        customerId: true,
+        settledPaymentId: true,
+        purchaseFlow: true,
+        bookingMethod: true,
+        remainingAmount: true,
+      },
+    });
+
+    isGroupRemaining =
+      purchase !== null &&
+      purchase.customerId === customerId &&
+      purchase.purchaseFlow === GroupPurchaseFlow.DIRECT_BOOK &&
+      purchase.settledPaymentId !== payment.id &&
+      (purchase.bookingMethod === BookingMethod.DEPOSIT ||
+        purchase.bookingMethod === BookingMethod.RESERVE_NOW) &&
+      purchase.remainingAmount !== null &&
+      purchase.remainingAmount.equals(payment.amount);
+  }
+
+  if (!isAppointmentRemaining && !isGroupRemaining) {
+    throw new AppError("Only remaining Stripe payments can be canceled", 409);
+  }
+
+  // =====================================================
+  // 4. VERIFY PROVIDER AND PAYMENT STATE
+  // =====================================================
+
+  if (payment.provider !== PaymentProvider.STRIPE) {
+    throw new AppError("Payment is not a Stripe payment", 409);
+  }
+
+  if (payment.status === PaymentStatus.FAILED) {
+    return {
+      paymentId: payment.id,
+      paymentStatus: PaymentStatus.FAILED,
+      canceled: true,
+    };
+  }
+
+  if (payment.status !== PaymentStatus.PENDING) {
+    throw new AppError("Payment is not pending", 409);
+  }
+
+  if (!payment.providerPaymentId) {
+    throw new AppError(
+      "Stripe PaymentIntent is not linked yet; retry later",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 5. CANCEL AT STRIPE
+  // =====================================================
+
+  const canceledIntent = await cancelRemainingStripeIntent(
+    payment.providerPaymentId,
+  );
+
+  // =====================================================
+  // 6. VERIFY STRIPE PAYMENT IDENTITY
+  // =====================================================
+
+  if (
+    canceledIntent.id !== payment.providerPaymentId ||
+    canceledIntent.status !== "canceled" ||
+    canceledIntent.metadata?.paymentId !== payment.id ||
+    canceledIntent.metadata?.customerId !== customerId ||
+    canceledIntent.amount !== stripeAmount(payment.amount, payment.currency) ||
+    canceledIntent.currency.toLowerCase() !== payment.currency.toLowerCase()
+  ) {
+    throw new AppError("Canceled Stripe PaymentIntent identity mismatch", 409);
+  }
+
+  if (
+    isAppointmentRemaining &&
+    (canceledIntent.metadata?.appointmentId !== payment.appointmentId ||
+      canceledIntent.metadata?.purpose !== PaymentPurpose.APPOINTMENT_REMAINING)
+  ) {
+    throw new AppError("Appointment remaining payment identity mismatch", 409);
+  }
+
+  if (
+    isGroupRemaining &&
+    (canceledIntent.metadata?.groupPurchaseId !== payment.groupPurchaseId ||
+      canceledIntent.metadata?.paymentStage !== "REMAINING")
+  ) {
+    throw new AppError("Group remaining payment identity mismatch", 409);
+  }
+
+  // =====================================================
+  // 7. UPDATE LOCAL PAYMENT AFTER CONFIRMED CANCELLATION
+  // =====================================================
+
+  const updated = await prisma.payment.updateMany({
+    where: {
+      id: payment.id,
+      customerId,
+      provider: PaymentProvider.STRIPE,
+      providerPaymentId: canceledIntent.id,
+      status: PaymentStatus.PENDING,
+    },
+    data: {
+      status: PaymentStatus.FAILED,
+      failedAt: new Date(),
+    },
+  });
+
+  if (updated.count !== 1) {
+    const latest = await prisma.payment.findUnique({
+      where: { id: payment.id },
+      select: { status: true },
+    });
+
+    if (latest?.status !== PaymentStatus.FAILED) {
+      throw new AppError("Payment state changed during cancellation", 409);
+    }
+  }
+
+  return {
+    paymentId: payment.id,
+    paymentStatus: PaymentStatus.FAILED,
+    canceled: true,
+  };
+};
+
 export const paymentService = {
   createStripeIntent,
   handleStripeWebhook,
@@ -5731,4 +5913,5 @@ export const paymentService = {
   handleGroupPurchaseStripeEvent,
   createAppointmentRemainingStripeIntent,
   createGroupPurchaseRemainingStripeIntent,
+  cancelRemainingStripeIntent,
 };

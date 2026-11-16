@@ -1,5 +1,9 @@
 # Cloudflare deployment
 
+## Optional appointment staff (v41) - local schema preparation, 2026-11-16
+
+The Cloudflare schema and generated client support nullable `Appointment.staffId`. The v41 migration preserves appointments, payment links, reviews/images, indexes and money guards. Release follow-up resolves old fixtures/mocks and fixes override/package-eligibility staff-free fallback bugs. Final local checks pass: 66 booking, 48 API, 63 Worker/security and two production-artifact TAP tests (179 total; zero failed/skipped/cancelled), TypeScript, both Prisma validations, schema parity, populated migration/rollback and staging upload dry-run. See [failure classification, changed files, final results and rollout limits](../docs/optional-appointment-staff-cloudflare.md). The candidate is ready for controlled staging rollout after live ledger/recovery verification. No deployment, live data, secret or delivery-flag change was performed.
+
 ## Required GroupPurchase currency (v37) — local candidate, 2026-11-07
 
 The Cloudflare schema now matches the required `GroupPurchase.currency` field. Pending SQLite v37 rejects existing NULLs and installs INSERT/UPDATE required-field triggers without backfilling data or rebuilding the referenced table. SELECT-only staging preflight passed at 2026-11-07T03:23:41.760Z: 59 purchases, zero NULL/empty currencies, and all applied v1–36 checksums match. This supersedes the earlier connection failures. Revalidate if deployment is delayed and retain a usable recovery point plus a v37-compatible recovery Worker before a separately approved upgrade. See [the preparation results and release conditions](../docs/group-purchase-currency-required-cloudflare.md). No live migration or deployment was performed by this preparation task.

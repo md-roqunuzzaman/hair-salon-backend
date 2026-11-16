@@ -38,7 +38,6 @@ const createReview = async (
     where: {
       id: appointmentId,
     },
-
     select: {
       id: true,
       customerId: true,
@@ -69,10 +68,15 @@ const createReview = async (
   }
 
   // =====================================================
-  // 4. APPOINTMENT MUST HAVE STAFF
+  // 4. STAFF-FREE BOOKING PROTECTION
   // =====================================================
 
-  if (!appointment.staffId) {
+  // Review.staffId is currently required in Prisma.
+  // Staff-free appointments cannot create staff reviews.
+
+  const staffId = appointment.staffId;
+
+  if (staffId === null) {
     throw new AppError("REVIEW_NOT_ALLOWED", 409);
   }
 
@@ -84,7 +88,6 @@ const createReview = async (
     where: {
       appointmentId,
     },
-
     select: {
       id: true,
     },
@@ -150,7 +153,6 @@ const createReview = async (
         imageUrls,
       );
 
-    // Tencent decision mapping:
     // PASS   -> VISIBLE
     // REVIEW -> PENDING
     // REJECT -> HIDDEN
@@ -176,7 +178,6 @@ const createReview = async (
       }
 
       default: {
-        // Unknown decisions must never be published.
         moderationStatus = ReviewModerationStatus.PENDING;
         moderationReason = "Moderation decision unavailable";
         break;
@@ -203,7 +204,7 @@ const createReview = async (
           customerId,
           appointmentId: appointment.id,
           branchId: appointment.branchId,
-          staffId: appointment.staffId,
+          staffId,
 
           rating: payload.rating,
           comment: payload.comment,
@@ -222,13 +223,8 @@ const createReview = async (
               : undefined,
         },
 
-        select: {
-          id: true,
-          rating: true,
-          comment: true,
-          moderationStatus: true,
-          moderationReason: true,
-
+        // Include image records in the returned Prisma type.
+        include: {
           images: {
             orderBy: {
               sortOrder: "asc",
@@ -238,8 +234,6 @@ const createReview = async (
               sortOrder: true,
             },
           },
-
-          createdAt: true,
         },
       });
     } catch (error) {
@@ -300,10 +294,16 @@ const createReview = async (
       translations = notificationTemplates.REVIEW_PUBLISHED();
     } else if (review.moderationStatus === ReviewModerationStatus.HIDDEN) {
       notificationType = "REVIEW_NEEDS_CHANGES";
-      translations = notificationTemplates.REVIEW_NEEDS_CHANGES(false, review.moderationReason);
+      translations = notificationTemplates.REVIEW_NEEDS_CHANGES(
+        false,
+        review.moderationReason,
+      );
     } else {
       notificationType = "REVIEW_PENDING";
-      translations = notificationTemplates.REVIEW_PENDING(false, review.moderationReason);
+      translations = notificationTemplates.REVIEW_PENDING(
+        false,
+        review.moderationReason,
+      );
     }
 
     await notificationService.createNotification({
@@ -320,7 +320,7 @@ const createReview = async (
   }
 
   // =====================================================
-  // 12. RESPONSE
+  // 12. FINAL RESPONSE
   // =====================================================
 
   return {
@@ -1531,10 +1531,16 @@ const updateReview = async (
         translations = notificationTemplates.REVIEW_PUBLISHED(true);
       } else if (result.moderationStatus === ReviewModerationStatus.HIDDEN) {
         type = "REVIEW_NEEDS_CHANGES";
-        translations = notificationTemplates.REVIEW_NEEDS_CHANGES(true, result.moderationReason);
+        translations = notificationTemplates.REVIEW_NEEDS_CHANGES(
+          true,
+          result.moderationReason,
+        );
       } else {
         type = "REVIEW_PENDING";
-        translations = notificationTemplates.REVIEW_PENDING(true, result.moderationReason);
+        translations = notificationTemplates.REVIEW_PENDING(
+          true,
+          result.moderationReason,
+        );
       }
 
       await notificationService.createNotification({
@@ -1773,10 +1779,16 @@ const moderateReview = async (
         updatedReview.moderationStatus === ReviewModerationStatus.HIDDEN
       ) {
         type = "REVIEW_NEEDS_CHANGES";
-        translations = notificationTemplates.REVIEW_NEEDS_CHANGES(false, updatedReview.moderationReason);
+        translations = notificationTemplates.REVIEW_NEEDS_CHANGES(
+          false,
+          updatedReview.moderationReason,
+        );
       } else {
         type = "REVIEW_PENDING";
-        translations = notificationTemplates.REVIEW_PENDING(false, updatedReview.moderationReason);
+        translations = notificationTemplates.REVIEW_PENDING(
+          false,
+          updatedReview.moderationReason,
+        );
       }
 
       await notificationService.createNotification({
@@ -2079,6 +2091,14 @@ const getPendingReviews = async (
 
     appointmentStatus: AppointmentStatus.COMPLETED,
 
+    // ISSUE #152:
+    // Review.staffId is required.
+    // Exclude staff-free appointments until branch-only
+    // reviews are supported in the Prisma schema.
+    staffId: {
+      not: null,
+    },
+
     review: {
       is: null,
     },
@@ -2095,7 +2115,14 @@ const getPendingReviews = async (
       skip,
       take: limit,
 
-      orderBy: [{ completedAt: "desc" }, { id: "desc" }],
+      orderBy: [
+        {
+          completedAt: "desc",
+        },
+        {
+          id: "desc",
+        },
+      ],
 
       select: {
         id: true,
@@ -2120,6 +2147,7 @@ const getPendingReviews = async (
         staff: {
           select: {
             id: true,
+
             user: {
               select: {
                 name: true,
@@ -2165,10 +2193,14 @@ const getPendingReviews = async (
         name: localizedBranch.name,
       },
 
-      staff: {
-        id: appointment.staff.id,
-        name: appointment.staff.user.name,
-      },
+      // Defensive null handling.
+      // Prisma may still type the relation as nullable.
+      staff: appointment.staff
+        ? {
+            id: appointment.staff.id,
+            name: appointment.staff.user.name,
+          }
+        : null,
 
       appointment: {
         id: appointment.id,
@@ -2202,6 +2234,7 @@ const getPendingReviews = async (
     },
   };
 };
+
 const getModerationReviews = async (
   userId: string,
   role: Role,

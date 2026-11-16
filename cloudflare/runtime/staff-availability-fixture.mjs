@@ -29,6 +29,7 @@ export async function staffAvailabilityFixture(db, storage, body) {
   if(body.staffBranch===true)await db.staffBranch.upsert({where:{staffId_branchId:{staffId,branchId}},create:{staffId,branchId},update:{}});
   if(body.staffService===false)await db.staffService.deleteMany({where:{staffId,serviceId}});
   if(body.staffService===true)await db.staffService.upsert({where:{staffId_serviceId:{staffId,serviceId}},create:{staffId,serviceId},update:{}});
+  if(body.staffPackage===false)await db.staffPackage.deleteMany({where:{staffId,packageId}});
   if(body.clearLeave)await db.staffUnavailability.deleteMany({where:{staffId}});
   if(body.clearAppointments)await db.appointment.deleteMany({where:{staffId}});
   if(body.policy)await db.branchBookingPolicy.update({where:{branchId},data:body.policy});

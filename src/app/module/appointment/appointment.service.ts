@@ -294,7 +294,7 @@ export const resolveAvailableStaff = async ({
   requestedEnd,
   now,
   excludeAppointmentId,
-}: ResolveAvailableStaffParams): Promise<string> => {
+}: ResolveAvailableStaffParams): Promise<string | null> => {
   // =====================================================
   // 1. VALIDATE REQUESTED TIME
   // =====================================================
@@ -324,18 +324,15 @@ export const resolveAvailableStaff = async ({
       branchId,
       day,
     },
-
     select: {
       isClosed: true,
       openTime: true,
       closeTime: true,
-
       breaks: {
         select: {
           startTime: true,
           endTime: true,
         },
-
         orderBy: {
           startTime: "asc",
         },
@@ -363,7 +360,7 @@ export const resolveAvailableStaff = async ({
   }
 
   // =====================================================
-  // 4. BRANCH-WIDE BREAK VALIDATION
+  // 4. BRANCH BREAK VALIDATION
   // =====================================================
 
   const hasBranchBreakConflict = businessHour.breaks.some((businessBreak) =>
@@ -383,49 +380,58 @@ export const resolveAvailableStaff = async ({
   }
 
   // =====================================================
-  // 5. FIND ELIGIBLE STAFF
+  // 5. PACKAGE SERVICE REQUIREMENTS
   // =====================================================
 
   const packageData = packageId
     ? await tx.package.findUnique({
-        where: { id: packageId },
-        select: { services: { select: { serviceId: true } } },
-      })
-    : null;
-  if (packageId && !packageData) throw new AppError("Package not found", 404);
-  const requiredPackageServiceIds =
-    packageData?.services.map((item) => item.serviceId) ?? [];
-
-  const eligibleStaff = await tx.staff.findMany({
-    where: {
-      ...(staffId ? { id: staffId } : {}),
-
-      status: "ACTIVE",
-
-      OR: [
-        // Staff temporarily assigned to this branch.
-        {
-          scheduleOverrides: {
-            some: {
-              branchId,
-              date: dateOnly,
+        where: {
+          id: packageId,
+        },
+        select: {
+          services: {
+            select: {
+              serviceId: true,
             },
           },
         },
+      })
+    : null;
 
-        // Regular branch assignment applies only when
-        // no override exists for the selected date.
+  if (packageId && !packageData) {
+    throw new AppError("Package not found", 404);
+  }
+
+  const requiredPackageServiceIds =
+    packageData?.services.map((item) => item.serviceId) ?? [];
+
+  // =====================================================
+  // 6. CONFIGURED STAFF DETECTION — ISSUE #152 FIX
+  // =====================================================
+
+  // IMPORTANT:
+  // Configuration is determined by persistent assignment.
+  //
+  // Do NOT filter configured staff by:
+  // - ACTIVE status
+  // - Weekly schedule
+  // - Schedule overrides
+  // - Leave / time off
+  // - Existing appointments
+  //
+  // Those factors affect availability, not configuration.
+  //
+  // If staff is assigned to this branch and service/package,
+  // staff-based booking remains mandatory even when every
+  // assigned staff member is unavailable.
+
+  const configuredStaff = await tx.staff.findMany({
+    where: {
+      OR: [
+        { branches: { some: { branchId } } },
         {
-          branches: {
-            some: {
-              branchId,
-            },
-          },
-
           scheduleOverrides: {
-            none: {
-              date: dateOnly,
-            },
+            some: { branchId, date: dateOnly },
           },
         },
       ],
@@ -444,20 +450,48 @@ export const resolveAvailableStaff = async ({
                 packageId: packageId!,
               },
             },
-            AND: requiredPackageServiceIds.map((id) => ({
-              services: { some: { serviceId: id } },
-            })),
+
           }),
     },
 
     select: {
       id: true,
+      status: true,
+      services: { select: { serviceId: true } },
     },
 
     orderBy: {
       id: "asc",
     },
   });
+
+  // =====================================================
+  // 7. NO STAFF CONFIGURED
+  // =====================================================
+
+  if (configuredStaff.length === 0) {
+    if (staffId) {
+      throw new AppError("No staff is configured for this booking", 409);
+    }
+
+    // ISSUE #152:
+    // Staff-free booking is allowed only when no staff
+    // is assigned to the branch + service/package.
+    //
+    // Branch hourly capacity must still be validated
+    // separately by the booking service.
+
+    return null;
+  }
+
+  // =====================================================
+  // 8. STAFF CONFIGURED: STAFF-BASED BOOKING REQUIRED
+  // =====================================================
+
+  const eligibleStaff = configuredStaff.filter(
+    (staff) => staff.status === "ACTIVE" && (!staffId || staff.id === staffId) &&
+      requiredPackageServiceIds.every(id => staff.services.some(item => item.serviceId === id)),
+  );
 
   if (eligibleStaff.length === 0) {
     throw new AppError(
@@ -471,7 +505,7 @@ export const resolveAvailableStaff = async ({
   const staffIds = eligibleStaff.map((staff) => staff.id);
 
   // =====================================================
-  // 6. FETCH TEMPORARY SCHEDULE OVERRIDES
+  // 9. FETCH TEMPORARY SCHEDULE OVERRIDES
   // =====================================================
 
   const overrides = await tx.staffScheduleOverride.findMany({
@@ -479,7 +513,6 @@ export const resolveAvailableStaff = async ({
       staffId: {
         in: staffIds,
       },
-
       date: dateOnly,
     },
 
@@ -496,7 +529,7 @@ export const resolveAvailableStaff = async ({
   );
 
   // =====================================================
-  // 7. FETCH REGULAR WEEKLY SCHEDULES
+  // 10. FETCH REGULAR WEEKLY SCHEDULES
   // =====================================================
 
   const regularSchedules = await tx.staffSchedule.findMany({
@@ -504,7 +537,6 @@ export const resolveAvailableStaff = async ({
       staffId: {
         in: staffIds.filter((id) => !overriddenStaffIds.has(id)),
       },
-
       branchId,
       day,
     },
@@ -517,7 +549,7 @@ export const resolveAvailableStaff = async ({
   });
 
   // =====================================================
-  // 8. BUILD EFFECTIVE STAFF SCHEDULES
+  // 11. BUILD EFFECTIVE STAFF SCHEDULES
   // =====================================================
 
   const schedules = [
@@ -533,7 +565,7 @@ export const resolveAvailableStaff = async ({
   ];
 
   // =====================================================
-  // 9. FETCH STAFF UNAVAILABILITY
+  // 12. FETCH STAFF UNAVAILABILITY
   // =====================================================
 
   const unavailability = await tx.staffUnavailability.findMany({
@@ -541,7 +573,6 @@ export const resolveAvailableStaff = async ({
       staffId: {
         in: staffIds,
       },
-
       date: dateOnly,
     },
 
@@ -553,7 +584,7 @@ export const resolveAvailableStaff = async ({
   });
 
   // =====================================================
-  // 10. FETCH BLOCKING APPOINTMENTS
+  // 13. FETCH BLOCKING APPOINTMENTS
   // =====================================================
 
   const blockingAppointments = await tx.appointment.findMany({
@@ -578,7 +609,6 @@ export const resolveAvailableStaff = async ({
             in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
           },
         },
-
         {
           appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
 
@@ -597,16 +627,12 @@ export const resolveAvailableStaff = async ({
   });
 
   // =====================================================
-  // 11. CHECK STAFF CANDIDATES
+  // 14. CHECK STAFF CANDIDATES
   // =====================================================
 
   const availableStaffIds: string[] = [];
 
   for (const staff of eligibleStaff) {
-    // -------------------------------------------------
-    // EFFECTIVE SCHEDULE MUST COVER FULL BOOKING
-    // -------------------------------------------------
-
     const hasValidSchedule = schedules.some(
       (schedule) =>
         schedule.staffId === staff.id &&
@@ -617,10 +643,6 @@ export const resolveAvailableStaff = async ({
     if (!hasValidSchedule) {
       continue;
     }
-
-    // -------------------------------------------------
-    // STAFF BREAK / LEAVE / UNAVAILABILITY
-    // -------------------------------------------------
 
     const isUnavailable = unavailability.some(
       (item) =>
@@ -637,10 +659,6 @@ export const resolveAvailableStaff = async ({
       continue;
     }
 
-    // -------------------------------------------------
-    // EXISTING APPOINTMENTS / ACTIVE HOLDS
-    // -------------------------------------------------
-
     const hasAppointmentConflict = blockingAppointments.some(
       (appointment) =>
         appointment.staffId === staff.id &&
@@ -656,10 +674,7 @@ export const resolveAvailableStaff = async ({
       continue;
     }
 
-    // -------------------------------------------------
-    // VALID STAFF
-    // -------------------------------------------------
-
+    // Explicit staff selection.
     if (staffId) {
       return staff.id;
     }
@@ -668,7 +683,7 @@ export const resolveAvailableStaff = async ({
   }
 
   // =====================================================
-  // 12. AUTO STAFF FAIR ASSIGNMENT
+  // 15. AUTO STAFF FAIR ASSIGNMENT
   // =====================================================
 
   if (availableStaffIds.length === 1) {
@@ -676,11 +691,6 @@ export const resolveAvailableStaff = async ({
   }
 
   if (availableStaffIds.length > 1) {
-    // Preserve existing daily workload fairness.
-    // Count RESERVED, CONFIRMED and COMPLETED.
-    // Active payment holds block availability but
-    // do not count toward workload.
-
     const dailyAppointments = await tx.appointment.findMany({
       where: {
         staffId: {
@@ -703,13 +713,17 @@ export const resolveAvailableStaff = async ({
       },
     });
 
-    const counts = new Map(availableStaffIds.map((id) => [id, 0]));
+    const counts = new Map<string, number>(
+      availableStaffIds.map((id) => [id, 0]),
+    );
 
     for (const appointment of dailyAppointments) {
-      counts.set(
-        appointment.staffId,
-        (counts.get(appointment.staffId) ?? 0) + 1,
-      );
+      if (appointment.staffId) {
+        counts.set(
+          appointment.staffId,
+          (counts.get(appointment.staffId) ?? 0) + 1,
+        );
+      }
     }
 
     const minimum = Math.min(...counts.values());
@@ -720,8 +734,10 @@ export const resolveAvailableStaff = async ({
   }
 
   // =====================================================
-  // 13. NO STAFF AVAILABLE
+  // 16. STAFF CONFIGURED BUT NONE AVAILABLE
   // =====================================================
+
+  // Never fall back to staffId = null here.
 
   throw new AppError(
     staffId
@@ -730,18 +746,39 @@ export const resolveAvailableStaff = async ({
     409,
   );
 };
+
 // FINAL STAFF CONFLICT CHECK
 // =====================================================
 
 export const assertStaffSlotAvailable = async (
   tx: Prisma.TransactionClient,
-  staffId: string,
+  staffId: string | null,
   dateOnly: Date,
   requestedStart: number,
   requestedEnd: number,
   now: Date,
   excludeAppointmentId?: string,
-) => {
+): Promise<void> => {
+  // =====================================================
+  // 1. STAFF-FREE BOOKING
+  // =====================================================
+  // Staff-free mode is allowed only when no staff
+  // is configured for the booking target.
+  //
+  // resolveAvailableStaff() must enforce that rule
+  // before this function is called.
+  //
+  // Branch hourly capacity must still be validated
+  // separately by the booking service.
+
+  if (staffId === null) {
+    return;
+  }
+
+  // =====================================================
+  // 2. FETCH BLOCKING APPOINTMENTS
+  // =====================================================
+
   const blockingAppointments = await tx.appointment.findMany({
     where: {
       ...(excludeAppointmentId
@@ -761,10 +798,8 @@ export const assertStaffSlotAvailable = async (
             in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
           },
         },
-
         {
           appointmentStatus: AppointmentStatus.PENDING_PAYMENT,
-
           holdExpiresAt: {
             gt: now,
           },
@@ -778,6 +813,10 @@ export const assertStaffSlotAvailable = async (
     },
   });
 
+  // =====================================================
+  // 3. CHECK APPOINTMENT TIME CONFLICTS
+  // =====================================================
+
   const hasConflict = blockingAppointments.some((appointment) => {
     const existingStart = timeToMinutes(appointment.startTime);
 
@@ -790,6 +829,10 @@ export const assertStaffSlotAvailable = async (
       existingEnd,
     );
   });
+
+  // =====================================================
+  // 4. REJECT CONFLICTING STAFF BOOKING
+  // =====================================================
 
   if (hasConflict) {
     throw new AppError(
@@ -1011,6 +1054,16 @@ const createPayNowAppointment = async (
   // =====================================================
   // 1. INITIAL AVAILABILITY CHECK
   // =====================================================
+  // The availability service automatically determines:
+  //
+  // Staff configured:
+  //   SELECTED or AUTO
+  //
+  // No staff configured:
+  //   NO_STAFF
+  //
+  // Never fall back to NO_STAFF merely because configured
+  // staff are unavailable.
 
   const availability = await AvailabilityService.getAvailableSlots({
     branchId,
@@ -1029,6 +1082,14 @@ const createPayNowAppointment = async (
 
   if (!requestedSlot) {
     throw new AppError("The selected time slot is no longer available", 409);
+  }
+
+  // Explicit staff requests must never resolve to NO_STAFF.
+  if (staffId && availability.staffSelectionMode === "NO_STAFF") {
+    throw new AppError(
+      "The selected service does not have a configured staff member",
+      409,
+    );
   }
 
   // Date-only database key.
@@ -1255,23 +1316,11 @@ const createPayNowAppointment = async (
 
           // Maximum advance booking days is enforced by
           // AvailabilityService. The transaction-level check
-          // above protects the minimum notice against elapsed time.
+          // protects minimum notice against elapsed time.
 
           // =================================================
           // 7.1 SERVICE-SPECIFIC BOOKING HOURS VALIDATION
           // =================================================
-          // Custom booking hours are optional per service/branch.
-          //
-          // bookingHoursEnabled = false:
-          //   Existing branch/staff booking behavior remains.
-          //
-          // bookingHoursEnabled = true:
-          //   The full appointment must fit within one
-          //   configured booking window for the requested day.
-          //
-          // Package bookings are unaffected.
-          //
-          // Run inside the current Serializable transaction.
 
           await assertServiceBookingWindowAvailable(tx, {
             serviceId: serviceId ?? undefined,
@@ -1282,8 +1331,14 @@ const createPayNowAppointment = async (
           });
 
           // =================================================
-          // 8. SMART STAFF RESOLUTION
+          // 8. RESOLVE STAFF OR STAFF-FREE BOOKING
           // =================================================
+          // resolveAvailableStaff() must enforce:
+          //
+          // Configured staff -> staff-based booking required
+          // No configured staff -> null
+          //
+          // The check runs inside this Serializable transaction.
 
           const resolvedStaffId = await resolveAvailableStaff({
             tx,
@@ -1301,6 +1356,8 @@ const createPayNowAppointment = async (
           // =================================================
           // 9. FINAL STAFF CONFLICT CHECK
           // =================================================
+          // Staff-free bookings skip staff conflict checking.
+          // Staff-based bookings preserve existing validation.
 
           await assertStaffSlotAvailable(
             tx,
@@ -1314,6 +1371,8 @@ const createPayNowAppointment = async (
           // =================================================
           // 10. FINAL BRANCH CAPACITY CHECK
           // =================================================
+          // Mandatory for BOTH staff-based and staff-free
+          // bookings.
 
           await assertBranchHourlyCapacityAvailable(
             tx,
@@ -1347,6 +1406,8 @@ const createPayNowAppointment = async (
               orderNumber,
               branchId,
 
+              // Staff-based -> resolved staff UUID
+              // Staff-free  -> null
               staffId: resolvedStaffId,
 
               serviceId: serviceId ?? null,
@@ -1498,6 +1559,9 @@ const createDepositAppointment = async (
   // =====================================================
   // 1. INITIAL AVAILABILITY CHECK
   // =====================================================
+  // Staff configured -> staff-based booking
+  // No staff configured -> staff-free booking
+  // No fallback when configured staff are unavailable.
 
   const availability = await AvailabilityService.getAvailableSlots({
     branchId,
@@ -1516,6 +1580,13 @@ const createDepositAppointment = async (
 
   if (!requestedSlot) {
     throw new AppError("The selected time slot is no longer available", 409);
+  }
+
+  if (staffId && availability.staffSelectionMode === "NO_STAFF") {
+    throw new AppError(
+      "The selected service does not have a configured staff member",
+      409,
+    );
   }
 
   // Date-only calendar key, not local midnight UTC instant.
@@ -1692,10 +1763,7 @@ const createDepositAppointment = async (
           // =================================================
           // 6. DEPOSIT CALCULATION
           // =================================================
-
           // Preserve existing two-decimal calculation.
-          // Currency-specific precision will be handled
-          // separately in the payment integration phase.
 
           const depositAmount = price
             .mul(depositPercentage)
@@ -1760,9 +1828,6 @@ const createDepositAppointment = async (
           // =================================================
           // 8.1 SERVICE-SPECIFIC BOOKING HOURS VALIDATION
           // =================================================
-          // Optional custom booking schedule per service/branch.
-          // Package bookings remain unaffected.
-          // This check runs inside the Serializable transaction.
 
           await assertServiceBookingWindowAvailable(tx, {
             serviceId: serviceId ?? undefined,
@@ -1773,8 +1838,13 @@ const createDepositAppointment = async (
           });
 
           // =================================================
-          // 9. RESOLVE AVAILABLE STAFF INSIDE TRANSACTION
+          // 9. RESOLVE STAFF OR STAFF-FREE BOOKING
           // =================================================
+          // Configured staff -> staff ID required
+          // No configured staff -> null
+          //
+          // The helper enforces the business rule inside
+          // this Serializable transaction.
 
           const resolvedStaffId = await resolveAvailableStaff({
             tx,
@@ -1791,7 +1861,11 @@ const createDepositAppointment = async (
 
           console.log(
             "[DEPOSIT] Staff selection:",
-            staffId ? "SPECIFIC" : "AUTO",
+            resolvedStaffId === null
+              ? "NO_STAFF"
+              : staffId
+                ? "SPECIFIC"
+                : "AUTO",
           );
 
           console.log("[DEPOSIT] Resolved staff ID:", resolvedStaffId);
@@ -1799,6 +1873,8 @@ const createDepositAppointment = async (
           // =================================================
           // 10. FINAL STAFF AVAILABILITY RECHECK
           // =================================================
+          // Null staff -> skip staff conflict check.
+          // Configured staff -> preserve existing validation.
 
           await assertStaffSlotAvailable(
             tx,
@@ -1812,6 +1888,7 @@ const createDepositAppointment = async (
           // =================================================
           // 11. FINAL BRANCH CAPACITY RECHECK
           // =================================================
+          // Mandatory for both staff-based and staff-free.
 
           await assertBranchHourlyCapacityAvailable(
             tx,
@@ -1845,6 +1922,8 @@ const createDepositAppointment = async (
               orderNumber,
               branchId,
 
+              // Staff-based -> resolved staff UUID
+              // Staff-free  -> null
               staffId: resolvedStaffId,
 
               serviceId: serviceId ?? null,
@@ -1874,10 +1953,12 @@ const createDepositAppointment = async (
               timezone: bookingTimezone,
 
               depositPercentage,
+
               depositAmount: assertCurrencyAmount(
                 depositAmount,
                 bookingCurrency,
               ),
+
               remainingAmount: assertCurrencyAmount(
                 remainingAmount,
                 bookingCurrency,
@@ -2013,6 +2094,7 @@ const createDepositAppointment = async (
 
   throw new AppError("The selected time slot is no longer available", 409);
 };
+
 const createReserveAppointment = async (
   customerId: string,
   payload: ICreateReserveAppointmentPayload,
@@ -2025,7 +2107,7 @@ const createReserveAppointment = async (
   console.log("Branch ID:", branchId);
   console.log("Service ID:", serviceId);
   console.log("Package ID:", packageId);
-  console.log("Staff Selection:", staffId ? "SPECIFIC" : "AUTO");
+  console.log("Staff Selection:", staffId ? "SPECIFIC" : "AUTO_OR_NO_STAFF");
   console.log("Date:", date);
   console.log("Start Time:", startTime);
   console.log("===============================================");
@@ -2033,6 +2115,11 @@ const createReserveAppointment = async (
   // =====================================================
   // 1. INITIAL AVAILABILITY CHECK
   // =====================================================
+  // Staff configured -> SELECTED / AUTO
+  // No staff configured -> NO_STAFF
+  //
+  // The availability service must not fall back to
+  // NO_STAFF when configured staff are unavailable.
 
   const availability = await AvailabilityService.getAvailableSlots({
     branchId,
@@ -2051,6 +2138,13 @@ const createReserveAppointment = async (
 
   if (!requestedSlot) {
     throw new AppError("The selected time slot is no longer available", 409);
+  }
+
+  if (staffId && availability.staffSelectionMode === "NO_STAFF") {
+    throw new AppError(
+      "The selected booking does not have a configured staff member",
+      409,
+    );
   }
 
   // Date-only database key, not the UTC instant
@@ -2120,6 +2214,7 @@ const createReserveAppointment = async (
 
           let itemName: string;
           let itemNameTranslations: Prisma.InputJsonValue | undefined;
+
           let durationMinutes: number;
           let price: Prisma.Decimal;
 
@@ -2291,10 +2386,6 @@ const createReserveAppointment = async (
           // =================================================
           // 7.1 SERVICE-SPECIFIC BOOKING HOURS VALIDATION
           // =================================================
-          // Custom booking hours are optional per service/branch.
-          // Entire appointment must fit within one allowed window.
-          // Package bookings remain unaffected.
-          // Validation runs inside the Serializable transaction.
 
           await assertServiceBookingWindowAvailable(tx, {
             serviceId: serviceId ?? undefined,
@@ -2305,8 +2396,13 @@ const createReserveAppointment = async (
           });
 
           // =================================================
-          // 8. RESOLVE AVAILABLE STAFF INSIDE TRANSACTION
+          // 8. RESOLVE STAFF OR STAFF-FREE BOOKING
           // =================================================
+          // Staff configured -> staff ID required
+          // No staff configured -> null
+          //
+          // resolveAvailableStaff() enforces the rule
+          // inside the Serializable transaction.
 
           const resolvedStaffId = await resolveAvailableStaff({
             tx,
@@ -2323,7 +2419,11 @@ const createReserveAppointment = async (
 
           console.log(
             "[RESERVE_NOW] Staff selection mode:",
-            staffId ? "SPECIFIC" : "AUTO",
+            resolvedStaffId === null
+              ? "NO_STAFF"
+              : staffId
+                ? "SPECIFIC"
+                : "AUTO",
           );
 
           console.log("[RESERVE_NOW] Resolved Staff ID:", resolvedStaffId);
@@ -2331,6 +2431,8 @@ const createReserveAppointment = async (
           // =================================================
           // 9. FINAL STAFF AVAILABILITY RECHECK
           // =================================================
+          // Staff-free -> skip staff conflict validation.
+          // Staff-based -> preserve existing conflict check.
 
           await assertStaffSlotAvailable(
             tx,
@@ -2346,6 +2448,7 @@ const createReserveAppointment = async (
           // =================================================
           // 10. FINAL BRANCH CAPACITY RECHECK
           // =================================================
+          // Mandatory for staff-based AND staff-free.
 
           await assertBranchHourlyCapacityAvailable(
             tx,
@@ -2381,7 +2484,8 @@ const createReserveAppointment = async (
               orderNumber,
               branchId,
 
-              // Specific Staff OR Any Staff
+              // Staff-based -> resolved staff UUID
+              // Staff-free  -> null
               staffId: resolvedStaffId,
 
               serviceId: serviceId ?? null,
@@ -2577,7 +2681,7 @@ const getMyAppointments = async (
   const skip = (page - 1) * limit;
 
   // =====================================================
-  // 2. CURRENT BRAND TIMEZONE — LEGACY FALLBACK
+  // 2. CURRENT BRAND TIMEZONE - LEGACY FALLBACK
   // =====================================================
 
   const brand = await prisma.brand.findFirst({
@@ -2826,6 +2930,7 @@ const getMyAppointments = async (
           },
         },
 
+        // Nullable relation for staff-free appointments.
         staff: {
           select: {
             id: true,
@@ -3080,10 +3185,16 @@ const getMyAppointments = async (
           }
         : null,
 
-      staff: {
-        id: appointment.staff.id,
-        name: appointment.staff.name,
-      },
+      // =================================================
+      // ISSUE #152: NULLABLE STAFF RESPONSE
+      // =================================================
+
+      staff: appointment.staff
+        ? {
+            id: appointment.staff.id,
+            name: appointment.staff.name,
+          }
+        : null,
 
       date: appointment.date.toISOString().slice(0, 10),
 
@@ -3099,7 +3210,6 @@ const getMyAppointments = async (
       depositAmount,
       remainingAmount,
 
-      // NEW: Actual outstanding balance
       outstandingBalance: amountDue,
 
       amountPaid,
@@ -3159,6 +3269,7 @@ const getAppointmentById = async (
         },
       },
 
+      // Staff relation can be null for staff-free bookings.
       staff: {
         select: {
           id: true,
@@ -3210,7 +3321,10 @@ const getAppointmentById = async (
   }
 
   if (role === Role.STAFF) {
-    if (appointment.staff.userId !== userId) {
+    // Staff-free appointments have no assigned staff.
+    // They must not be accessible through staff ownership.
+
+    if (!appointment.staff || appointment.staff.userId !== userId) {
       throw new AppError("You are not allowed to access this appointment", 403);
     }
   }
@@ -3531,10 +3645,16 @@ const getAppointmentById = async (
         }
       : null,
 
-    staff: {
-      id: appointment.staff.id,
-      name: appointment.staff.name,
-    },
+    // =================================================
+    // ISSUE #152: NULLABLE STAFF RESPONSE
+    // =================================================
+
+    staff: appointment.staff
+      ? {
+          id: appointment.staff.id,
+          name: appointment.staff.name,
+        }
+      : null,
 
     date: appointment.date.toISOString().slice(0, 10),
 
@@ -3550,7 +3670,6 @@ const getAppointmentById = async (
     depositAmount,
     remainingAmount,
 
-    // NEW: Actual outstanding balance
     outstandingBalance: amountDue,
 
     amountPaid,
@@ -5008,8 +5127,13 @@ const verifyQr = async (
     }
   }
 
+  // ISSUE #152:
+  // Staff-free appointments have staff = null.
+  // STAFF can only verify their own assigned appointment.
+  // Branch managers and brand owners retain existing access.
+
   if (role === Role.STAFF) {
-    if (appointment.staff.userId !== userId) {
+    if (!appointment.staff || appointment.staff.userId !== userId) {
       throw new AppError(
         "You are not allowed to verify this appointment QR",
         403,
@@ -5300,8 +5424,12 @@ const verifyQr = async (
           // 14. FINAL AUTHORIZATION RECHECK
           // =============================================
 
+          // ISSUE #152:
+          // Prevent null staff access and preserve
+          // staff-specific authorization.
+
           if (role === Role.STAFF) {
-            if (current.staff.userId !== userId) {
+            if (!current.staff || current.staff.userId !== userId) {
               throw new AppError(
                 "You are not allowed to verify this appointment QR",
                 403,
@@ -5428,6 +5556,7 @@ const verifyQr = async (
               qrVerifiedAt: null,
 
               appointmentStatus: currentExpectedStatus,
+
               paymentStatus: current.paymentStatus,
             },
 
@@ -5503,19 +5632,26 @@ const verifyQr = async (
           await auditLogService.createAuditLog(
             {
               userId,
+
               action: "QR_VERIFIED",
+
               entityType: "APPOINTMENT",
+
               entityId: current.id,
 
               metadata: {
                 previousStatus: current.appointmentStatus,
+
                 newStatus: updatedAppointment.appointmentStatus,
 
                 previousPaymentStatus: current.paymentStatus,
+
                 newPaymentStatus: updatedAppointment.paymentStatus,
 
                 branchId: current.branchId,
+
                 bookingMethod: current.bookingMethod,
+
                 groupPurchaseId: current.groupPurchaseId,
 
                 // Payment settlement is handled by
@@ -5528,6 +5664,7 @@ const verifyQr = async (
                 qrVerifiedAt: qrVerifiedAt.toISOString(),
 
                 performedByRole: role,
+
                 qrVerificationRule: currentQrRule,
               },
             },
@@ -5624,8 +5761,13 @@ const completeAppointment = async (
   // 3. ROLE / RESOURCE SCOPE
   // =====================================================
 
+  // ISSUE #152:
+  // Staff-free appointments have staff = null.
+  // STAFF can only complete their assigned appointments.
+  // Branch managers and brand owners retain existing access.
+
   if (role === Role.STAFF) {
-    if (appointment.staff.userId !== userId) {
+    if (!appointment.staff || appointment.staff.userId !== userId) {
       throw new AppError(
         "You are not allowed to complete this appointment",
         403,
@@ -5674,9 +5816,6 @@ const completeAppointment = async (
     process.env.ALLOW_EARLY_APPOINTMENT_COMPLETION === "true";
 
   if (!allowEarlyCompletion) {
-    // Appointment.date represents a booking calendar date
-    // stored at UTC midnight.
-
     const appointmentDate = appointment.date.toISOString().slice(0, 10);
 
     const endTime = appointment.endTime;
@@ -5685,7 +5824,6 @@ const completeAppointment = async (
       throw new AppError("Invalid appointment end time", 500);
     }
 
-    // Read dynamic Brand timezone
     const brand = await prisma.brand.findFirst({
       select: {
         timezone: true,
@@ -5719,11 +5857,12 @@ const completeAppointment = async (
   // =====================================================
 
   const completedAt = new Date();
+
   const completionNotes = payload.notes?.trim() || null;
 
   const result = await prisma.$transaction(async (tx) => {
-    // Conditional update prevents concurrent requests from
-    // completing the same appointment more than once.
+    // Conditional update prevents concurrent requests
+    // from completing the same appointment twice.
 
     const updateResult = await tx.appointment.updateMany({
       where: {
@@ -5733,6 +5872,7 @@ const completeAppointment = async (
 
       data: {
         appointmentStatus: AppointmentStatus.COMPLETED,
+
         completedAt,
         completionNotes,
       },
@@ -5767,11 +5907,13 @@ const completeAppointment = async (
     await notificationService.createNotification(
       {
         appointmentId: updatedAppointment.id,
+
         userId: updatedAppointment.customerId,
 
         type: "SERVICE_COMPLETED",
 
         title: translations.en!.title!,
+
         message: translations.en!.message!,
 
         translations,
@@ -5795,9 +5937,13 @@ const completeAppointment = async (
 
         metadata: {
           previousStatus: AppointmentStatus.CONFIRMED,
+
           newStatus: AppointmentStatus.COMPLETED,
+
           completedAt: completedAt.toISOString(),
+
           notes: completionNotes,
+
           performedByRole: role,
         },
       },
@@ -6705,10 +6851,12 @@ const getBranchAppointments = async (
         name: localizedBranch.name ?? branch.name,
       },
 
-      staff: {
-        id: appointment.staff.id,
-        name: appointment.staff.name,
-      },
+      staff: appointment.staff
+        ? {
+            id: appointment.staff.id,
+            name: appointment.staff.name,
+          }
+        : null,
 
       service: appointment.serviceId
         ? {
@@ -7089,10 +7237,12 @@ const getAllAppointments = async (
         phone: appointment.customer.phone,
       },
 
-      staff: {
-        id: appointment.staff.id,
-        name: appointment.staff.name,
-      },
+      staff: appointment.staff
+        ? {
+            id: appointment.staff.id,
+            name: appointment.staff.name,
+          }
+        : null,
 
       service: appointment.serviceId
         ? {
@@ -8204,6 +8354,335 @@ const recordGroupPurchaseRemainingPayment = async (
   );
 };
 
+const autoMarkNoShowAppointments = async (): Promise<{
+  noShowCount: number;
+}> => {
+  // =====================================================
+  // 1. CONFIGURATION
+  // =====================================================
+
+  const batchSize = 100;
+  const gracePeriodMinutes = 15;
+  const runStartedAt = new Date();
+  // date is a UTC-midnight calendar label, not the appointment instant. Include
+  // local dates up to UTC+14; the saved-timezone deadline checks below decide
+  // eligibility. Otherwise, e.g. 01:00 Hong Kong bookings wait until 08:00.
+  const latestLocalDate = new Date(
+    runStartedAt.getTime() + 14 * 60 * 60 * 1000,
+  );
+
+  let noShowCount = 0;
+  let cursorId: string | undefined;
+
+  // =====================================================
+  // 2. FIND CANDIDATE APPOINTMENTS
+  // =====================================================
+
+  const where: Prisma.AppointmentWhereInput = {
+    appointmentStatus: {
+      in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
+    },
+    qrVerifiedAt: null,
+    date: {
+      lte: latestLocalDate,
+    },
+  };
+
+  // =====================================================
+  // 3. KEYSET PAGINATION
+  // =====================================================
+
+  while (true) {
+    const candidates = await prisma.appointment.findMany({
+      where: {
+        ...where,
+        ...(cursorId ? { id: { gt: cursorId } } : {}),
+      },
+
+      select: {
+        id: true,
+        date: true,
+        startTime: true,
+        endTime: true,
+      },
+
+      orderBy: {
+        id: "asc",
+      },
+
+      take: batchSize,
+    });
+
+    if (candidates.length === 0) {
+      break;
+    }
+
+    cursorId = candidates[candidates.length - 1].id;
+
+    // ===================================================
+    // 4. PROCESS EACH CANDIDATE
+    // ===================================================
+
+    for (const candidate of candidates) {
+      try {
+        const timezone = await appointmentTimezone(prisma, candidate.id);
+
+        const dateKey = candidate.date.toISOString().slice(0, 10);
+
+        const appointmentStartAt = createDateTimeInTimezone(
+          dateKey,
+          candidate.startTime,
+          timezone,
+        );
+
+        const appointmentEndAt = createDateTimeInTimezone(
+          dateKey,
+          candidate.endTime,
+          timezone,
+        );
+
+        // Current booking model assumes same-day
+        // appointments. Never mark an unsupported
+        // overnight interval as NO_SHOW.
+        if (appointmentEndAt <= appointmentStartAt) {
+          continue;
+        }
+
+        const noShowEligibleAt = new Date(
+          appointmentEndAt.getTime() + gracePeriodMinutes * 60_000,
+        );
+
+        if (
+          Number.isNaN(noShowEligibleAt.getTime()) ||
+          runStartedAt < noShowEligibleAt
+        ) {
+          continue;
+        }
+
+        // ===============================================
+        // 5. SERIALIZABLE TRANSACTION
+        // ===============================================
+
+        const marked = await prisma.$transaction(
+          async (tx) => {
+            const current = await tx.appointment.findUnique({
+              where: {
+                id: candidate.id,
+              },
+
+              select: {
+                id: true,
+                customerId: true,
+
+                date: true,
+                startTime: true,
+                endTime: true,
+                timezone: true,
+
+                bookingMethod: true,
+                groupPurchaseId: true,
+
+                appointmentStatus: true,
+                paymentStatus: true,
+
+                qrVerifiedAt: true,
+              },
+            });
+
+            if (!current) {
+              return false;
+            }
+
+            if (
+              (current.appointmentStatus !== AppointmentStatus.RESERVED &&
+                current.appointmentStatus !== AppointmentStatus.CONFIRMED) ||
+              current.qrVerifiedAt !== null
+            ) {
+              return false;
+            }
+
+            // ===========================================
+            // 6. REVALIDATE APPOINTMENT DEADLINE
+            // ===========================================
+
+            const currentTimezone = await appointmentTimezone(tx, current.id);
+
+            const currentDateKey = current.date.toISOString().slice(0, 10);
+
+            const currentStartAt = createDateTimeInTimezone(
+              currentDateKey,
+              current.startTime,
+              currentTimezone,
+            );
+
+            const currentEndAt = createDateTimeInTimezone(
+              currentDateKey,
+              current.endTime,
+              currentTimezone,
+            );
+
+            if (currentEndAt <= currentStartAt) {
+              return false;
+            }
+
+            const currentEligibleAt = new Date(
+              currentEndAt.getTime() + gracePeriodMinutes * 60_000,
+            );
+
+            const markedAt = new Date();
+
+            if (
+              Number.isNaN(currentEligibleAt.getTime()) ||
+              markedAt < currentEligibleAt
+            ) {
+              return false;
+            }
+
+            // ===========================================
+            // 7. ATOMIC NO_SHOW UPDATE
+            // ===========================================
+
+            const previousStatus = current.appointmentStatus;
+
+            const changed = await tx.appointment.updateMany({
+              where: {
+                id: current.id,
+
+                appointmentStatus: previousStatus,
+
+                qrVerifiedAt: null,
+
+                date: current.date,
+                startTime: current.startTime,
+                endTime: current.endTime,
+                timezone: current.timezone,
+              },
+
+              data: {
+                appointmentStatus: AppointmentStatus.NO_SHOW,
+
+                noShowAt: markedAt,
+
+                noShowReason:
+                  "Automatically marked as no-show: " +
+                  "attendance was not verified within " +
+                  "15 minutes after the scheduled " +
+                  "appointment end time.",
+              },
+            });
+
+            if (changed.count !== 1) {
+              return false;
+            }
+
+            // ===========================================
+            // 8. MULTILINGUAL NOTIFICATION
+            // ===========================================
+
+            await notificationService.createNotification(
+              {
+                appointmentId: current.id,
+                userId: current.customerId,
+
+                type: "BOOKING_NO_SHOW",
+
+                title: "Appointment marked as no-show",
+
+                message:
+                  "Your appointment was automatically " +
+                  "marked as a no-show because " +
+                  "attendance was not verified.",
+
+                translations: {
+                  en: {
+                    title: "Appointment marked as no-show",
+                    message:
+                      "Your appointment was automatically " +
+                      "marked as a no-show because " +
+                      "attendance was not verified.",
+                  },
+
+                  "zh-CN": {
+                    title: "预约已标记为未到店",
+                    message:
+                      "由于未记录到店核销，您的预约已被自动标记为未到店。",
+                  },
+
+                  "zh-HK": {
+                    title: "預約已標記為未到店",
+                    message:
+                      "由於未記錄到店核銷，您的預約已被自動標記為未到店。",
+                  },
+                },
+              },
+              tx,
+            );
+
+            // ===========================================
+            // 9. SYSTEM AUDIT LOG
+            // ===========================================
+
+            await auditLogService.createAuditLog(
+              {
+                action: "APPOINTMENT_AUTO_NO_SHOW",
+
+                entityType: "APPOINTMENT",
+                entityId: current.id,
+
+                metadata: {
+                  performedBy: "SYSTEM",
+                  trigger: "APPOINTMENT_NO_SHOW_CRON",
+
+                  previousStatus,
+                  newStatus: AppointmentStatus.NO_SHOW,
+
+                  paymentStatus: current.paymentStatus,
+
+                  bookingMethod: current.bookingMethod,
+
+                  groupPurchaseId: current.groupPurchaseId,
+
+                  qrVerifiedAt: null,
+
+                  appointmentEndAt: currentEndAt.toISOString(),
+
+                  gracePeriodMinutes,
+
+                  noShowEligibleAt: currentEligibleAt.toISOString(),
+
+                  noShowAt: markedAt.toISOString(),
+                },
+              },
+              tx,
+            );
+
+            return true;
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          },
+        );
+
+        if (marked) {
+          noShowCount++;
+        }
+      } catch (error) {
+        logUnexpectedError(error, {
+          source: "appointment.service.ts:autoMarkNoShowAppointments",
+        });
+      }
+    }
+
+    if (candidates.length < batchSize) {
+      break;
+    }
+  }
+
+  return {
+    noShowCount,
+  };
+};
+
 export const appointmentService = {
   createPayNowAppointment,
   createDepositAppointment,
@@ -8223,4 +8702,5 @@ export const appointmentService = {
   expirePendingAppointments,
   completeEligibleAppointments,
   recordGroupPurchaseRemainingPayment,
+  autoMarkNoShowAppointments,
 };

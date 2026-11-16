@@ -67,8 +67,9 @@ test('Worker breaks block every normal and group booking path while preserving b
       body: { ...body, ...selection, startTime: '12:45' }, status: 409,
     });
   }
-  await api('/api/v1/group-purchases', { body: { packageId: f.packageId, branchId: f.branchId, date: f.date, startTime: '13:00',
-    quantity: 1, purchaseFlow: 'DIRECT_BOOK', bookingMethod: 'RESERVE_NOW' }, status: 409 });
+  const retired = await api('/api/v1/group-purchases', { body: { packageId: f.packageId, branchId: f.branchId, date: f.date, startTime: '13:00',
+    quantity: 1, purchaseFlow: 'DIRECT_BOOK', bookingMethod: 'RESERVE_NOW' }, status: 400 });
+  assert.ok(retired.details.some(detail => detail.path.includes('purchaseFlow')));
   assert.deepEqual(await ctx.state(), before);
   for (const [route, startTime, status] of [['reserve', '12:30', 'RESERVED'], ['pay-now', '14:00', 'PENDING_PAYMENT'], ['deposit', '14:30', 'PENDING_PAYMENT']]) {
     const result = (await api(`/api/v1/appointments/${route}`, { body: { ...body, startTime }, status: 201 })).data;

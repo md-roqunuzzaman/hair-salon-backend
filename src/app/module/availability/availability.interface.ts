@@ -1,3 +1,22 @@
+// =====================================================
+// STAFF PREFERENCE
+// =====================================================
+
+export type AvailabilityStaffPreference =
+  | "SELECT_STAFF"
+  | "AUTO_ASSIGN"
+  | "NO_STAFF";
+
+// =====================================================
+// STAFF SELECTION MODE
+// =====================================================
+
+export type AvailabilityStaffSelectionMode = "SELECTED" | "AUTO" | "NO_STAFF";
+
+// =====================================================
+// AVAILABILITY QUERY
+// =====================================================
+
 export interface IAvailabilityQuery {
   branchId: string;
 
@@ -6,6 +25,9 @@ export interface IAvailabilityQuery {
 
   // Optional preferred staff
   staffId?: string;
+
+  // Explicit booking preference
+  staffPreference?: AvailabilityStaffPreference;
 
   // Backward compatibility
   staff?: "ANY";
@@ -36,8 +58,8 @@ export interface IAvailabilitySlot {
   startTime: string;
   endTime: string;
 
-  // Selected staff or auto-selected candidate
-  staffId: string;
+  // Null only for staff-free bookings
+  staffId: string | null;
 
   available: boolean;
 
@@ -47,7 +69,7 @@ export interface IAvailabilitySlot {
     remaining: number;
   };
 
-  staffSelectionMode: "SELECTED" | "AUTO";
+  staffSelectionMode: AvailabilityStaffSelectionMode;
 }
 
 // =====================================================
@@ -57,7 +79,7 @@ export interface IAvailabilitySlot {
 export interface IAvailabilityResult {
   date: string;
 
-  staffSelectionMode: "SELECTED" | "AUTO";
+  staffSelectionMode: AvailabilityStaffSelectionMode;
 
   slots: IAvailabilitySlot[];
 

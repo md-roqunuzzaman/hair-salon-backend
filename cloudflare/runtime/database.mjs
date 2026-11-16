@@ -177,6 +177,13 @@ export function createDatabase(storage) {
       if (key === '$queryRaw' || key === '$executeRaw') return (strings, ...values) => lazy(async () => {
         const sql = typeof strings.sql === 'string' ? strings.sql : strings.join('?');
         const parameters = Array.isArray(strings.values) ? strings.values : values;
+        // PostgreSQL serializes branch creation using this transaction-scoped
+        // advisory lock. This facade already executes the whole transaction
+        // under the single SalonDatabase storage transaction/request queue.
+        // Only this exact known lock is equivalent to a no-op on SQLite; never
+        // swallow arbitrary PostgreSQL SQL or other advisory lock requests.
+        if (key === '$executeRaw' && parameters.length === 0 &&
+            /^\s*SELECT\s+pg_advisory_xact_lock\(\s*151\s*,\s*1\s*\)\s*;?\s*$/i.test(sql)) return 1;
         // All calls are serialized and enclosed in storage transactions. SQLite
         // locks replace the original PostgreSQL row lock, never an unlocked read.
         const normalized = sql.replace(/\s+FOR\s+UPDATE\s*;?\s*$/i, '');
