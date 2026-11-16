@@ -69,6 +69,7 @@ import {
   createDateTimeInTimezone,
   assertTimezoneDuration,
 } from "../../utils/brand-timezone.utils.js";
+import { cancelRemainingStripePayment } from "../payment/payment.service.js";
 
 const PAY_NOW_HOLD_MINUTES = 5;
 const MAX_TRANSACTION_RETRIES = 3;
@@ -450,7 +451,6 @@ export const resolveAvailableStaff = async ({
                 packageId: packageId!,
               },
             },
-
           }),
     },
 
@@ -489,8 +489,12 @@ export const resolveAvailableStaff = async ({
   // =====================================================
 
   const eligibleStaff = configuredStaff.filter(
-    (staff) => staff.status === "ACTIVE" && (!staffId || staff.id === staffId) &&
-      requiredPackageServiceIds.every(id => staff.services.some(item => item.serviceId === id)),
+    (staff) =>
+      staff.status === "ACTIVE" &&
+      (!staffId || staff.id === staffId) &&
+      requiredPackageServiceIds.every((id) =>
+        staff.services.some((item) => item.serviceId === id),
+      ),
   );
 
   if (eligibleStaff.length === 0) {
@@ -7298,7 +7302,98 @@ const recordRemainingPayment = async (
   userId: string,
 ) => {
   // =====================================================
-  // SERIALIZABLE TRANSACTION WITH RETRY
+  // 0. VALIDATE APPOINTMENT BEFORE STRIPE CANCELLATION
+  // =====================================================
+
+  const appointmentSnapshot = await prisma.appointment.findUnique({
+    where: { id: appointmentId },
+    select: {
+      id: true,
+      customerId: true,
+      groupPurchaseId: true,
+      bookingMethod: true,
+      appointmentStatus: true,
+      paymentStatus: true,
+      qrVerifiedAt: true,
+    },
+  });
+
+  if (!appointmentSnapshot) {
+    throw new AppError("Appointment not found", httpStatus.NOT_FOUND);
+  }
+
+  if (appointmentSnapshot.groupPurchaseId !== null) {
+    throw new AppError(
+      "Use the group purchase remaining-payment endpoint for this appointment",
+      409,
+    );
+  }
+
+  const snapshotIsDeposit =
+    appointmentSnapshot.bookingMethod === BookingMethod.DEPOSIT;
+
+  const snapshotIsReserveNow =
+    appointmentSnapshot.bookingMethod === BookingMethod.RESERVE_NOW;
+
+  if (!snapshotIsDeposit && !snapshotIsReserveNow) {
+    throw new AppError(
+      "Remaining payment is only available for DEPOSIT or RESERVE_NOW appointments",
+      httpStatus.BAD_REQUEST,
+    );
+  }
+
+  const snapshotExpectedPaymentStatus = snapshotIsDeposit
+    ? PaymentStatus.PARTIALLY_PAID
+    : PaymentStatus.UNPAID;
+
+  if (
+    appointmentSnapshot.appointmentStatus !== AppointmentStatus.CONFIRMED ||
+    appointmentSnapshot.paymentStatus !== snapshotExpectedPaymentStatus ||
+    !appointmentSnapshot.qrVerifiedAt
+  ) {
+    throw new AppError(
+      "Appointment is not eligible for remaining payment",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 1. CANCEL OUTSTANDING STRIPE REMAINING ATTEMPTS
+  // =====================================================
+
+  // Stripe calls must remain outside the database transaction.
+
+  const pendingStripePayments = await prisma.payment.findMany({
+    where: {
+      appointmentId,
+      customerId: appointmentSnapshot.customerId,
+      groupPurchaseId: null,
+      purpose: PaymentPurpose.APPOINTMENT_REMAINING,
+      provider: PaymentProvider.STRIPE,
+      status: PaymentStatus.PENDING,
+    },
+    select: {
+      id: true,
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+  });
+
+  for (const pending of pendingStripePayments) {
+    // IMPORTANT:
+    // The customer-facing cancellation service must not
+    // authorize a manager solely because a customerId was
+    // supplied. Manager branch authorization must be checked
+    // independently before this call.
+    await cancelRemainingStripePayment(
+      appointmentSnapshot.customerId,
+      pending.id,
+    );
+  }
+
+  // =====================================================
+  // 2. SERIALIZABLE TRANSACTION WITH RETRY
   // =====================================================
 
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -7306,7 +7401,7 @@ const recordRemainingPayment = async (
       return await prisma.$transaction(
         async (tx) => {
           // =====================================================
-          // 1. LOCK APPOINTMENT
+          // 3. LOCK APPOINTMENT
           // =====================================================
 
           const locked = await tx.$queryRaw<Array<{ id: string }>>`
@@ -7321,7 +7416,7 @@ const recordRemainingPayment = async (
           }
 
           // =====================================================
-          // 2. FIND APPOINTMENT
+          // 4. FIND APPOINTMENT
           // =====================================================
 
           const appointment = await tx.appointment.findUniqueOrThrow({
@@ -7335,7 +7430,7 @@ const recordRemainingPayment = async (
           });
 
           // =====================================================
-          // 3. BLOCK GROUP PURCHASE
+          // 5. BLOCK GROUP PURCHASE
           // =====================================================
 
           if (appointment.groupPurchaseId !== null) {
@@ -7346,7 +7441,7 @@ const recordRemainingPayment = async (
           }
 
           // =====================================================
-          // 4. VALIDATE BOOKING METHOD
+          // 6. VALIDATE BOOKING METHOD
           // =====================================================
 
           const isDeposit = appointment.bookingMethod === BookingMethod.DEPOSIT;
@@ -7366,7 +7461,7 @@ const recordRemainingPayment = async (
             : PaymentStatus.UNPAID;
 
           // =====================================================
-          // 5. VALIDATE APPOINTMENT STATE
+          // 7. VALIDATE APPOINTMENT STATE
           // =====================================================
 
           if (appointment.paymentStatus !== expectedPaymentStatus) {
@@ -7388,7 +7483,7 @@ const recordRemainingPayment = async (
           }
 
           // =====================================================
-          // 6. CHECK EXISTING REMAINING PAYMENTS
+          // 8. CHECK EXISTING REMAINING PAYMENTS
           // =====================================================
 
           const existingRemainingPayments = appointment.payments.filter(
@@ -7396,14 +7491,16 @@ const recordRemainingPayment = async (
               payment.purpose === PaymentPurpose.APPOINTMENT_REMAINING &&
               (payment.status === PaymentStatus.PENDING ||
                 payment.status === PaymentStatus.PAID ||
-                payment.status === PaymentStatus.PARTIALLY_REFUNDED),
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+                payment.status === PaymentStatus.REFUNDED),
           );
 
           if (
             existingRemainingPayments.some(
               (payment) =>
                 payment.status === PaymentStatus.PAID ||
-                payment.status === PaymentStatus.PARTIALLY_REFUNDED,
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+                payment.status === PaymentStatus.REFUNDED,
             )
           ) {
             throw new AppError(
@@ -7412,8 +7509,8 @@ const recordRemainingPayment = async (
             );
           }
 
-          // Prevent offline payment while Stripe payment
-          // may still succeed asynchronously.
+          // Keep this guard because a new Stripe attempt
+          // might have been created after cancellation.
 
           if (
             existingRemainingPayments.some(
@@ -7434,7 +7531,7 @@ const recordRemainingPayment = async (
           }
 
           // =====================================================
-          // 7. CALCULATE REMAINING AMOUNT
+          // 9. CALCULATE REMAINING AMOUNT
           // =====================================================
 
           const totalPrice = appointment.price;
@@ -7481,7 +7578,7 @@ const recordRemainingPayment = async (
           }
 
           // =====================================================
-          // 8. GUARDED APPOINTMENT SETTLEMENT
+          // 10. GUARDED APPOINTMENT SETTLEMENT
           // =====================================================
 
           const claimResult = await tx.appointment.updateMany({
@@ -7508,7 +7605,7 @@ const recordRemainingPayment = async (
           }
 
           // =====================================================
-          // 9. CREATE SALON PAYMENT
+          // 11. CREATE SALON PAYMENT
           // =====================================================
 
           const now = new Date();
@@ -7531,7 +7628,7 @@ const recordRemainingPayment = async (
           });
 
           // =====================================================
-          // 10. GET UPDATED APPOINTMENT
+          // 12. GET UPDATED APPOINTMENT
           // =====================================================
 
           const updatedAppointment = await tx.appointment.findUniqueOrThrow({
@@ -7541,7 +7638,7 @@ const recordRemainingPayment = async (
           });
 
           // =====================================================
-          // 11. MULTILINGUAL NOTIFICATION
+          // 13. MULTILINGUAL NOTIFICATION
           // =====================================================
 
           const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
@@ -7562,7 +7659,7 @@ const recordRemainingPayment = async (
           );
 
           // =====================================================
-          // 12. AUDIT LOG
+          // 14. AUDIT LOG
           // =====================================================
 
           await auditLogService.createAuditLog(
@@ -7587,7 +7684,7 @@ const recordRemainingPayment = async (
           );
 
           // =====================================================
-          // 13. RESPONSE
+          // 15. RESPONSE
           // =====================================================
 
           return {
@@ -7961,12 +8058,178 @@ const recordGroupPurchaseRemainingPayment = async (
   payload: TRecordRemainingPayment,
   userId: string,
 ) => {
+  // =====================================================
+  // 0. VERIFY GROUP PURCHASE BEFORE STRIPE CANCELLATION
+  // =====================================================
+
+  // IMPORTANT:
+  // The calling route/service must already have verified
+  // that userId is authorized to record payments for the
+  // linked appointment's branch.
+  //
+  // Do not authorize a manager using purchase.customerId.
+
+  const purchaseSnapshot = await prisma.groupPurchase.findUnique({
+    where: { id: purchaseId },
+    include: {
+      appointments: {
+        select: {
+          id: true,
+          groupPurchaseId: true,
+          customerId: true,
+          bookingMethod: true,
+          appointmentStatus: true,
+          paymentStatus: true,
+          qrVerifiedAt: true,
+          branchId: true,
+        },
+      },
+    },
+  });
+
+  if (!purchaseSnapshot) {
+    throw new AppError("Group Purchase not found", 404);
+  }
+
+  const snapshotIsDeposit =
+    purchaseSnapshot.bookingMethod === BookingMethod.DEPOSIT;
+
+  const snapshotIsReserveNow =
+    purchaseSnapshot.bookingMethod === BookingMethod.RESERVE_NOW;
+
+  if (
+    purchaseSnapshot.purchaseFlow !== GroupPurchaseFlow.DIRECT_BOOK ||
+    (!snapshotIsDeposit && !snapshotIsReserveNow)
+  ) {
+    throw new AppError(
+      "Remaining payment is only available for DIRECT_BOOK DEPOSIT or RESERVE_NOW Group Purchases",
+      409,
+    );
+  }
+
+  const snapshotExpectedStatus = snapshotIsDeposit
+    ? PaymentStatus.PARTIALLY_PAID
+    : PaymentStatus.UNPAID;
+
+  if (
+    purchaseSnapshot.paymentStatus !== snapshotExpectedStatus ||
+    purchaseSnapshot.appointments.length !== 1
+  ) {
+    throw new AppError(
+      "Group Purchase is not eligible for remaining payment",
+      409,
+    );
+  }
+
+  const snapshotAppointment = purchaseSnapshot.appointments[0];
+
+  if (
+    snapshotAppointment.groupPurchaseId !== purchaseId ||
+    snapshotAppointment.customerId !== purchaseSnapshot.customerId ||
+    snapshotAppointment.bookingMethod !== purchaseSnapshot.bookingMethod ||
+    snapshotAppointment.appointmentStatus !== AppointmentStatus.CONFIRMED ||
+    snapshotAppointment.paymentStatus !== snapshotExpectedStatus ||
+    !snapshotAppointment.qrVerifiedAt
+  ) {
+    throw new AppError(
+      "Group Purchase appointment must be QR verified and confirmed",
+      409,
+    );
+  }
+
+  // =====================================================
+  // 1. VALIDATE PURCHASE-LEVEL REMAINING AMOUNT
+  // =====================================================
+
+  const snapshotTotalAmount = purchaseSnapshot.amount;
+
+  const snapshotDepositAmount =
+    purchaseSnapshot.depositAmount ?? new Prisma.Decimal(0);
+
+  if (
+    !snapshotTotalAmount.isFinite() ||
+    snapshotTotalAmount.lte(0) ||
+    !snapshotDepositAmount.isFinite()
+  ) {
+    throw new AppError("Invalid Group Purchase amount", 409);
+  }
+
+  if (
+    snapshotIsDeposit &&
+    (snapshotDepositAmount.lte(0) ||
+      snapshotDepositAmount.gte(snapshotTotalAmount))
+  ) {
+    throw new AppError("Invalid Group Purchase deposit amount", 409);
+  }
+
+  if (snapshotIsReserveNow && !snapshotDepositAmount.isZero()) {
+    throw new AppError(
+      "RESERVE_NOW Group Purchase cannot have a deposit amount",
+      409,
+    );
+  }
+
+  const snapshotRemainingAmount = snapshotTotalAmount.minus(
+    snapshotDepositAmount,
+  );
+
+  if (
+    !snapshotRemainingAmount.isFinite() ||
+    snapshotRemainingAmount.lte(0) ||
+    (purchaseSnapshot.remainingAmount !== null &&
+      !purchaseSnapshot.remainingAmount.equals(snapshotRemainingAmount))
+  ) {
+    throw new AppError("Group Purchase remaining amount mismatch", 409);
+  }
+
+  // =====================================================
+  // 2. CANCEL OUTSTANDING STRIPE REMAINING ATTEMPTS
+  // =====================================================
+
+  // Stripe API calls must stay outside the database
+  // transaction to avoid holding locks during network calls.
+  //
+  // Exclude the original settled deposit payment.
+
+  const pendingStripePayments = await prisma.payment.findMany({
+    where: {
+      customerId: purchaseSnapshot.customerId,
+      groupPurchaseId: purchaseId,
+      appointmentId: null,
+      purpose: PaymentPurpose.GROUP_PURCHASE,
+      provider: PaymentProvider.STRIPE,
+      status: PaymentStatus.PENDING,
+      amount: snapshotRemainingAmount,
+      ...(purchaseSnapshot.settledPaymentId
+        ? {
+            id: {
+              not: purchaseSnapshot.settledPaymentId,
+            },
+          }
+        : {}),
+    },
+    select: {
+      id: true,
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+  });
+
+  for (const pending of pendingStripePayments) {
+    await cancelRemainingStripePayment(purchaseSnapshot.customerId, pending.id);
+  }
+
+  // =====================================================
+  // 3. SERIALIZABLE TRANSACTION WITH RETRY
+  // =====================================================
+
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await prisma.$transaction(
         async (tx) => {
           // =====================================================
-          // 1. LOCK GROUP PURCHASE
+          // 4. LOCK GROUP PURCHASE
           // =====================================================
 
           const locked = await tx.$queryRaw<Array<{ id: string }>>`
@@ -7981,7 +8244,7 @@ const recordGroupPurchaseRemainingPayment = async (
           }
 
           // =====================================================
-          // 2. FETCH GROUP PURCHASE
+          // 5. FETCH GROUP PURCHASE
           // =====================================================
 
           const purchase = await tx.groupPurchase.findUniqueOrThrow({
@@ -7993,7 +8256,7 @@ const recordGroupPurchaseRemainingPayment = async (
           });
 
           // =====================================================
-          // 3. VALIDATE PURCHASE FLOW & BOOKING METHOD
+          // 6. VALIDATE PURCHASE FLOW & BOOKING METHOD
           // =====================================================
 
           const isDeposit = purchase.bookingMethod === BookingMethod.DEPOSIT;
@@ -8023,7 +8286,7 @@ const recordGroupPurchaseRemainingPayment = async (
           }
 
           // =====================================================
-          // 4. VERIFY LINKED APPOINTMENT
+          // 7. VERIFY LINKED APPOINTMENT
           // =====================================================
 
           if (purchase.appointments.length !== 1) {
@@ -8047,7 +8310,7 @@ const recordGroupPurchaseRemainingPayment = async (
           }
 
           // =====================================================
-          // 5. CALCULATE PURCHASE-LEVEL REMAINING AMOUNT
+          // 8. CALCULATE PURCHASE-LEVEL REMAINING AMOUNT
           // =====================================================
 
           const totalAmount = purchase.amount;
@@ -8096,7 +8359,7 @@ const recordGroupPurchaseRemainingPayment = async (
           }
 
           // =====================================================
-          // 6. VERIFY INITIAL DEPOSIT PAYMENT
+          // 9. VERIFY INITIAL DEPOSIT PAYMENT
           // =====================================================
 
           if (isDeposit) {
@@ -8115,9 +8378,6 @@ const recordGroupPurchaseRemainingPayment = async (
               );
             }
           } else {
-            // RESERVE_NOW must not already have a settled
-            // initial payment.
-
             if (purchase.settledPaymentId !== null) {
               throw new AppError(
                 "RESERVE_NOW Group Purchase has an unexpected settled payment",
@@ -8127,24 +8387,25 @@ const recordGroupPurchaseRemainingPayment = async (
           }
 
           // =====================================================
-          // 7. CHECK EXISTING REMAINING PAYMENTS
+          // 10. CHECK EXISTING REMAINING PAYMENTS
           // =====================================================
 
           const existingRemainingPayments = purchase.payments.filter(
             (payment) =>
               payment.purpose === PaymentPurpose.GROUP_PURCHASE &&
               payment.id !== purchase.settledPaymentId &&
-              payment.amount.equals(remainingAmount) &&
               (payment.status === PaymentStatus.PENDING ||
                 payment.status === PaymentStatus.PAID ||
-                payment.status === PaymentStatus.PARTIALLY_REFUNDED),
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+                payment.status === PaymentStatus.REFUNDED),
           );
 
           if (
             existingRemainingPayments.some(
               (payment) =>
                 payment.status === PaymentStatus.PAID ||
-                payment.status === PaymentStatus.PARTIALLY_REFUNDED,
+                payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+                payment.status === PaymentStatus.REFUNDED,
             )
           ) {
             throw new AppError(
@@ -8153,8 +8414,10 @@ const recordGroupPurchaseRemainingPayment = async (
             );
           }
 
-          // Prevent offline settlement while Stripe payment
-          // may still complete asynchronously.
+          // Prevent offline settlement while a Stripe
+          // payment could still complete asynchronously.
+          // This guard also catches new attempts created
+          // after the cancellation scan.
 
           if (
             existingRemainingPayments.some(
@@ -8181,7 +8444,7 @@ const recordGroupPurchaseRemainingPayment = async (
           }
 
           // =====================================================
-          // 8. GUARDED GROUP PURCHASE UPDATE
+          // 11. GUARDED GROUP PURCHASE UPDATE
           // =====================================================
 
           const updatedPurchase = await tx.groupPurchase.updateMany({
@@ -8204,7 +8467,7 @@ const recordGroupPurchaseRemainingPayment = async (
           }
 
           // =====================================================
-          // 9. GUARDED APPOINTMENT UPDATE
+          // 12. GUARDED APPOINTMENT UPDATE
           // =====================================================
 
           const updatedAppointment = await tx.appointment.updateMany({
@@ -8231,7 +8494,7 @@ const recordGroupPurchaseRemainingPayment = async (
           }
 
           // =====================================================
-          // 10. CREATE SALON PAYMENT
+          // 13. CREATE SALON PAYMENT
           // =====================================================
 
           assertSameCurrency(
@@ -8260,7 +8523,7 @@ const recordGroupPurchaseRemainingPayment = async (
           });
 
           // =====================================================
-          // 11. MULTILINGUAL NOTIFICATION
+          // 14. MULTILINGUAL NOTIFICATION
           // =====================================================
 
           const translations = notificationTemplates.REMAINING_PAYMENT_RECEIVED(
@@ -8281,7 +8544,7 @@ const recordGroupPurchaseRemainingPayment = async (
           );
 
           // =====================================================
-          // 12. AUDIT LOG
+          // 15. AUDIT LOG
           // =====================================================
 
           await auditLogService.createAuditLog(
@@ -8307,7 +8570,7 @@ const recordGroupPurchaseRemainingPayment = async (
           );
 
           // =====================================================
-          // 13. RESPONSE
+          // 16. RESPONSE
           // =====================================================
 
           return {

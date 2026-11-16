@@ -69,4 +69,10 @@ router.post(
   ),
   paymentController.createGroupPurchaseRemainingStripeIntent,
 );
+
+router.post(
+  "/:paymentId/cancel-remaining-stripe",
+  auth(Role.CUSTOMER),
+  paymentController.cancelRemainingStripePayment,
+);
 export const PaymentRoutes = router;

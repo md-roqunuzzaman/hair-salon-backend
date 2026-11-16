@@ -189,6 +189,46 @@ const createGroupPurchaseRemainingStripeIntent = catchAsync(
     });
   },
 );
+
+const cancelRemainingStripePayment = catchAsync(
+  async (req: Request, res: Response) => {
+    // =====================================================
+    // 1. AUTHENTICATED CUSTOMER
+    // =====================================================
+
+    const customerId = req.user!.userId;
+
+    // =====================================================
+    // 2. VALIDATE PAYMENT ID
+    // =====================================================
+
+    const paymentId = req.params.paymentId;
+
+    if (!paymentId || typeof paymentId !== "string") {
+      throw new AppError("Invalid payment ID", 400);
+    }
+
+    // =====================================================
+    // 3. CANCEL / RECONCILE STRIPE PAYMENT
+    // =====================================================
+
+    const result = await paymentService.cancelRemainingStripePayment(
+      customerId,
+      paymentId,
+    );
+
+    // =====================================================
+    // 4. RESPONSE
+    // =====================================================
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Remaining Stripe payment cancellation processed successfully",
+      data: result,
+    });
+  },
+);
 export const paymentController = {
   createStripeIntent,
   stripeWebhook,
@@ -198,4 +238,5 @@ export const paymentController = {
   createGroupPurchaseStripeIntent,
   createAppointmentRemainingStripeIntent,
   createGroupPurchaseRemainingStripeIntent,
+  cancelRemainingStripePayment,
 };
