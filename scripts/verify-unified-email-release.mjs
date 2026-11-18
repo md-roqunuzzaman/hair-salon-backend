@@ -18,7 +18,15 @@ const config = JSON.parse(await readFile('wrangler.jsonc','utf8'));
 assert.equal(config.vars.EMAIL_OUTBOX_ENABLED,'false');
 assert.ok(['false','true'].includes(config.env.staging.vars.EMAIL_OUTBOX_ENABLED));
 assert.equal(config.main,'cloudflare/.build/worker.mjs');
-assert.equal(migrations.length,41);
+assert.equal(migrations.length,44);
+assert.match(migrations[43].sql,/CREATE TABLE "SubscriptionPlan"/);
+assert.match(migrations[43].sql,/CREATE TRIGGER "money_BrandSubscription_totalPrice_INSERT"/);
+assert.match(migrations[42].sql,/ALTER TABLE "Brand" ADD COLUMN "ownerId" TEXT/);
+assert.match(migrations[42].sql,/REFERENCES "User" \("id"\) ON DELETE RESTRICT ON UPDATE CASCADE/);
+assert.match(migrations[42].sql,/CREATE INDEX "Brand_ownerId_idx"/);
+assert.match(migrations[41].sql,/ALTER TABLE "Branch" ADD COLUMN "brandId" TEXT/);
+assert.match(migrations[41].sql,/REFERENCES "Brand" \("id"\) ON DELETE RESTRICT ON UPDATE CASCADE/);
+assert.match(migrations[41].sql,/CREATE INDEX "Branch_brandId_idx"/);
 assert.match(migrations[40].sql,/"staffId" TEXT,/);
 assert.match(migrations[40].sql,/CREATE TRIGGER "money_Appointment_price_INSERT"/);
 assert.match(migrations[40].sql,/CREATE TRIGGER "required_Appointment_orderNumber_INSERT"/);
@@ -54,6 +62,7 @@ const immutable = [];
 for (const directory of ['cloudflare/migrations','prisma/migrations']) {
   for (const name of await readdir(directory)) {
     if (name.endsWith('.toml')) continue;
+    if(name==='0044_subscription_pricing.sql'||name==='20261118074604_add_subscription_pricing_snapshot')continue;
     if (name.startsWith('0025_') || name === '20261029090000_unified_merchant_email') continue;
     if (name.startsWith('0026_') || name === '20261029100000_email_enabled_default') continue;
     if (name.startsWith('0027_') || ['20261029100537_add_banner_carousel_settings','20261029101521_add_branch_carousel_settings'].includes(name)) continue;
@@ -70,6 +79,10 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
     if(name==='0039_group_purchase_order_number.sql'||name==='20261110030317_add_group_purchase_order_number')continue;
     if(name==='0040_staff_schedule_override.sql'||name==='20261110090200_add_staff_schedule_override')continue;
     if(name==='0041_appointment_staff_optional.sql'||name==='20261116061818_support_staff_optional_booking')continue;
+    if(name==='0042_branch_brand_relation.sql'||name==='20261118063017_add_branch_brand_relation')continue;
+    if(name==='0043_brand_owner_relation.sql'||name==='20261118065720_add_brand_owner_relation')continue;
+    // PostgreSQL enum candidate; SQLite roles are represented as TEXT.
+    if(directory==='prisma/migrations'&&name==='20261118064129_add_super_admin_role')continue;
     // Current PostgreSQL index candidates are retained verbatim; Workers use v32 SQLite.
     if(directory==='prisma/migrations'&&['20261102082512_email_outbox_stale_lock_index','20261102083831_email_outbox_stale_lock_index'].includes(name))continue;
     const file = `${directory}/${name}${directory.startsWith('prisma')?'/migration.sql':''}`;
@@ -82,6 +95,14 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
 }
 const metadata=JSON.parse(await readFile('cloudflare/runtime/model-metadata.json','utf8'));
 assert.equal(metadata.Appointment.scalars.timezone,'String');
+assert.equal(metadata.Branch.scalars.brandId,'String');
+assert.equal(metadata.Branch.relations.brand,'Brand');
+assert.equal(metadata.Brand.relations.branches,'Branch');
+assert.equal(metadata.Brand.scalars.ownerId,'String');
+assert.equal(metadata.Brand.relations.owner,'User');
+assert.equal(metadata.User.relations.ownedBrands,'Brand');
+assert.match(sqliteSchema.match(/enum Role\s*\{([\s\S]*?)\n\}/)[1],/\bSUPER_ADMIN\b/);
+assert.ok(!JSON.parse(await readFile('cloudflare/.build/worker.mjs.map','utf8')).sources.some(source=>source.endsWith('runtime/branch-brand-fixture.mjs')),'Branch ownership fixture leaked into production');
 assert.match(sqliteSchema.match(/model Appointment\s*\{([\s\S]*?)\n\}/)[1],/\n\s+staffId\s+String\?/);
 assert.equal(metadata.GroupPurchase.scalars.currency,'String');
 assert.equal(metadata.GroupPurchase.scalars.orderNumber,'String');
@@ -122,7 +143,7 @@ for (const required of ['brand-email-setting.sender.ts','brand-email-setting.aut
 assert.ok((await readFile('cloudflare/.build/templates.mjs','utf8')).includes('"verify-email.ejs"'),'Verification template missing from compiled templates');
 // MIME composition is intentionally shared by Worker SMTP and Graph. Only the
 // native Node SMTP transport/connection and local fixtures must be absent.
-for (const excluded of ['runtime/optional-staff-migration-fixture.mjs','runtime/no-show-fixture.mjs','runtime/integration-fixture.mjs','runtime/business-email-fixture.mjs','runtime/email-test-fixture.mjs','src/app/lib/merchant-smtp.ts','nodemailer/dist/esm/smtp-transport/','nodemailer/dist/esm/smtp-connection/','nodemailer/lib/smtp-transport/','nodemailer/lib/smtp-connection/']) assert.ok(!map.sources.some(source=>source.includes(excluded)),`Unsupported production source: ${excluded}`);
+for (const excluded of ['runtime/subscription-fixture.mjs','runtime/subscription-migration-fixture.mjs','runtime/optional-staff-migration-fixture.mjs','runtime/no-show-fixture.mjs','runtime/integration-fixture.mjs','runtime/business-email-fixture.mjs','runtime/email-test-fixture.mjs','src/app/lib/merchant-smtp.ts','nodemailer/dist/esm/smtp-transport/','nodemailer/dist/esm/smtp-connection/','nodemailer/lib/smtp-transport/','nodemailer/lib/smtp-connection/']) assert.ok(!map.sources.some(source=>source.includes(excluded)),`Unsupported production source: ${excluded}`);
 const report = {
   scope:'LOCAL_ONLY_NO_DEPLOY',createdAt:new Date().toISOString(),
   packageLockSha256:hash(packageLock),nodeVersion:process.version,toolVersions,

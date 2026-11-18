@@ -6,6 +6,10 @@ import {
 import { Language } from "../../utils/language.js";
 
 export interface ICreateBranchPayload {
+  // Merchant / Brand
+  brandId: string;
+
+  // Basic information
   name: string;
   address: string;
   phone?: string;

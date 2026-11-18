@@ -39,6 +39,7 @@ import {
   IUpdateBusinessHoursPayload,
 } from "./branch.interface.js";
 import { branchLimitConfig } from "../../config/branch-limit.config.js";
+import { assertCanCreateBranch } from "../platform/platform.entitlement.service.js";
 
 // =====================================================
 // BRANCH LOCALIZATION HELPERS
@@ -122,9 +123,21 @@ const localizeBranch = (
 // CREATE BRANCH
 // =====================================================
 
-const createBranch = async (payload: ICreateBranchPayload) => {
+const createBranch = async (
+  payload: ICreateBranchPayload,
+  userId: string,
+  brandId: string,
+) => {
   // =====================================================
-  // 1. PREPARE ENGLISH BASE DATA
+  // 1. VALIDATE BRAND ID
+  // =====================================================
+
+  if (!brandId?.trim()) {
+    throw new AppError("Brand ID is required", 400);
+  }
+
+  // =====================================================
+  // 2. PREPARE ENGLISH BASE DATA
   // =====================================================
 
   const name = payload.name.trim();
@@ -132,7 +145,7 @@ const createBranch = async (payload: ICreateBranchPayload) => {
   const description = payload.description?.trim() || null;
 
   // =====================================================
-  // 2. BUILD TRANSLATIONS
+  // 3. BUILD TRANSLATIONS
   // =====================================================
 
   const translations = buildBranchTranslations(null, payload.translations, {
@@ -142,7 +155,7 @@ const createBranch = async (payload: ICreateBranchPayload) => {
   });
 
   // =====================================================
-  // 3. DEFAULT BRANCH CONFIGURATION
+  // 4. DEFAULT BRANCH CONFIGURATION
   // =====================================================
 
   const DEFAULT_HOURLY_CAPACITY = 4;
@@ -158,118 +171,130 @@ const createBranch = async (payload: ICreateBranchPayload) => {
   ] as const;
 
   // =====================================================
-  // 4. CREATE BRANCH TRANSACTIONALLY
+  // 5. CREATE BRANCH TRANSACTIONALLY
   // =====================================================
 
   const branch = await prisma.$transaction(
     async (tx) => {
-      // ================================================
-      // 4.1 ACQUIRE TRANSACTION-SCOPED ADVISORY LOCK
-      // ================================================
-      // All branch creation requests using this key
-      // are serialized until the transaction ends.
-      //
-      // This requires PostgreSQL.
+      // =================================================
+      // 5.1 VERIFY BRAND OWNERSHIP
+      // =================================================
 
-      await tx.$executeRaw`
-        SELECT pg_advisory_xact_lock(151, 1)
-      `;
+      const brand = await tx.brand.findUnique({
+        where: {
+          id: brandId,
+        },
+        select: {
+          id: true,
+          ownerId: true,
+        },
+      });
 
-      // ================================================
-      // 4.2 CHECK MAXIMUM BRANCH LIMIT
-      // ================================================
-
-      const maxBranches = branchLimitConfig.maxBranches;
-
-      if (!Number.isSafeInteger(maxBranches) || maxBranches < 1) {
-        throw new AppError("Invalid maximum branch configuration", 500);
+      if (!brand) {
+        throw new AppError("Brand not found", 404);
       }
 
-      const currentBranchCount = await tx.branch.count();
+      // =================================================
+      // 5.2 VERIFY BRAND OWNER AUTHORIZATION
+      // =================================================
 
-      if (currentBranchCount >= maxBranches) {
+      const user = await tx.user.findUnique({
+        where: {
+          id: userId,
+        },
+        select: {
+          id: true,
+          role: true,
+          status: true,
+        },
+      });
+
+      if (!user || user.status !== "ACTIVE") {
+        throw new AppError("User not found or inactive", 403);
+      }
+
+      if (user.role !== "BRAND_OWNER" || brand.ownerId !== user.id) {
         throw new AppError(
-          `Maximum ${maxBranches} branches are allowed. Cannot create another branch.`,
-          409,
+          "You do not have permission to create branches for this brand.",
+          403,
         );
       }
 
-      // ================================================
-      // 4.3 DUPLICATE BRANCH CHECK
-      // ================================================
+      // =================================================
+      // 5.3 CHECK SUBSCRIPTION BRANCH LIMIT
+      // =================================================
+
+      // STANDARD: Maximum 1 branch
+      // BRANCH_STORE: Super Admin-configured limit
+      // Requires active subscription
+
+      await assertCanCreateBranch(brandId, tx);
+
+      // =================================================
+      // 5.4 DUPLICATE BRANCH CHECK (SAME BRAND)
+      // =================================================
 
       const existingBranch = await tx.branch.findFirst({
         where: {
+          brandId,
           name: {
             equals: name,
             mode: "insensitive",
           },
         },
-
         select: {
           id: true,
         },
       });
 
       if (existingBranch) {
-        throw new AppError("Branch already exists", 409);
+        throw new AppError(
+          "A branch with this name already exists in this brand.",
+          409,
+        );
       }
 
-      // ================================================
-      // 4.4 CREATE BRANCH
-      // ================================================
+      // =================================================
+      // 5.5 CREATE BRANCH
+      // =================================================
 
       const createdBranch = await tx.branch.create({
         data: {
+          brandId,
           name,
           address,
-
           phone: payload.phone?.trim() || null,
-
           description,
-
           imageObjectKey: payload.imageObjectKey || null,
-
           translations,
-
           latitude: payload.latitude ?? null,
           longitude: payload.longitude ?? null,
         },
       });
 
-      // ================================================
-      // 4.5 CREATE DEFAULT BOOKING POLICY
-      // ================================================
+      // =================================================
+      // 5.6 CREATE DEFAULT BOOKING POLICY
+      // =================================================
 
       await tx.branchBookingPolicy.create({
         data: {
           branchId: createdBranch.id,
-
           slotIntervalMinutes: 30,
-
           minimumBookingNoticeMinutes: 120,
-
           maximumAdvanceBookingDays: 30,
-
           cancellationCutoffMinutes: 720,
-
           rescheduleCutoffMinutes: 720,
-
           reserveExpiryRule: "APPOINTMENT_TIME",
-
           qrVerificationRule: "BEFORE_START_TIME",
-
           allowedBookingMethods: ["PAY_NOW", "DEPOSIT", "RESERVE_NOW"],
-
           depositEnabled: true,
-
           depositPercentage: 10,
         },
       });
 
-      // ================================================
-      // 4.6 CREATE DEFAULT HOURLY CAPACITY
-      // ================================================
+      // =================================================
+      // 5.7 CREATE DEFAULT HOURLY CAPACITY
+      // =================================================
 
       await tx.branchHourlyCapacity.createMany({
         data: DAYS_OF_WEEK.map((day) => ({
@@ -279,16 +304,14 @@ const createBranch = async (payload: ICreateBranchPayload) => {
         })),
       });
 
-      // ================================================
-      // 4.7 RETURN CREATED BRANCH
-      // ================================================
+      // =================================================
+      // 5.8 RETURN CREATED BRANCH
+      // =================================================
 
       return createdBranch;
     },
     {
-      // Keep PostgreSQL's isolation without reading a PostgreSQL-only enum at
-      // runtime: the Worker adapter provides stronger serialized transactions.
-      isolationLevel: "ReadCommitted",
+      isolationLevel: "Serializable",
       maxWait: 10000,
       timeout: 15000,
     },

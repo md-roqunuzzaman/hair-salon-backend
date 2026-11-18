@@ -1,11 +1,16 @@
 import allMigrations from '../.build/migrations.mjs';
 import { applyMigrations } from './migrations.mjs';
 import { verifyOptionalStaffUpgrade } from './optional-staff-migration-fixture.mjs';
+import { verifyBranchBrandUpgrade, runBranchBrandScenario } from './branch-brand-migration-fixture.mjs';
+import { verifySubscriptionUpgrade } from './subscription-migration-fixture.mjs';
+import { verifyBrandOwnerUpgrade } from './brand-owner-migration-fixture.mjs';
 const migrations = allMigrations.slice(0, 40);
 export class MigrationFixture {
   constructor(ctx) { this.storage = ctx.storage; }
-  async fetch() {
+  async fetch(request) {
     const storage = this.storage;
+    const path = new URL(request.url).pathname;
+    if (path.startsWith('/branch-brand/')) return Response.json(runBranchBrandScenario(storage, allMigrations.slice(0,42), path.split('/').at(-1)));
     applyMigrations(storage, migrations.slice(0, 1));
     storage.sql.exec("INSERT INTO User (id, name, email, passwordHash, updatedAt) VALUES ('customer', 'Customer', 'test@example.com', 'test', 1)");
     storage.sql.exec("INSERT INTO Wallet (id, customerId, paidBalance, bonusBalance, updatedAt) VALUES ('wallet', 'customer', 12345, 678, 1)");
@@ -521,8 +526,11 @@ export class MigrationFixture {
     addOverride('override-staff-cascade','override-staff','branch',1794355200000);
     storage.sql.exec("DELETE FROM Staff WHERE id='override-staff'");
     if(storage.sql.exec('SELECT COUNT(*) AS n FROM StaffScheduleOverride').one().n!==0||storage.sql.exec('PRAGMA foreign_key_check').toArray().length)throw new Error('Override staff cascade failed');
-    verifyOptionalStaffUpgrade(storage, allMigrations);
+    verifyOptionalStaffUpgrade(storage, allMigrations.slice(0, 41));
+    verifyBranchBrandUpgrade(storage, allMigrations.slice(0,42));
+    verifyBrandOwnerUpgrade(storage, allMigrations.slice(0,43));
+    verifySubscriptionUpgrade(storage, allMigrations);
     return Response.json({ preserved: true, repeatable: true, foreignKey: true, checksumProtected: true, currencyRequired: true });
   }
 }
-export default { fetch(request, env) { return env.DB.get(env.DB.idFromName('upgrade')).fetch(request); } };
+export default { fetch(request, env) { const path = new URL(request.url).pathname; return env.DB.get(env.DB.idFromName(path === '/' ? 'upgrade' : path)).fetch(request); } };

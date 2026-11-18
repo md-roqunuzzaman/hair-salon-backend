@@ -9,9 +9,42 @@ import { sendResponse } from "../../utils/sendResponse.js";
 import { branchService } from "./branch.service.js";
 import { AppError } from "../../utils/app-error.js";
 import { DEFAULT_LANGUAGE, isLanguage } from "../../utils/language.js";
+import { ICreateBranchPayload } from "./branch.interface.js";
 
 const createBranch = catchAsync(async (req: Request, res: Response) => {
-  const result = await branchService.createBranch(req.body);
+  // =====================================================
+  // 1. GET AUTHENTICATED USER
+  // =====================================================
+
+  const userId = req.user?.userId;
+
+  if (!userId) {
+    throw new AppError("Authentication required", 401);
+  }
+
+  // =====================================================
+  // 2. GET TARGET BRAND
+  // =====================================================
+
+  const brandId = req.body?.brandId;
+
+  if (typeof brandId !== "string" || !brandId.trim()) {
+    throw new AppError("Brand ID is required", 400);
+  }
+
+  // =====================================================
+  // 3. CREATE BRANCH
+  // =====================================================
+
+  const result = await branchService.createBranch(
+    req.body as ICreateBranchPayload,
+    userId,
+    brandId.trim(),
+  );
+
+  // =====================================================
+  // 4. SEND RESPONSE
+  // =====================================================
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,

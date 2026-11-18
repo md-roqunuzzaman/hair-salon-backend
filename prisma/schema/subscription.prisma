@@ -1,0 +1,83 @@
+enum SubscriptionStatus {
+    ACTIVE
+    SUSPENDED
+    CANCELLED
+}
+
+model SubscriptionPlan {
+    id          String  @id @default(uuid())
+    code        String  @unique
+    name        String
+    description String?
+    price       Decimal @db.Decimal(12, 2)
+    currency    String  @default("HKD")
+    isActive    Boolean @default(true)
+
+    subscriptions BrandSubscription[]
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}
+
+model BrandSubscription {
+    id      String @id @default(uuid())
+    brandId String
+    planId  String
+
+    status  SubscriptionStatus @default(ACTIVE)
+    startAt DateTime
+    endAt   DateTime
+
+    brand Brand @relation(fields: [brandId], references: [id], onDelete: Restrict)
+
+    plan SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+    addons      BrandSubscriptionAddon[]
+    basePrice   Decimal                  @default(0) @db.Decimal(12, 2)
+    addonsPrice Decimal                  @default(0) @db.Decimal(12, 2)
+    totalPrice  Decimal                  @default(0) @db.Decimal(12, 2)
+    currency    String                   @default("HKD")
+    createdAt   DateTime                 @default(now())
+    updatedAt   DateTime                 @updatedAt
+
+    @@index([brandId, status])
+    @@index([startAt, endAt])
+}
+
+model AddonFeature {
+    id          String  @id @default(uuid())
+    code        String  @unique
+    name        String
+    description String?
+    price       Decimal @db.Decimal(12, 2)
+    currency    String  @default("HKD")
+    isActive    Boolean @default(true)
+
+    subscriptions BrandSubscriptionAddon[]
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}
+
+model BrandSubscriptionAddon {
+    id             String @id @default(uuid())
+    subscriptionId String
+    addonId        String
+
+    enabled Boolean @default(true)
+
+    startAt DateTime
+    endAt   DateTime
+
+    subscription BrandSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+
+    addon       AddonFeature @relation(fields: [addonId], references: [id], onDelete: Restrict)
+    // SUPER_ADMIN configurable entitlement
+    branchLimit Int?
+    createdAt   DateTime     @default(now())
+    updatedAt   DateTime     @updatedAt
+
+    @@unique([subscriptionId, addonId])
+    @@index([addonId])
+    @@index([startAt, endAt])
+}

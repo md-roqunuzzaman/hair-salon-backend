@@ -1,12 +1,26 @@
 model Brand {
-  id            String   @id @default(uuid())
+  id            String  @id @default(uuid())
   name          String
   description   String?
   phone         String?
   email         String?
   logoObjectKey String?
   translations  Json?
-  banners       Banner[]
+
+  // =====================================================
+  // MERCHANT / BRAND OWNER
+  // =====================================================
+
+  ownerId String?
+
+  owner         User?               @relation("BrandOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  subscriptions BrandSubscription[]
+  // =====================================================
+  // EXISTING RELATIONS
+  // =====================================================
+
+  banners  Banner[]
+  branches Branch[]
 
   // =====================================================
   // BRAND INTERNATIONAL CONFIGURATION
@@ -15,18 +29,37 @@ model Brand {
   countryCode String @default("HK")
   currency    String @default("HKD")
   timezone    String @default("Asia/Hong_Kong")
-  // Banner carousel override settings
 
-  primaryColor           String                  @default("#0F766E")
-  secondaryColor         String                  @default("#B45309")
-  backgroundColor        String                  @default("#F3F1EA")
-  surfaceColor           String                  @default("#FBFAF6")
-  textColor              String                  @default("#1A1813")
-  mutedTextColor         String                  @default("#8B8676")
-  lineColor              String                  @default("#E2DED3")
-  onPrimaryColor         String                  @default("#FFFFFF")
+  // =====================================================
+  // BRAND THEME CONFIGURATION
+  // =====================================================
+
+  primaryColor    String @default("#0F766E")
+  secondaryColor  String @default("#B45309")
+  backgroundColor String @default("#F3F1EA")
+  surfaceColor    String @default("#FBFAF6")
+  textColor       String @default("#1A1813")
+  mutedTextColor  String @default("#8B8676")
+  lineColor       String @default("#E2DED3")
+  onPrimaryColor  String @default("#FFFFFF")
+
+  // =====================================================
+  // EMAIL & BANNER SETTINGS
+  // =====================================================
+
   emailSetting           BrandEmailSetting?
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
   bannerCarouselSettings BannerCarouselSetting[]
+
+  // =====================================================
+  // TIMESTAMPS
+  // =====================================================
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // =====================================================
+  // INDEXES
+  // =====================================================
+
+  @@index([ownerId])
 }

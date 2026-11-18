@@ -2,6 +2,34 @@
 import { generateOrderNumber } from '../../src/app/utils/generateOrderNumber.ts';
 
 export async function noShowFixture(db, storage, body) {
+  if (body.preparePolicies) {
+    // Keep the test's relative deadlines safely away from local midnight.
+    const hkHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Hong_Kong', hour: 'numeric', hourCycle: 'h23' }).format(new Date()));
+    const timezone = hkHour >= 4 && hkHour <= 20 ? 'Asia/Hong_Kong' : 'Pacific/Honolulu';
+    const offset = timezone === 'Asia/Hong_Kong' ? 8 : -10;
+    const localNow = new Date(Date.now() + offset * 3600000);
+    const date = new Date(localNow.toISOString().slice(0, 10));
+    const minutes = localNow.getUTCHours() * 60 + localNow.getUTCMinutes();
+    const time = value => `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
+    const cases = {};
+    for (const [name, rule, startOffset, endOffset] of [
+      ['startEligible', 'BEFORE_START_TIME', -20, 40],
+      ['startGrace', 'BEFORE_START_TIME', -5, 55],
+      ['endNotEligible', 'BEFORE_END_TIME', -20, 40],
+      ['endEligible', 'BEFORE_END_TIME', -80, -20],
+    ]) {
+      const branch = await db.branch.create({ data: { name: `No-show ${name}`, address: 'Synthetic policy test', bookingPolicy: { create: { qrVerificationRule: rule } } } });
+      const customer = await db.user.create({ data: { name, email: `policy-${crypto.randomUUID()}@example.com`, passwordHash: 'unused' } });
+      const row = await db.appointment.create({ data: {
+        orderNumber: generateOrderNumber(), customerId: customer.id, branchId: branch.id,
+        staffId: null, bookingMethod: 'RESERVE_NOW', appointmentStatus: 'RESERVED', paymentStatus: 'UNPAID',
+        date, startTime: time(minutes + startOffset), endTime: time(minutes + endOffset), timezone,
+        price: 100, currency: 'HKD', durationMinutes: 60, itemName: 'Synthetic QR-policy no-show',
+      } });
+      cases[name] = row.id;
+    }
+    return cases;
+  }
   if (body.prepare) {
     const oldDate = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
     const futureDate = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);

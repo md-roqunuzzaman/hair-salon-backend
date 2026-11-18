@@ -39,6 +39,7 @@ import { BannerRoutes } from "./app/module/banner/banner.router.js";
 import { staffPortfolioRoutes } from "./app/module/staff-portfolio/staff-portfolio.route.js";
 import { BrandEmailSettingRoutes } from "./app/module/brand-email-setting/brand-email-setting.route.js";
 import { branchPortfolioRoutes } from "./app/module/branch-portfolio/branch-portfolio.route.js";
+import { platformPricingRoutes } from "./app/module/platform/platform.pricing.route.js";
 
 // =====================================================
 // 1. CREATE EXPRESS APPLICATION
@@ -238,6 +239,11 @@ app.use("/api/v1/cancellation-refund", CancellationRefundRoutes);
 
 app.use("/api/v1/brand-email-settings", BrandEmailSettingRoutes);
 
+// =====================================================
+// 18. SUPER ADMIN SAAS PRICING MANAGEMENT
+// =====================================================
+
+app.use("/api/v1/platform/pricing", platformPricingRoutes);
 // =====================================================
 // 18. ROOT ROUTE
 // =====================================================

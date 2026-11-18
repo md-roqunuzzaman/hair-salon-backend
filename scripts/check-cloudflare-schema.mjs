@@ -66,6 +66,11 @@ try {
   const [optionalStaffUpgrade, ...optionalStaffTriggers] = (await readFile('cloudflare/migrations/0041_appointment_staff_optional.sql','utf8')).split(/(?=CREATE TRIGGER)/);
   await apply(actual, optionalStaffUpgrade);
   for (const trigger of optionalStaffTriggers) await actual.prepare(trigger).run();
+  await apply(actual, await readFile('cloudflare/migrations/0042_branch_brand_relation.sql','utf8'));
+  await apply(actual, await readFile('cloudflare/migrations/0043_brand_owner_relation.sql','utf8'));
+  const [subscriptionSchema, ...subscriptionTriggers] = (await readFile('cloudflare/migrations/0044_subscription_pricing.sql','utf8')).split(/(?=CREATE TRIGGER)/);
+  await apply(actual, subscriptionSchema);
+  for (const trigger of subscriptionTriggers) await actual.prepare(trigger).run();
   // v16 enforces this required field with triggers to retain the referenced table.
   // Verify both exact definitions before treating their enforcement as NOT NULL.
   for (const trigger of requiredTriggers) {

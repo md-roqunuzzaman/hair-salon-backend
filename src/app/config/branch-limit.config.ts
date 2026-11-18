@@ -1,3 +1,3 @@
 export const branchLimitConfig = {
-  maxBranches: 8,
+  maxBranches: 9,
 } as const;

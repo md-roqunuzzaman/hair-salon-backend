@@ -6,6 +6,7 @@ model User {
   passwordHash           String
   preferredLanguage      String                @default("en")
   role                   Role                  @default(CUSTOMER)
+  ownedBrands            Brand[]               @relation("BrandOwner")
   status                 UserStatus            @default(ACTIVE)
   emailVerified          Boolean               @default(false)
   emailVerifiedAt        DateTime?

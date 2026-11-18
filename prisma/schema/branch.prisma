@@ -9,9 +9,24 @@ model Branch {
   latitude       Float?
   longitude      Float?
 
-  // Portfolio relations
+  // =====================================================
+  // MULTI-TENANT BRAND OWNERSHIP
+  // =====================================================
+
+  brandId String?
+
+  brand Brand? @relation(fields: [brandId], references: [id], onDelete: Restrict)
+
+  // =====================================================
+  // PORTFOLIO RELATIONS
+  // =====================================================
+
   branchPortfolioCases BranchPortfolioCase[]
   staffPortfolioCases  StaffPortfolioCase[]
+
+  // =====================================================
+  // EXISTING RELATIONS
+  // =====================================================
 
   bannerCarouselSettings          BannerCarouselSetting[]
   status                          BranchStatus                     @default(ACTIVE)
@@ -36,7 +51,12 @@ model Branch {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // =====================================================
+  // INDEXES
+  // =====================================================
+
   @@index([status, latitude, longitude])
+  @@index([brandId])
 }
 
 model BranchBusinessHour {

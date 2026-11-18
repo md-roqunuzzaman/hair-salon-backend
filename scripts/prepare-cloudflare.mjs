@@ -1,7 +1,8 @@
 import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 
-const files = (await readdir('prisma/schema')).filter(f => f.endsWith('.prisma')).sort();
-const source = (await Promise.all(files.map(f => readFile(`prisma/schema/${f}`, 'utf8')))).join('\n');
+const sourceDirectory = process.argv.find(arg => arg.startsWith('--schema-source='))?.slice('--schema-source='.length) ?? 'prisma/schema';
+const files = (await readdir(sourceDirectory)).filter(f => f.endsWith('.prisma')).sort();
+const source = (await Promise.all(files.map(f => readFile(`${sourceDirectory}/${f}`, 'utf8')))).join('\n');
 const modelNames = [...source.matchAll(/model\s+(\w+)\s*\{/g)].map(m => m[1]);
 const enumNames = [...source.matchAll(/enum\s+(\w+)\s*\{/g)].map(m => m[1]);
 const metadata = {};

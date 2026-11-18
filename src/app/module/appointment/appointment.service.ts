@@ -22,6 +22,7 @@ import {
   PaymentPurpose,
   PaymentStatus,
   Prisma,
+  QrVerificationRule,
   Role,
   ServiceStatus,
 } from "../../../../generated/prisma/client.js";
@@ -8627,9 +8628,9 @@ const autoMarkNoShowAppointments = async (): Promise<{
   const batchSize = 100;
   const gracePeriodMinutes = 15;
   const runStartedAt = new Date();
-  // date is a UTC-midnight calendar label, not the appointment instant. Include
-  // local dates up to UTC+14; the saved-timezone deadline checks below decide
-  // eligibility. Otherwise, e.g. 01:00 Hong Kong bookings wait until 08:00.
+
+  // Date is a UTC-midnight calendar label.
+  // Include local dates up to UTC+14.
   const latestLocalDate = new Date(
     runStartedAt.getTime() + 14 * 60 * 60 * 1000,
   );
@@ -8645,7 +8646,9 @@ const autoMarkNoShowAppointments = async (): Promise<{
     appointmentStatus: {
       in: [AppointmentStatus.RESERVED, AppointmentStatus.CONFIRMED],
     },
+
     qrVerifiedAt: null,
+
     date: {
       lte: latestLocalDate,
     },
@@ -8664,6 +8667,7 @@ const autoMarkNoShowAppointments = async (): Promise<{
 
       select: {
         id: true,
+        branchId: true,
         date: true,
         startTime: true,
         endTime: true,
@@ -8688,6 +8692,29 @@ const autoMarkNoShowAppointments = async (): Promise<{
 
     for (const candidate of candidates) {
       try {
+        // ===============================================
+        // 4.1 RESOLVE BRANCH QR POLICY
+        // ===============================================
+
+        const branchPolicy = await prisma.branchBookingPolicy.findUnique({
+          where: {
+            branchId: candidate.branchId,
+          },
+
+          select: {
+            qrVerificationRule: true,
+          },
+        });
+
+        // Match Prisma model default.
+        const qrVerificationRule =
+          branchPolicy?.qrVerificationRule ??
+          QrVerificationRule.BEFORE_START_TIME;
+
+        // ===============================================
+        // 4.2 RESOLVE APPOINTMENT TIMEZONE
+        // ===============================================
+
         const timezone = await appointmentTimezone(prisma, candidate.id);
 
         const dateKey = candidate.date.toISOString().slice(0, 10);
@@ -8704,15 +8731,25 @@ const autoMarkNoShowAppointments = async (): Promise<{
           timezone,
         );
 
-        // Current booking model assumes same-day
-        // appointments. Never mark an unsupported
-        // overnight interval as NO_SHOW.
-        if (appointmentEndAt <= appointmentStartAt) {
+        if (
+          Number.isNaN(appointmentStartAt.getTime()) ||
+          Number.isNaN(appointmentEndAt.getTime()) ||
+          appointmentEndAt <= appointmentStartAt
+        ) {
           continue;
         }
 
+        // ===============================================
+        // 4.3 POLICY-BASED NO_SHOW DEADLINE
+        // ===============================================
+
+        const noShowReferenceAt =
+          qrVerificationRule === QrVerificationRule.BEFORE_START_TIME
+            ? appointmentStartAt
+            : appointmentEndAt;
+
         const noShowEligibleAt = new Date(
-          appointmentEndAt.getTime() + gracePeriodMinutes * 60_000,
+          noShowReferenceAt.getTime() + gracePeriodMinutes * 60_000,
         );
 
         if (
@@ -8735,6 +8772,7 @@ const autoMarkNoShowAppointments = async (): Promise<{
 
               select: {
                 id: true,
+                branchId: true,
                 customerId: true,
 
                 date: true,
@@ -8756,6 +8794,10 @@ const autoMarkNoShowAppointments = async (): Promise<{
               return false;
             }
 
+            // ===========================================
+            // 5.1 REVALIDATE CURRENT STATUS
+            // ===========================================
+
             if (
               (current.appointmentStatus !== AppointmentStatus.RESERVED &&
                 current.appointmentStatus !== AppointmentStatus.CONFIRMED) ||
@@ -8763,6 +8805,26 @@ const autoMarkNoShowAppointments = async (): Promise<{
             ) {
               return false;
             }
+
+            // ===========================================
+            // 5.2 REVALIDATE CURRENT BRANCH POLICY
+            // ===========================================
+
+            const currentBranchPolicy = await tx.branchBookingPolicy.findUnique(
+              {
+                where: {
+                  branchId: current.branchId,
+                },
+
+                select: {
+                  qrVerificationRule: true,
+                },
+              },
+            );
+
+            const currentQrVerificationRule =
+              currentBranchPolicy?.qrVerificationRule ??
+              QrVerificationRule.BEFORE_START_TIME;
 
             // ===========================================
             // 6. REVALIDATE APPOINTMENT DEADLINE
@@ -8784,12 +8846,25 @@ const autoMarkNoShowAppointments = async (): Promise<{
               currentTimezone,
             );
 
-            if (currentEndAt <= currentStartAt) {
+            if (
+              Number.isNaN(currentStartAt.getTime()) ||
+              Number.isNaN(currentEndAt.getTime()) ||
+              currentEndAt <= currentStartAt
+            ) {
               return false;
             }
 
+            // ===========================================
+            // 6.1 POLICY-BASED DEADLINE
+            // ===========================================
+
+            const currentReferenceAt =
+              currentQrVerificationRule === QrVerificationRule.BEFORE_START_TIME
+                ? currentStartAt
+                : currentEndAt;
+
             const currentEligibleAt = new Date(
-              currentEndAt.getTime() + gracePeriodMinutes * 60_000,
+              currentReferenceAt.getTime() + gracePeriodMinutes * 60_000,
             );
 
             const markedAt = new Date();
@@ -8807,9 +8882,16 @@ const autoMarkNoShowAppointments = async (): Promise<{
 
             const previousStatus = current.appointmentStatus;
 
+            const deadlineDescription =
+              currentQrVerificationRule === QrVerificationRule.BEFORE_START_TIME
+                ? "appointment start time"
+                : "appointment end time";
+
             const changed = await tx.appointment.updateMany({
               where: {
                 id: current.id,
+
+                branchId: current.branchId,
 
                 appointmentStatus: previousStatus,
 
@@ -8829,8 +8911,8 @@ const autoMarkNoShowAppointments = async (): Promise<{
                 noShowReason:
                   "Automatically marked as no-show: " +
                   "attendance was not verified within " +
-                  "15 minutes after the scheduled " +
-                  "appointment end time.",
+                  `${gracePeriodMinutes} minutes after the scheduled ` +
+                  `${deadlineDescription}.`,
               },
             });
 
@@ -8900,14 +8982,18 @@ const autoMarkNoShowAppointments = async (): Promise<{
                   newStatus: AppointmentStatus.NO_SHOW,
 
                   paymentStatus: current.paymentStatus,
-
                   bookingMethod: current.bookingMethod,
-
                   groupPurchaseId: current.groupPurchaseId,
 
                   qrVerifiedAt: null,
 
+                  qrVerificationRule: currentQrVerificationRule,
+
+                  appointmentStartAt: currentStartAt.toISOString(),
+
                   appointmentEndAt: currentEndAt.toISOString(),
+
+                  noShowReferenceAt: currentReferenceAt.toISOString(),
 
                   gracePeriodMinutes,
 

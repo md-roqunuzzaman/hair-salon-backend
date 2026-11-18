@@ -1,5 +1,13 @@
 # Cloudflare deployment
 
+## Subscription schema and pricing (v44), 2026-11-18
+
+The current schema adds SubscriptionPlan, AddonFeature, BrandSubscription and BrandSubscriptionAddon with integer minor-unit money guards. The staging-only `npm run seed:saas-pricing:cloudflare` command is read-only by default; `-- --apply` inserts missing definitions while preserving customized pricing. See [the v44 release report](../docs/subscription-cloudflare-release.md) for checks and live deployment status.
+
+## Complete Brand ownership schema (v43) - historical preparation, 2026-11-18
+
+The normal Cloudflare workflow now includes nullable Branch.brandId (v42), nullable Brand.ownerId/User.ownedBrands (v43), and SUPER_ADMIN in the generated client. Branch singleton backfill is unchanged; ownerIds and user roles are never guessed or rewritten. Both Prisma schemas, TypeScript, migration preservation/rollback, seven real Worker/production tests and staging upload dry-run pass. Temporary Branch-only snapshot helpers were retired. See [the complete schema report and normal commands](../docs/latest-schema-cloudflare-release.md). No deployment, live backfill, privileged-account seeding or secret change was performed.
+
 ## Optional appointment staff (v41) - local schema preparation, 2026-11-16
 
 The Cloudflare schema and generated client support nullable `Appointment.staffId`. The v41 migration preserves appointments, payment links, reviews/images, indexes and money guards. Release follow-up resolves old fixtures/mocks and fixes override/package-eligibility staff-free fallback bugs. Final local checks pass: 66 booking, 48 API, 63 Worker/security and two production-artifact TAP tests (179 total; zero failed/skipped/cancelled), TypeScript, both Prisma validations, schema parity, populated migration/rollback and staging upload dry-run. See [failure classification, changed files, final results and rollout limits](../docs/optional-appointment-staff-cloudflare.md). The candidate is ready for controlled staging rollout after live ledger/recovery verification. No deployment, live data, secret or delivery-flag change was performed.

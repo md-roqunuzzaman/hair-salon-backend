@@ -3,6 +3,7 @@ enum Role {
   STAFF
   BRANCH_MANAGER
   BRAND_OWNER
+  SUPER_ADMIN
 }
 
 enum UserStatus {

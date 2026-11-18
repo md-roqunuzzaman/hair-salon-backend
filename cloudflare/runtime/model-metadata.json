@@ -222,6 +222,7 @@
   "Branch": {
     "money": {},
     "relations": {
+      "brand": "Brand",
       "branchPortfolioCases": "BranchPortfolioCase",
       "staffPortfolioCases": "StaffPortfolioCase",
       "bannerCarouselSettings": "BannerCarouselSetting",
@@ -254,6 +255,7 @@
       "translations": "Json",
       "latitude": "Float",
       "longitude": "Float",
+      "brandId": "String",
       "status": "BranchStatus",
       "createdAt": "DateTime",
       "updatedAt": "DateTime"
@@ -391,7 +393,10 @@
   "Brand": {
     "money": {},
     "relations": {
+      "owner": "User",
+      "subscriptions": "BrandSubscription",
       "banners": "Banner",
+      "branches": "Branch",
       "emailSetting": "BrandEmailSetting",
       "bannerCarouselSettings": "BannerCarouselSetting"
     },
@@ -404,6 +409,7 @@
       "email": "String",
       "logoObjectKey": "String",
       "translations": "Json",
+      "ownerId": "String",
       "countryCode": "String",
       "currency": "String",
       "timezone": "String",
@@ -1204,9 +1210,110 @@
       "updatedAt": "DateTime"
     }
   },
+  "SubscriptionPlan": {
+    "money": {
+      "price": {
+        "scale": 2,
+        "max": "999999999999"
+      }
+    },
+    "relations": {
+      "subscriptions": "BrandSubscription"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "code": "String",
+      "name": "String",
+      "description": "String",
+      "price": "Decimal",
+      "currency": "String",
+      "isActive": "Boolean",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "BrandSubscription": {
+    "money": {
+      "basePrice": {
+        "scale": 2,
+        "max": "999999999999"
+      },
+      "addonsPrice": {
+        "scale": 2,
+        "max": "999999999999"
+      },
+      "totalPrice": {
+        "scale": 2,
+        "max": "999999999999"
+      }
+    },
+    "relations": {
+      "brand": "Brand",
+      "plan": "SubscriptionPlan",
+      "addons": "BrandSubscriptionAddon"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "brandId": "String",
+      "planId": "String",
+      "status": "SubscriptionStatus",
+      "startAt": "DateTime",
+      "endAt": "DateTime",
+      "basePrice": "Decimal",
+      "addonsPrice": "Decimal",
+      "totalPrice": "Decimal",
+      "currency": "String",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "AddonFeature": {
+    "money": {
+      "price": {
+        "scale": 2,
+        "max": "999999999999"
+      }
+    },
+    "relations": {
+      "subscriptions": "BrandSubscriptionAddon"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "code": "String",
+      "name": "String",
+      "description": "String",
+      "price": "Decimal",
+      "currency": "String",
+      "isActive": "Boolean",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
+  "BrandSubscriptionAddon": {
+    "money": {},
+    "relations": {
+      "subscription": "BrandSubscription",
+      "addon": "AddonFeature"
+    },
+    "arrays": [],
+    "scalars": {
+      "id": "String",
+      "subscriptionId": "String",
+      "addonId": "String",
+      "enabled": "Boolean",
+      "startAt": "DateTime",
+      "endAt": "DateTime",
+      "createdAt": "DateTime",
+      "updatedAt": "DateTime"
+    }
+  },
   "User": {
     "money": {},
     "relations": {
+      "ownedBrands": "Brand",
       "groupPurchases": "GroupPurchase",
       "staffProfile": "Staff",
       "managedBranches": "BranchManagerBranch",

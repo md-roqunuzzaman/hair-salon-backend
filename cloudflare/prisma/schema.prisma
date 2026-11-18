@@ -287,9 +287,24 @@ model Branch {
   latitude       Float?
   longitude      Float?
 
-  // Portfolio relations
+  // =====================================================
+  // MULTI-TENANT BRAND OWNERSHIP
+  // =====================================================
+
+  brandId String?
+
+  brand Brand? @relation(fields: [brandId], references: [id], onDelete: Restrict)
+
+  // =====================================================
+  // PORTFOLIO RELATIONS
+  // =====================================================
+
   branchPortfolioCases BranchPortfolioCase[]
   staffPortfolioCases  StaffPortfolioCase[]
+
+  // =====================================================
+  // EXISTING RELATIONS
+  // =====================================================
 
   bannerCarouselSettings          BannerCarouselSetting[]
   status                          BranchStatus                     @default(ACTIVE)
@@ -314,7 +329,12 @@ model Branch {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // =====================================================
+  // INDEXES
+  // =====================================================
+
   @@index([status, latitude, longitude])
+  @@index([brandId])
 }
 
 model BranchBusinessHour {
@@ -450,14 +470,28 @@ model BranchPortfolioCaseImage {
 }
 
 model Brand {
-  id            String   @id @default(uuid())
+  id            String  @id @default(uuid())
   name          String
   description   String?
   phone         String?
   email         String?
   logoObjectKey String?
   translations  Json?
-  banners       Banner[]
+
+  // =====================================================
+  // MERCHANT / BRAND OWNER
+  // =====================================================
+
+  ownerId String?
+
+  owner         User?               @relation("BrandOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  subscriptions BrandSubscription[]
+  // =====================================================
+  // EXISTING RELATIONS
+  // =====================================================
+
+  banners  Banner[]
+  branches Branch[]
 
   // =====================================================
   // BRAND INTERNATIONAL CONFIGURATION
@@ -466,20 +500,39 @@ model Brand {
   countryCode String @default("HK")
   currency    String @default("HKD")
   timezone    String @default("Asia/Hong_Kong")
-  // Banner carousel override settings
 
-  primaryColor           String                  @default("#0F766E")
-  secondaryColor         String                  @default("#B45309")
-  backgroundColor        String                  @default("#F3F1EA")
-  surfaceColor           String                  @default("#FBFAF6")
-  textColor              String                  @default("#1A1813")
-  mutedTextColor         String                  @default("#8B8676")
-  lineColor              String                  @default("#E2DED3")
-  onPrimaryColor         String                  @default("#FFFFFF")
+  // =====================================================
+  // BRAND THEME CONFIGURATION
+  // =====================================================
+
+  primaryColor    String @default("#0F766E")
+  secondaryColor  String @default("#B45309")
+  backgroundColor String @default("#F3F1EA")
+  surfaceColor    String @default("#FBFAF6")
+  textColor       String @default("#1A1813")
+  mutedTextColor  String @default("#8B8676")
+  lineColor       String @default("#E2DED3")
+  onPrimaryColor  String @default("#FFFFFF")
+
+  // =====================================================
+  // EMAIL & BANNER SETTINGS
+  // =====================================================
+
   emailSetting           BrandEmailSetting?
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
   bannerCarouselSettings BannerCarouselSetting[]
+
+  // =====================================================
+  // TIMESTAMPS
+  // =====================================================
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // =====================================================
+  // INDEXES
+  // =====================================================
+
+  @@index([ownerId])
 }
 
 model BrandEmailSetting {
@@ -590,6 +643,7 @@ enum Role {
   STAFF
   BRANCH_MANAGER
   BRAND_OWNER
+  SUPER_ADMIN
 }
 
 enum UserStatus {
@@ -1511,6 +1565,89 @@ model StaffPortfolioCaseImage {
   @@index([caseId, sortOrder])
 }
 
+enum SubscriptionStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+model SubscriptionPlan {
+  id          String  @id @default(uuid())
+  code        String  @unique
+  name        String
+  description String?
+  price       BigInt
+  currency    String  @default("HKD")
+  isActive    Boolean @default(true)
+
+  subscriptions BrandSubscription[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BrandSubscription {
+  id      String @id @default(uuid())
+  brandId String
+  planId  String
+
+  status  SubscriptionStatus @default(ACTIVE)
+  startAt DateTime
+  endAt   DateTime
+
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Restrict)
+
+  plan SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  addons      BrandSubscriptionAddon[]
+  basePrice   BigInt                  @default(0)
+  addonsPrice BigInt                  @default(0)
+  totalPrice  BigInt                  @default(0)
+  currency    String                   @default("HKD")
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@index([brandId, status])
+  @@index([startAt, endAt])
+}
+
+model AddonFeature {
+  id          String  @id @default(uuid())
+  code        String  @unique
+  name        String
+  description String?
+  price       BigInt
+  currency    String  @default("HKD")
+  isActive    Boolean @default(true)
+
+  subscriptions BrandSubscriptionAddon[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BrandSubscriptionAddon {
+  id             String @id @default(uuid())
+  subscriptionId String
+  addonId        String
+
+  enabled Boolean @default(true)
+
+  startAt DateTime
+  endAt   DateTime
+
+  subscription BrandSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+
+  addon AddonFeature @relation(fields: [addonId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([subscriptionId, addonId])
+  @@index([addonId])
+  @@index([startAt, endAt])
+}
+
 model User {
   id                     String                @id @default(uuid())
   name                   String
@@ -1519,6 +1656,7 @@ model User {
   passwordHash           String
   preferredLanguage      String                @default("en")
   role                   Role                  @default(CUSTOMER)
+  ownedBrands            Brand[]               @relation("BrandOwner")
   status                 UserStatus            @default(ACTIVE)
   emailVerified          Boolean               @default(false)
   emailVerifiedAt        DateTime?
