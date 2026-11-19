@@ -3,14 +3,34 @@ import { Router } from "express";
 import { Role } from "../../../../generated/prisma/client.js";
 
 import { auth } from "../../middleware/auth.js";
-
+import { requireFeature } from "../../middleware/requireFeature.js";
 import { validateRequest } from "../../middleware/validateRequest.js";
 
 import { packageController } from "./package.controller.js";
-
 import { packageValidation } from "./package.validation.js";
 
 const router = Router();
+
+// =====================================================
+// GROUP BUYING FEATURE LICENSE PROTECTION
+// =====================================================
+//
+// Only GROUP_PURCHASE_PACKAGE is supported.
+//
+// GROUP_BUYING ACTIVE:
+//   All package endpoints are available.
+//
+// GROUP_BUYING DISABLED / EXPIRED:
+//   All package endpoints return 403.
+//
+// Existing database records are preserved.
+// =====================================================
+
+router.use(requireFeature("GROUP_BUYING"));
+
+// =====================================================
+// CREATE PACKAGE
+// =====================================================
 
 router.post(
   "/",
@@ -19,13 +39,25 @@ router.post(
   packageController.createPackage,
 );
 
+// =====================================================
+// GET PACKAGES
+// =====================================================
+
 router.get(
   "/",
   auth(Role.BRAND_OWNER, Role.CUSTOMER, Role.BRANCH_MANAGER, Role.STAFF),
   packageController.getPackages,
 );
 
+// =====================================================
+// GET PACKAGE BY ID
+// =====================================================
+
 router.get("/:packageId", packageController.getPackageById);
+
+// =====================================================
+// UPDATE PACKAGE
+// =====================================================
 
 router.patch(
   "/:packageId",
@@ -35,15 +67,8 @@ router.patch(
 );
 
 // =====================================================
-// GET GROUP PURCHASE REFUND POLICY
+// UPDATE PACKAGE STATUS
 // =====================================================
-
-
-
-// =====================================================
-// CREATE / UPDATE GROUP PURCHASE REFUND POLICY
-// =====================================================
-
 
 router.patch(
   "/:packageId/status",
@@ -52,12 +77,20 @@ router.patch(
   packageController.updatePackageStatus,
 );
 
+// =====================================================
+// UPDATE PACKAGE LISTING
+// =====================================================
+
 router.patch(
   "/:packageId/listing",
   auth(Role.BRAND_OWNER),
   validateRequest(packageValidation.updatePackageListingValidationSchema),
   packageController.updatePackageListing,
 );
+
+// =====================================================
+// ASSIGN PACKAGE TO BRANCHES
+// =====================================================
 
 router.put(
   "/:packageId/branches",
@@ -67,14 +100,7 @@ router.put(
 );
 
 // =====================================================
-// GET GROUP PURCHASE CANCELLATION POLICY
+// EXPORT ROUTES
 // =====================================================
-
-
-
-// =====================================================
-// UPDATE GROUP PURCHASE CANCELLATION POLICY
-// =====================================================
-
 
 export const PackageRoutes = router;

@@ -20,6 +20,7 @@ const { walletService } = await import('../src/app/module/wallet/wallet.service.
 const { jwtUtils } = await import('../src/app/utils/jwt.ts');
 const { redisClient } = await import('../src/app/lib/redis.ts');
 const { default: app } = await import('../src/app.ts');
+const { featureLicenseConfig } = await import('../src/app/config/feature-license.config.ts');
 
 const branchId = '11111111-1111-4111-8111-111111111111';
 const serviceId = '22222222-2222-4222-8222-222222222222';
@@ -40,6 +41,11 @@ function stubDelegate(t, model, method, implementation) {
 }
 
 function fixture(t) {
+  // These financial scenarios describe a licensed client. Disabled-license
+  // behavior has a separate real Worker suite; keep production WALLET=false.
+  const walletEnabled = featureLicenseConfig.features.WALLET.enabled;
+  featureLicenseConfig.features.WALLET.enabled = true;
+  t.after(() => { featureLicenseConfig.features.WALLET.enabled = walletEnabled; });
   stubDelegate(t, 'brand', 'findFirst', async () => data.brandSettings);
   t.mock.method(redisClient, 'get', async key => key === 'auth:refresh:customer:booking-test-session' ? 'valid' : null);
   t.mock.method(console, 'log', () => {});

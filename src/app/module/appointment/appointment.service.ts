@@ -71,6 +71,7 @@ import {
   assertTimezoneDuration,
 } from "../../utils/brand-timezone.utils.js";
 import { cancelRemainingStripePayment } from "../payment/payment.service.js";
+import { isFeatureAvailable } from "../../utils/featureLicense.js";
 
 const PAY_NOW_HOLD_MINUTES = 5;
 const MAX_TRANSACTION_RETRIES = 3;
@@ -1057,6 +1058,17 @@ const createPayNowAppointment = async (
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
   // =====================================================
+  // 0. HAIRSTYLIST FEATURE LICENSE
+  // =====================================================
+
+  if (staffId && !isFeatureAvailable("HAIRSTYLIST")) {
+    throw new AppError(
+      "Hairstylist selection is unavailable because the feature is disabled or expired.",
+      403,
+    );
+  }
+
+  // =====================================================
   // 1. INITIAL AVAILABILITY CHECK
   // =====================================================
   // The availability service automatically determines:
@@ -1560,6 +1572,17 @@ const createDepositAppointment = async (
   await testPrismaTransaction();
 
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
+
+  // =====================================================
+  // 0. HAIRSTYLIST FEATURE LICENSE
+  // =====================================================
+
+  if (staffId && !isFeatureAvailable("HAIRSTYLIST")) {
+    throw new AppError(
+      "Hairstylist selection is unavailable because the feature is disabled or expired.",
+      403,
+    );
+  }
 
   // =====================================================
   // 1. INITIAL AVAILABILITY CHECK
@@ -2108,6 +2131,17 @@ const createReserveAppointment = async (
 
   const { branchId, serviceId, packageId, staffId, date, startTime } = payload;
 
+  // =====================================================
+  // 0. HAIRSTYLIST FEATURE LICENSE
+  // =====================================================
+
+  if (staffId && !isFeatureAvailable("HAIRSTYLIST")) {
+    throw new AppError(
+      "Hairstylist selection is unavailable because the feature is disabled or expired.",
+      403,
+    );
+  }
+
   console.log("\n========== RESERVE NOW BOOKING START ==========");
   console.log("Branch ID:", branchId);
   console.log("Service ID:", serviceId);
@@ -2404,7 +2438,7 @@ const createReserveAppointment = async (
           // 8. RESOLVE STAFF OR STAFF-FREE BOOKING
           // =================================================
           // Staff configured -> staff ID required
-          // No staff configured -> null
+          // No configured staff -> null
           //
           // resolveAvailableStaff() enforces the rule
           // inside the Serializable transaction.
@@ -4241,6 +4275,17 @@ const rescheduleAppointment = async (
   const { date, startTime, staffId } = payload;
 
   // =====================================================
+  // 0. HAIRSTYLIST FEATURE LICENSE
+  // =====================================================
+
+  if (staffId && !isFeatureAvailable("HAIRSTYLIST")) {
+    throw new AppError(
+      "Hairstylist selection is unavailable because the feature is disabled or expired.",
+      403,
+    );
+  }
+
+  // =====================================================
   // 1. LOAD CURRENT APPOINTMENT
   // =====================================================
 
@@ -4788,6 +4833,7 @@ const rescheduleAppointment = async (
 
   throw new AppError("The selected time slot is no longer available", 409);
 };
+
 const getAppointmentQr = async (
   appointmentId: string,
   customerId: string,

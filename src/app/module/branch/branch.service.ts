@@ -38,8 +38,7 @@ import {
   IUpdateBranchStatusPayload,
   IUpdateBusinessHoursPayload,
 } from "./branch.interface.js";
-import { branchLimitConfig } from "../../config/branch-limit.config.js";
-import { assertCanCreateBranch } from "../platform/platform.entitlement.service.js";
+import { assertCanCreateBranch } from "./branch-limit.service.js";
 
 // =====================================================
 // BRANCH LOCALIZATION HELPERS
@@ -171,153 +170,200 @@ const createBranch = async (
   ] as const;
 
   // =====================================================
-  // 5. CREATE BRANCH TRANSACTIONALLY
+  // 5. TRANSACTION RETRY CONFIGURATION
   // =====================================================
 
-  const branch = await prisma.$transaction(
-    async (tx) => {
-      // =================================================
-      // 5.1 VERIFY BRAND OWNERSHIP
-      // =================================================
+  const MAX_TRANSACTION_ATTEMPTS = 3;
 
-      const brand = await tx.brand.findUnique({
-        where: {
-          id: brandId,
-        },
-        select: {
-          id: true,
-          ownerId: true,
-        },
-      });
+  // =====================================================
+  // 6. CREATE BRANCH TRANSACTIONALLY
+  // =====================================================
 
-      if (!brand) {
-        throw new AppError("Brand not found", 404);
+  for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt++) {
+    try {
+      const branch = await prisma.$transaction(
+        async (tx) => {
+          // =============================================
+          // 6.1 VERIFY BRAND OWNERSHIP
+          // =============================================
+
+          const brand = await tx.brand.findUnique({
+            where: {
+              id: brandId,
+            },
+            select: {
+              id: true,
+              ownerId: true,
+            },
+          });
+
+          if (!brand) {
+            throw new AppError("Brand not found", 404);
+          }
+
+          // =============================================
+          // 6.2 VERIFY BRAND OWNER AUTHORIZATION
+          // =============================================
+
+          const user = await tx.user.findUnique({
+            where: {
+              id: userId,
+            },
+            select: {
+              id: true,
+              role: true,
+              status: true,
+            },
+          });
+
+          if (!user || user.status !== "ACTIVE") {
+            throw new AppError("User not found or inactive", 403);
+          }
+
+          if (user.role !== "BRAND_OWNER" || brand.ownerId !== user.id) {
+            throw new AppError(
+              "You do not have permission to create branches for this brand.",
+              403,
+            );
+          }
+
+          // =============================================
+          // 6.3 CHECK FEATURE LICENSE BRANCH LIMIT
+          // =============================================
+          //
+          // BRANCH_STORE ACTIVE:
+          //   Maximum = configured branchLimit
+          //
+          // BRANCH_STORE DISABLED / EXPIRED:
+          //   Maximum = 1
+          //
+          // Includes ACTIVE and INACTIVE branches.
+          //
+          // Runs inside SERIALIZABLE transaction.
+          // =============================================
+
+          await assertCanCreateBranch(brandId, tx);
+
+          // =============================================
+          // 6.4 DUPLICATE BRANCH CHECK
+          // =============================================
+
+          const existingBranch = await tx.branch.findFirst({
+            where: {
+              brandId,
+              name: {
+                equals: name,
+                mode: "insensitive",
+              },
+            },
+            select: {
+              id: true,
+            },
+          });
+
+          if (existingBranch) {
+            throw new AppError(
+              "A branch with this name already exists in this brand.",
+              409,
+            );
+          }
+
+          // =============================================
+          // 6.5 CREATE BRANCH
+          // =============================================
+
+          const createdBranch = await tx.branch.create({
+            data: {
+              brandId,
+              name,
+              address,
+              phone: payload.phone?.trim() || null,
+              description,
+              imageObjectKey: payload.imageObjectKey || null,
+              translations,
+              latitude: payload.latitude ?? null,
+              longitude: payload.longitude ?? null,
+            },
+          });
+
+          // =============================================
+          // 6.6 CREATE DEFAULT BOOKING POLICY
+          // =============================================
+
+          await tx.branchBookingPolicy.create({
+            data: {
+              branchId: createdBranch.id,
+              slotIntervalMinutes: 30,
+              minimumBookingNoticeMinutes: 120,
+              maximumAdvanceBookingDays: 30,
+              cancellationCutoffMinutes: 720,
+              rescheduleCutoffMinutes: 720,
+              reserveExpiryRule: "APPOINTMENT_TIME",
+              qrVerificationRule: "BEFORE_START_TIME",
+              allowedBookingMethods: ["PAY_NOW", "DEPOSIT", "RESERVE_NOW"],
+              depositEnabled: true,
+              depositPercentage: 10,
+            },
+          });
+
+          // =============================================
+          // 6.7 CREATE DEFAULT HOURLY CAPACITY
+          // =============================================
+
+          await tx.branchHourlyCapacity.createMany({
+            data: DAYS_OF_WEEK.map((day) => ({
+              branchId: createdBranch.id,
+              day,
+              maxBookingsPerHour: DEFAULT_HOURLY_CAPACITY,
+            })),
+          });
+
+          // =============================================
+          // 6.8 RETURN CREATED BRANCH
+          // =============================================
+
+          return createdBranch;
+        },
+        {
+          isolationLevel: "Serializable",
+          maxWait: 10000,
+          timeout: 15000,
+        },
+      );
+
+      // ===============================================
+      // 7. TRANSACTION SUCCESS
+      // ===============================================
+
+      return branch;
+    } catch (error: unknown) {
+      // ===============================================
+      // 8. RETRY SERIALIZATION / DEADLOCK CONFLICTS
+      // ===============================================
+
+      const isTransactionConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034";
+
+      if (!isTransactionConflict) {
+        throw error;
       }
 
-      // =================================================
-      // 5.2 VERIFY BRAND OWNER AUTHORIZATION
-      // =================================================
-
-      const user = await tx.user.findUnique({
-        where: {
-          id: userId,
-        },
-        select: {
-          id: true,
-          role: true,
-          status: true,
-        },
-      });
-
-      if (!user || user.status !== "ACTIVE") {
-        throw new AppError("User not found or inactive", 403);
-      }
-
-      if (user.role !== "BRAND_OWNER" || brand.ownerId !== user.id) {
+      if (attempt === MAX_TRANSACTION_ATTEMPTS) {
         throw new AppError(
-          "You do not have permission to create branches for this brand.",
-          403,
-        );
-      }
-
-      // =================================================
-      // 5.3 CHECK SUBSCRIPTION BRANCH LIMIT
-      // =================================================
-
-      // STANDARD: Maximum 1 branch
-      // BRANCH_STORE: Super Admin-configured limit
-      // Requires active subscription
-
-      await assertCanCreateBranch(brandId, tx);
-
-      // =================================================
-      // 5.4 DUPLICATE BRANCH CHECK (SAME BRAND)
-      // =================================================
-
-      const existingBranch = await tx.branch.findFirst({
-        where: {
-          brandId,
-          name: {
-            equals: name,
-            mode: "insensitive",
-          },
-        },
-        select: {
-          id: true,
-        },
-      });
-
-      if (existingBranch) {
-        throw new AppError(
-          "A branch with this name already exists in this brand.",
+          "Branch creation is busy due to concurrent requests. Please try again.",
           409,
         );
       }
 
-      // =================================================
-      // 5.5 CREATE BRANCH
-      // =================================================
+      // Small bounded delay before retrying.
+      // No database changes occur outside the transaction.
 
-      const createdBranch = await tx.branch.create({
-        data: {
-          brandId,
-          name,
-          address,
-          phone: payload.phone?.trim() || null,
-          description,
-          imageObjectKey: payload.imageObjectKey || null,
-          translations,
-          latitude: payload.latitude ?? null,
-          longitude: payload.longitude ?? null,
-        },
-      });
+      await new Promise<void>((resolve) => setTimeout(resolve, attempt * 100));
+    }
+  }
 
-      // =================================================
-      // 5.6 CREATE DEFAULT BOOKING POLICY
-      // =================================================
-
-      await tx.branchBookingPolicy.create({
-        data: {
-          branchId: createdBranch.id,
-          slotIntervalMinutes: 30,
-          minimumBookingNoticeMinutes: 120,
-          maximumAdvanceBookingDays: 30,
-          cancellationCutoffMinutes: 720,
-          rescheduleCutoffMinutes: 720,
-          reserveExpiryRule: "APPOINTMENT_TIME",
-          qrVerificationRule: "BEFORE_START_TIME",
-          allowedBookingMethods: ["PAY_NOW", "DEPOSIT", "RESERVE_NOW"],
-          depositEnabled: true,
-          depositPercentage: 10,
-        },
-      });
-
-      // =================================================
-      // 5.7 CREATE DEFAULT HOURLY CAPACITY
-      // =================================================
-
-      await tx.branchHourlyCapacity.createMany({
-        data: DAYS_OF_WEEK.map((day) => ({
-          branchId: createdBranch.id,
-          day,
-          maxBookingsPerHour: DEFAULT_HOURLY_CAPACITY,
-        })),
-      });
-
-      // =================================================
-      // 5.8 RETURN CREATED BRANCH
-      // =================================================
-
-      return createdBranch;
-    },
-    {
-      isolationLevel: "Serializable",
-      maxWait: 10000,
-      timeout: 15000,
-    },
-  );
-
-  return branch;
+  throw new AppError("Unable to create branch. Please try again.", 409);
 };
 
 // =====================================================

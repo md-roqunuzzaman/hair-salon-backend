@@ -41,6 +41,7 @@ import {
   retryOrderNumberTransaction,
 } from "../../utils/generateOrderNumber.js";
 import { cancelRemainingStripePayment } from "../payment/payment.service.js";
+import { assertFeatureAvailable } from "../../utils/featureLicense.js";
 
 const getMyWallet = async (customerId: string): Promise<IWalletResponse> => {
   let wallet = await prisma.wallet.findUnique({
@@ -627,6 +628,7 @@ const createTopup = async (
   customerId: string,
   payload: ICreateWalletTopupPayload,
 ): Promise<ICreateWalletTopupResponse> => {
+  assertFeatureAvailable("WALLET");
   // =====================================================
   // 1. VALIDATE SELECTED PROMOTION
   // =====================================================
@@ -1007,6 +1009,7 @@ const payAppointmentWithWallet = async (
   appointmentId: string,
   payload: IPayAppointmentWithWalletPayload,
 ): Promise<IPayAppointmentWithWalletResponse> => {
+  assertFeatureAvailable("WALLET");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await prisma.$transaction(
@@ -1376,6 +1379,8 @@ const payGroupPurchaseWithWallet = async (
   purchaseId: string,
   payload: { useBonus: boolean },
 ) => {
+  assertFeatureAvailable("GROUP_BUYING");
+  assertFeatureAvailable("WALLET");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await prisma.$transaction(

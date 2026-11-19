@@ -26,6 +26,7 @@ import {
   IUpdatePackagePayload,
   IUpdatePackageStatusPayload,
 } from "./package.interface.js";
+import { isFeatureAvailable } from "../../utils/featureLicense.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -157,6 +158,17 @@ const localizeName = (
 };
 
 const createPackage = async (payload: ICreatePackagePayload) => {
+  // =====================================================
+  // 0. GROUP BUYING FEATURE LICENSE
+  // =====================================================
+
+  if (!isFeatureAvailable("GROUP_BUYING")) {
+    throw new AppError(
+      "Group buying is unavailable because the feature is disabled or expired.",
+      403,
+    );
+  }
+
   const packageName = payload.name.trim();
   const packageDescription = payload.description?.trim() || null;
 

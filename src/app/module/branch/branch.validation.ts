@@ -21,6 +21,7 @@ const branchTranslationsSchema = z
 const createBranchValidationSchema = z.object({
   body: z
     .object({
+      brandId: z.uuid("Invalid brandId"),
       name: z
         .string()
         .min(2, "Branch name must be at least 2 characters")

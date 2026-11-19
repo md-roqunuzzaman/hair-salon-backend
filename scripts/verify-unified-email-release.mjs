@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import migrations from '../cloudflare/.build/migrations.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
+const committedMigrations = new Set(execFileSync('git', ['ls-tree','-r','--name-only','HEAD','cloudflare/migrations','prisma/migrations'], {encoding:'utf8',windowsHide:true}).trim().split(/\r?\n/));
 const packageLock = await readFile('package-lock.json');
 const phonePackage = JSON.parse(await readFile('node_modules/libphonenumber-js/package.json','utf8'));
 assert.equal(JSON.parse(packageLock).packages['node_modules/libphonenumber-js'].version,phonePackage.version,'Phone package must match the lockfile');
@@ -18,7 +19,8 @@ const config = JSON.parse(await readFile('wrangler.jsonc','utf8'));
 assert.equal(config.vars.EMAIL_OUTBOX_ENABLED,'false');
 assert.ok(['false','true'].includes(config.env.staging.vars.EMAIL_OUTBOX_ENABLED));
 assert.equal(config.main,'cloudflare/.build/worker.mjs');
-assert.equal(migrations.length,44);
+assert.equal(migrations.length,45);
+assert.match(migrations[44].sql,/ALTER TABLE "BrandSubscriptionAddon" ADD COLUMN "branchLimit" INTEGER/);
 assert.match(migrations[43].sql,/CREATE TABLE "SubscriptionPlan"/);
 assert.match(migrations[43].sql,/CREATE TRIGGER "money_BrandSubscription_totalPrice_INSERT"/);
 assert.match(migrations[42].sql,/ALTER TABLE "Brand" ADD COLUMN "ownerId" TEXT/);
@@ -87,6 +89,13 @@ for (const directory of ['cloudflare/migrations','prisma/migrations']) {
     if(directory==='prisma/migrations'&&['20261102082512_email_outbox_stale_lock_index','20261102083831_email_outbox_stale_lock_index'].includes(name))continue;
     const file = `${directory}/${name}${directory.startsWith('prisma')?'/migration.sql':''}`;
     if (!file.endsWith('.sql')) continue;
+    if (!committedMigrations.has(file)) {
+      // A new additive candidate has no HEAD baseline yet. Once committed it
+      // automatically receives the same immutable comparison as older files.
+      assert.equal(file,'cloudflare/migrations/0045_subscription_addon_branch_limit.sql','Unexpected migration without a committed baseline');
+      assert.equal(hash(await readFile(file,'utf8')),migrations[44].checksum,'New migration differs from bundled candidate');
+      continue;
+    }
     const baseline = execFileSync('git',['show',`HEAD:${file}`],{encoding:'utf8',windowsHide:true});
     const current = await readFile(file,'utf8');
     assert.equal(current.replaceAll('\r\n','\n'),baseline.replaceAll('\r\n','\n'),`Historical migration changed: ${file}`);
@@ -124,6 +133,8 @@ assert.equal(metadata.BranchBusinessHour.relations.breaks,'BranchBusinessBreak',
 assert.equal(metadata.BranchBusinessBreak.scalars.startTime,'String','Break time missing from Worker metadata');
 assert.equal(metadata.GroupPurchase.scalars.validDaysSnapshot,'Int','Snapshot field missing from Worker adapter metadata');
 const bundle = await readFile(config.main);
+const productionSources = JSON.parse(await readFile('cloudflare/.build/worker.mjs.map','utf8')).sources;
+assert.ok(!productionSources.some(source=>/feature-license-fixture|legacy-subscription-pricing/.test(source)),'License/legacy test fixture leaked into production');
 assert.ok(!bundle.includes('INTERNATIONAL_TEST_TENCENT_STUB'),'International test provider leaked into production Worker');
 assert.ok(!bundle.includes('__login-rate-test'),'Login test control leaked into production Worker');
 assert.ok(!bundle.includes('__auth-session-test'),'Session test control leaked into production Worker');

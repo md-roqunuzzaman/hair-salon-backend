@@ -39,7 +39,7 @@ import { BannerRoutes } from "./app/module/banner/banner.router.js";
 import { staffPortfolioRoutes } from "./app/module/staff-portfolio/staff-portfolio.route.js";
 import { BrandEmailSettingRoutes } from "./app/module/brand-email-setting/brand-email-setting.route.js";
 import { branchPortfolioRoutes } from "./app/module/branch-portfolio/branch-portfolio.route.js";
-import { platformPricingRoutes } from "./app/module/platform/platform.pricing.route.js";
+import { getFeatureLicenseSummary } from "./app/utils/featureLicense.js";
 
 // =====================================================
 // 1. CREATE EXPRESS APPLICATION
@@ -115,6 +115,13 @@ app.use(express.json());
 app.use(cookieParser());
 
 app.use(languageMiddleware);
+
+// Frontends can discover this client's compiled license without mounting any
+// management or license mutation endpoint. Expiry is evaluated on each request.
+app.get("/api/v1/features", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, data: getFeatureLicenseSummary() });
+});
 
 // =====================================================
 // 7. S7 SECURITY FIX: SAFE REQUEST LOGGING
@@ -243,7 +250,7 @@ app.use("/api/v1/brand-email-settings", BrandEmailSettingRoutes);
 // 18. SUPER ADMIN SAAS PRICING MANAGEMENT
 // =====================================================
 
-app.use("/api/v1/platform/pricing", platformPricingRoutes);
+// app.use("/api/v1/platform/pricing", platformPricingRoutes);
 // =====================================================
 // 18. ROOT ROUTE
 // =====================================================

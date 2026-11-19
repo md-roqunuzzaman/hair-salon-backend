@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { Role } from "../../../../generated/prisma/client.js";
 import { auth } from "../../middleware/auth.js";
+import { requireFeature } from "../../middleware/requireFeature.js";
 import { cancellationRefundController as c } from "./cancellation-refund.controller.js";
 const router = Router();
 router.get("/branches/:branchId/service-policy", c.displayService);
@@ -37,5 +38,5 @@ router.post(
   auth(Role.CUSTOMER),
   c.requestGroupRefund,
 );
-router.post("/group-purchases/checkout", auth(Role.CUSTOMER), c.checkout);
+router.post("/group-purchases/checkout", auth(Role.CUSTOMER), requireFeature("GROUP_BUYING"), c.checkout);
 export const CancellationRefundRoutes = router;

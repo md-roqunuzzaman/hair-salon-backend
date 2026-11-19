@@ -1,6 +1,6 @@
 // Disposable Worker only; never shipped in the production entry point.
 import { seedSaasPricing } from '../../src/app/utils/seed.ts';
-import { calculateSubscriptionPrice } from '../../src/app/module/platform/platform.pricing.ts';
+import { calculateSubscriptionPrice } from '../test-support/legacy-subscription-pricing.ts';
 
 export async function subscriptionFixture(db, body) {
   await seedSaasPricing();

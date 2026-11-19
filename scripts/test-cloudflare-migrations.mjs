@@ -12,5 +12,5 @@ try {
     assert.equal(check.status,200,await check.clone().text());
     assert.deepEqual(await check.json(),{scenario,passed:true});
   }
-  console.log('Existing databases upgrade to v44: subscription schema preservation, atomic rollback, money precision, uniqueness, foreign keys and repeat startup; v43: nullable Brand owner, preservation, rollback, owner foreign keys/index, cascades and repeat startup pass; all prior Branch backfill and historical migration checks remain included.');
+  console.log('Existing databases upgrade to v45: nullable subscription branch limit preserves populated rows, atomic ALTER rollback and repeat startup; v44 subscription money, uniqueness and foreign keys; v43 owner and prior Branch backfill/history checks all pass.');
 } finally { await mf.dispose(); }

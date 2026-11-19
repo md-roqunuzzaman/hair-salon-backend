@@ -10,7 +10,7 @@ export function verifySubscriptionUpgrade(storage, migrations) {
   rejects(()=>applyMigrations(storage,[...migrations.slice(0,43),{...migrations[43],sql:migrations[43].sql+'; SELECT * FROM injected_subscription_failure;'}]),'v44 injected failure must reject');
   equal(snapshot(),before,'v44 rollback changed data/ledger');
   equal(schema(),beforeSchema,'v44 rollback left schema objects');
-  applyMigrations(storage,migrations);
+  applyMigrations(storage,migrations.slice(0,44));
   equal(snapshot().filter(([name])=>before.some(([old])=>name===old)&&name!=='_Migrations'),before.filter(([name])=>name!=='_Migrations'),'v44 changed historical data');
   for(const table of ['SubscriptionPlan','AddonFeature','BrandSubscription','BrandSubscriptionAddon'])equal(sql(`SELECT COUNT(*) AS n FROM ${table}`).one().n,0,'Migration must not invent subscriptions or pricing');
   sql("INSERT INTO SubscriptionPlan(id,code,name,price,updatedAt) VALUES ('plan','STANDARD','Standard',50000,1)");
@@ -30,8 +30,24 @@ export function verifySubscriptionUpgrade(storage, migrations) {
   sql("UPDATE AddonFeature SET price=9900");
   equal(sql('SELECT basePrice,addonsPrice,totalPrice,currency,status FROM BrandSubscription').one(),{basePrice:50000,addonsPrice:12000,totalPrice:62000,currency:'HKD',status:'ACTIVE'},'Historical price snapshot changed');
   const stable=snapshot(), stableSchema=schema();
-  applyMigrations(storage,migrations);
+  applyMigrations(storage,migrations.slice(0,44));
   equal(snapshot(),stable,'v44 repeated startup changed rows/ledger');
   equal(schema(),stableSchema,'v44 repeated startup changed schema');
   equal(sql('PRAGMA foreign_key_check').toArray(),[],'v44 FK violations');
+  rejects(()=>applyMigrations(storage,[...migrations.slice(0,44),{...migrations[44],sql:migrations[44].sql+'; SELECT * FROM injected_branch_limit_failure;'}]),'v45 injected failure must reject');
+  equal(snapshot(),stable,'v45 failed migration changed historical rows');
+  equal(schema(),stableSchema,'v45 failed migration left schema changes');
+  applyMigrations(storage,migrations);
+  const upgraded=snapshot();
+  for(const [table,rows] of stable){
+    if(table==='_Migrations')continue;
+    if(table==='BrandSubscriptionAddon'){
+      const restored=upgraded.find(([name])=>name===table)[1].map(value=>{const row=JSON.parse(value);equal(row.branchLimit,null,'Legacy branch limit must remain unknown');delete row.branchLimit;return JSON.stringify(Object.fromEntries(Object.entries(row).sort()));}).sort();
+      equal(restored,rows,'v45 changed subscription assignment fields');
+    }else equal(upgraded.find(([name])=>name===table)[1],rows,'v45 changed historical data');
+  }
+  sql("UPDATE BrandSubscriptionAddon SET branchLimit=5 WHERE id='selected'");
+  const complete=snapshot(),completeSchema=schema();applyMigrations(storage,migrations);
+  equal(snapshot(),complete,'v45 repeated startup changed stored limits');equal(schema(),completeSchema,'v45 repeated startup changed schema');
+  equal(sql('PRAGMA foreign_key_check').toArray(),[],'v45 FK violations');
 }

@@ -71,6 +71,7 @@ try {
   const [subscriptionSchema, ...subscriptionTriggers] = (await readFile('cloudflare/migrations/0044_subscription_pricing.sql','utf8')).split(/(?=CREATE TRIGGER)/);
   await apply(actual, subscriptionSchema);
   for (const trigger of subscriptionTriggers) await actual.prepare(trigger).run();
+  await apply(actual, await readFile('cloudflare/migrations/0045_subscription_addon_branch_limit.sql','utf8'));
   // v16 enforces this required field with triggers to retain the referenced table.
   // Verify both exact definitions before treating their enforcement as NOT NULL.
   for (const trigger of requiredTriggers) {

@@ -3,12 +3,22 @@ import { Router } from "express";
 import { Role } from "../../../../generated/prisma/client.js";
 
 import { auth } from "../../middleware/auth.js";
+import { requireFeature } from "../../middleware/requireFeature.js";
 import { validateRequest } from "../../middleware/validateRequest.js";
 
 import { reviewController } from "./review.controller.js";
 import { reviewValidation } from "./review.validation.js";
 
 const router = Router();
+
+// =====================================================
+// REVIEWS FEATURE LICENSE PROTECTION
+// =====================================================
+// If REVIEWS is disabled or expired:
+// ALL endpoints in this router return 403.
+// =====================================================
+
+router.use(requireFeature("REVIEWS"));
 
 // =====================================================
 // CUSTOMER REVIEWS

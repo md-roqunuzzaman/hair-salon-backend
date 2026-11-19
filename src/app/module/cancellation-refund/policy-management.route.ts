@@ -1,12 +1,47 @@
-import { Router } from 'express';
-import { Role } from '../../../../generated/prisma/client.js';
-import { auth } from '../../middleware/auth.js';
-import { cancellationRefundController as c } from './cancellation-refund.controller.js';
+import { Router } from "express";
+import { Role } from "../../../../generated/prisma/client.js";
+import { auth } from "../../middleware/auth.js";
+import { requireFeature } from "../../middleware/requireFeature.js";
+import { cancellationRefundController as c } from "./cancellation-refund.controller.js";
+
 const router = Router();
-router.get('/branches/:branchId/service-cancellation', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), c.getService);
-router.put('/branches/:branchId/service-cancellation', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), c.putService);
-router.get('/branches/:branchId/group-purchase-refunds', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), c.getGroupRefund);
-router.put('/branches/:branchId/group-purchase-refunds', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), c.putGroupRefund);
-router.get('/branches/:branchId/group-purchase-cancellations', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), c.getGroupCancellation);
-router.put('/branches/:branchId/group-purchase-cancellations', auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER), c.putGroupCancellation);
+
+router.get(
+  "/branches/:branchId/service-cancellation",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  c.getService,
+);
+
+router.put(
+  "/branches/:branchId/service-cancellation",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  c.putService,
+);
+
+router.get(
+  "/branches/:branchId/group-purchase-refunds",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  c.getGroupRefund,
+);
+
+router.put(
+  "/branches/:branchId/group-purchase-refunds",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  requireFeature("GROUP_BUYING"),
+  c.putGroupRefund,
+);
+
+router.get(
+  "/branches/:branchId/group-purchase-cancellations",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  c.getGroupCancellation,
+);
+
+router.put(
+  "/branches/:branchId/group-purchase-cancellations",
+  auth(Role.BRAND_OWNER, Role.BRANCH_MANAGER),
+  requireFeature("GROUP_BUYING"),
+  c.putGroupCancellation,
+);
+
 export const PolicyManagementRoutes = router;

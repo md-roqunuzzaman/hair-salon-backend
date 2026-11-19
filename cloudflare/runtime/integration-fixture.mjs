@@ -1,4 +1,5 @@
 import { subscriptionFixture } from './subscription-fixture.mjs';
+import { featureLicenseTestControl } from './feature-license-fixture.mjs';
 import { bookNowFixture, providerEvent, policyTestControl } from './book-now-fixture.mjs';
 import { staffScheduleFixture } from './staff-schedule-fixture.mjs';
 import { staffAvailabilityFixture } from './staff-availability-fixture.mjs';
@@ -28,6 +29,7 @@ export class SalonTestDatabase extends SalonDatabase {
   async sendMail(message) { this.outbox.push(message); return { messageId: 'test' }; }
   connectSmtp(address, options) { return emailMockSocket(address, options); }
   async fetch(request) {
+    if (new URL(request.url).pathname === '/__feature-license-test') return this.enqueue(async () => Response.json(await featureLicenseTestControl(await request.json())));
     if (new URL(request.url).pathname === '/__subscription-test') return this.enqueue(async () => Response.json(await subscriptionFixture(this.db, await request.json())));
     if (new URL(request.url).pathname === '/__branch-brand-test') return this.enqueue(async () =>
       Response.json(await branchBrandFixture(this.db, await request.json())));

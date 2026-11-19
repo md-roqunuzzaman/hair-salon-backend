@@ -1,6 +1,7 @@
 // Disposable Worker control; excluded from the production entry point.
 export async function branchBrandFixture(db, body) {
   const brand = await db.brand.findFirstOrThrow({ select: { id: true } });
+  if (body.count) return { count: await db.branch.count({ where: { brandId: brand.id } }) };
   if (body.ownerCheck) {
     const owner = await db.user.findFirstOrThrow({ where: { role: 'BRAND_OWNER' }, select: { id: true } });
     if (body.assignOwner) await db.brand.update({ where: { id: brand.id }, data: { ownerId: owner.id } });

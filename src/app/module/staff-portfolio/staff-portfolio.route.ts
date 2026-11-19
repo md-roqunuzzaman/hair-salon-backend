@@ -1,20 +1,31 @@
 import { Router } from "express";
-import { staffPortfolioController } from "./staff-portfolio.controller.js";
-import { auth } from "../../middleware/auth.js";
 import { Role } from "../../../../generated/prisma/enums.js";
 
+import { auth } from "../../middleware/auth.js";
+import { requireFeature } from "../../middleware/requireFeature.js";
+
+import { staffPortfolioController } from "./staff-portfolio.controller.js";
+
 const router = Router();
+
+// =====================================================
+// HAIRSTYLIST FEATURE LICENSE
+// =====================================================
+
+router.use(requireFeature("HAIRSTYLIST"));
 
 // =====================================================
 // PUBLIC STAFF PORTFOLIO
 // GET /api/v1/staff/:staffId/portfolio
 // =====================================================
+
 // API 05 — Create portfolio case
 router.post(
   "/:staffId/portfolio/cases",
   auth(Role.BRAND_OWNER),
   staffPortfolioController.createPortfolioCase,
 );
+
 router.get("/:staffId/portfolio", staffPortfolioController.getStaffPortfolio);
 
 // API 02 — Published portfolio cases
@@ -22,6 +33,7 @@ router.get(
   "/:staffId/portfolio/cases",
   staffPortfolioController.getPublishedPortfolioCases,
 );
+
 // API 04 — Admin cases
 // IMPORTANT: Register before /:caseId
 router.get(
@@ -79,4 +91,5 @@ router.patch(
   auth(Role.BRAND_OWNER),
   staffPortfolioController.updateBranchPortfolioVisibility,
 );
+
 export const staffPortfolioRoutes = router;

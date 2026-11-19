@@ -1,6 +1,8 @@
-import { Prisma } from "../../../../generated/prisma/client.js";
-import { prisma } from "../../lib/prisma.js";
-import { AppError } from "../../utils/app-error.js";
+// Archived calculator for historical subscription fixture compatibility only.
+// The owner removed the Merchant Platform API; this helper is never deployed.
+import { Prisma } from "../../generated/prisma/client.js";
+import { prisma } from "../../src/app/lib/prisma.js";
+import { AppError } from "../../src/app/utils/app-error.js";
 
 const PREMIUM_FEATURE_CODES = [
   "BRANCH_STORE",

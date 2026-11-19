@@ -9,6 +9,7 @@ import {
 
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { isFeatureAvailable } from "../../utils/featureLicense.js";
 
 import {
   createDateTimeInTimezone,
@@ -84,6 +85,19 @@ const getAvailableSlots = async (
     date,
     excludeAppointmentId,
   } = query;
+
+  // =====================================================
+  // 0. HAIRSTYLIST FEATURE LICENSE
+  // =====================================================
+
+  const hairstylistEnabled = isFeatureAvailable("HAIRSTYLIST");
+
+  if (!hairstylistEnabled && (staffId || staffPreference === "SELECT_STAFF")) {
+    throw new AppError(
+      "Hairstylist selection is unavailable because the feature is disabled or expired.",
+      403,
+    );
+  }
 
   // =====================================================
   // 1. VALIDATE BOOKING REQUEST
@@ -376,21 +390,12 @@ const getAvailableSlots = async (
   // 9. RESOLVE CONFIGURED STAFF
   // =====================================================
 
-  // =====================================================
-  // 9. RESOLVE CONFIGURED STAFF
-  // =====================================================
-
   // Staff-free booking is allowed only when no staff is
   // configured for the service/package at this branch.
   //
-  // IMPORTANT:
   // A staff member who is inactive, on leave, has no
   // schedule, or is temporarily unavailable must NOT
   // automatically enable staff-free booking.
-  //
-  // Keep persistent assignments when detecting configuration, even when an
-  // override moves their availability elsewhere. Also include staff temporarily
-  // assigned here, so the preview and transactional booking use the same set.
 
   const effectiveBranchEligibility = {
     OR: [
@@ -424,7 +429,6 @@ const getAvailableSlots = async (
             packages: {
               some: { packageId: packageId! },
             },
-
           }),
     },
 
@@ -455,28 +459,6 @@ const getAvailableSlots = async (
 
     staffSelectionMode = "NO_STAFF";
   } else if (staffPreference === "NO_STAFF") {
-    throw new AppError(
-      "Staff-free booking is not available because staff is configured",
-      400,
-    );
-  }
-
-  // =====================================================
-  // 10. AUTOMATIC STAFF-FREE FALLBACK
-  // =====================================================
-
-  if (!hasConfiguredStaff) {
-    if (staffId) {
-      throw new AppError(
-        "No staff is configured for this service or package",
-        400,
-      );
-    }
-
-    staffSelectionMode = "NO_STAFF";
-  } else if (staffPreference === "NO_STAFF") {
-    // Boss-confirmed behavior:
-    // NO_STAFF is only for unassigned services/packages.
     throw new AppError(
       "Staff-free booking is not available because staff is configured",
       400,
@@ -577,8 +559,13 @@ const getAvailableSlots = async (
       staffIds = [staffMember.id];
     } else {
       staffIds = configuredStaff
-        .filter((staff) => staff.status === StaffStatus.ACTIVE &&
-          requiredPackageServiceIds.every(id => staff.services.some(item => item.serviceId === id)))
+        .filter(
+          (staff) =>
+            staff.status === StaffStatus.ACTIVE &&
+            requiredPackageServiceIds.every((id) =>
+              staff.services.some((item) => item.serviceId === id),
+            ),
+        )
         .map((staff) => staff.id);
 
       if (staffIds.length === 0) {
@@ -600,8 +587,6 @@ const getAvailableSlots = async (
   let schedules: EffectiveSchedule[] = [];
 
   if (staffSelectionMode === "NO_STAFF") {
-    // Staff-free booking uses branch hours.
-    // No staff schedule or leave check is required.
     schedules = [
       {
         staffId: null,
@@ -746,9 +731,6 @@ const getAvailableSlots = async (
   // 15. BRANCH CAPACITY HELPER
   // =====================================================
 
-  // Preserve the existing per-hour capacity semantics.
-  // All appointments count, including staffId = null.
-
   const getCapacityUsageForSlot = (slotStart: number, slotEnd: number) => {
     let maxUsed = 0;
 
@@ -840,10 +822,6 @@ const getAvailableSlots = async (
       ) {
         const end = start + durationMinutes;
 
-        // ---------------------------------------------
-        // BRANCH BREAK CHECK
-        // ---------------------------------------------
-
         const hasBranchBreakConflict = branchBreakIntervals.some(
           (businessBreak) =>
             intervalsOverlap(
@@ -860,10 +838,6 @@ const getAvailableSlots = async (
 
         const startTime = minutesToTime(start);
         const endTime = minutesToTime(end);
-
-        // ---------------------------------------------
-        // TIMEZONE + MINIMUM NOTICE
-        // ---------------------------------------------
 
         let slotDateTime: Date;
 
@@ -900,10 +874,6 @@ const getAvailableSlots = async (
           continue;
         }
 
-        // ---------------------------------------------
-        // STAFF UNAVAILABILITY
-        // ---------------------------------------------
-
         if (schedule.staffId !== null) {
           const hasUnavailabilityConflict = unavailability.some((item) => {
             if (item.staffId !== schedule.staffId) {
@@ -921,10 +891,6 @@ const getAvailableSlots = async (
           if (hasUnavailabilityConflict) {
             continue;
           }
-
-          // -------------------------------------------
-          // STAFF APPOINTMENT CONFLICT
-          // -------------------------------------------
 
           const hasAppointmentConflict = staffBlockingAppointments.some(
             (appointment) => {
@@ -946,19 +912,11 @@ const getAvailableSlots = async (
           }
         }
 
-        // ---------------------------------------------
-        // BRANCH CAPACITY
-        // ---------------------------------------------
-
         const capacity = getCapacityUsageForSlot(start, end);
 
         if (!capacity.available) {
           continue;
         }
-
-        // ---------------------------------------------
-        // VALID SLOT
-        // ---------------------------------------------
 
         candidateSlots.push({
           startTime,
@@ -997,7 +955,14 @@ const getAvailableSlots = async (
       }
     }
 
-    slots = [...uniqueSlots.values()];
+    slots = [...uniqueSlots.values()].map((slot) =>
+      hairstylistEnabled
+        ? slot
+        : {
+            ...slot,
+            staffId: null,
+          },
+    );
   } else {
     slots = candidateSlots;
   }
