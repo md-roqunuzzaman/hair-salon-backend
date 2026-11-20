@@ -27,6 +27,7 @@ import { ReviewRoutes } from "./app/module/review/review.route.js";
 import { NotificationRoutes } from "./app/module/notification/notification.route.js";
 import { BranchManagerRoutes } from "./app/module/branch-manager/branch-manager.route.js";
 import { AdminUserRoutes } from "./app/module/admin/admin.route.js";
+import { AdminOrderRoutes } from "./app/module/admin-order/admin-order.route.js";
 import { DashboardRoutes } from "./app/module/dashboard/dashboard.route.js";
 import { ReportRoutes } from "./app/module/report/report.route.js";
 import { AuditLogRoutes } from "./app/module/auditLog/auditLog.route.js";
@@ -212,6 +213,7 @@ app.use("/api/v1/notifications", NotificationRoutes);
 app.use("/api/v1/branch-managers", BranchManagerRoutes);
 
 app.use("/api/v1/admin/users", AdminUserRoutes);
+app.use("/api/v1/admin/orders", AdminOrderRoutes);
 
 app.use("/api/v1/dashboard", DashboardRoutes);
 

@@ -46,7 +46,7 @@ export const featureLicenseConfig = {
     // REVIEWS
     // =====================================================
     REVIEWS: {
-      enabled: true,
+      enabled: false,
       startsAt: "2026-11-19T00:00:00+08:00",
       expiresAt: "2027-12-31T23:59:59+08:00",
     },

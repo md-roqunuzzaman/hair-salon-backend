@@ -4,6 +4,7 @@ import path from 'node:path';
 import ejs from 'ejs';
 import { builtinModules } from 'node:module';
 import { createHash } from 'node:crypto';
+import { verifyPinnedMigrationHistory } from './lib/cloudflare-migration-history.mjs';
 import metadata from '../cloudflare/runtime/model-metadata.json' with { type: 'json' };
 
 const directory = 'cloudflare/.build';
@@ -95,6 +96,7 @@ const subscriptionPricing = await readFile('cloudflare/migrations/0044_subscript
 const migrations = [migration, upgrade, qrUpgrade, unified, attemptFence, settlementIdentity, branchCoordinates, directBookRename, policySchema, refundEntitlements, branchPolicies, policyExecution, bannerManagement, staffPortfolio, appointmentOrderNumber, requiredOrderNumber, paymentOrderNumber, paymentOrderBackfill, brandEmailSettings, emailOutbox, emailProviderConfiguration, emailOutboxFence, emailOutboxManagement, businessEmailRetirement, unifiedMerchantEmail, emailEnabledDefault, branchBannerCarousel, registrationVerification, policyTimeMinutes, refundAllocations, groupPurchaseValiditySnapshot, lookupIndexes, branchBusinessBreak, branchPortfolio, brandInternationalSettings, internationalSnapshots, requiredPurchaseCurrency, serviceBookingWindows, groupPurchaseOrderNumber, staffScheduleOverride, optionalAppointmentStaff, branchBrandRelation, brandOwnerRelation, subscriptionPricing].map((sql, index) => ({ version: index + 1, sql, checksum: createHash('sha256').update(sql).digest('hex') }));
 const subscriptionBranchLimit = await readFile('cloudflare/migrations/0045_subscription_addon_branch_limit.sql','utf8');
 migrations.push({ version: 45, sql: subscriptionBranchLimit, checksum: createHash('sha256').update(subscriptionBranchLimit).digest('hex') });
+verifyPinnedMigrationHistory(migrations);
 await writeFile(`${directory}/migrations.mjs`, `export default ${JSON.stringify(migrations)};\n`);
 
 await writeFile(`${directory}/migration-meta.mjs`, `export const migrationDigest = ${JSON.stringify(createHash('sha256').update(migration).digest('hex'))};\n`);

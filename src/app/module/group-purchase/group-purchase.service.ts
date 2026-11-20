@@ -17,6 +17,7 @@ import {
   PaymentPurpose,
   PaymentStatus,
   Prisma,
+  RefundRequestStatus,
   RefundStatus,
   Role,
   SalonPaymentMethod,
@@ -49,7 +50,10 @@ import {
   getDateInTimezone,
 } from "../../utils/brand-timezone.utils.js";
 import { assertCurrencyAmount } from "../../utils/transaction-currency.utils.js";
-import { assertFeatureAvailable, isFeatureAvailable } from "../../utils/featureLicense.js";
+import {
+  assertFeatureAvailable,
+  isFeatureAvailable,
+} from "../../utils/featureLicense.js";
 
 const initialAppointmentSelect = {
   id: true,
@@ -643,7 +647,6 @@ const getMyGroupPurchases = async (
     validDaysSnapshot: number | null;
   }): boolean => {
     const validUntil = getVoucherValidUntil(purchase);
-
     return validUntil !== null && now >= validUntil;
   };
 
@@ -658,8 +661,8 @@ const getMyGroupPurchases = async (
   let filteredPurchaseIds: string[] | null = null;
 
   if (status !== undefined) {
-    // Fetch lightweight records to calculate the exact status
-    // before pagination. This keeps pagination totals correct.
+    // Fetch lightweight records before pagination so that
+    // ACTIVE/HISTORY/EXPIRED totals remain accurate.
 
     const candidates = await prisma.groupPurchase.findMany({
       where: baseWhere,
@@ -716,12 +719,6 @@ const getMyGroupPurchases = async (
         // DIRECT BOOKING
         // -----------------------------------------------
 
-        // A direct booking is active while at least one
-        // appointment is still RESERVED or CONFIRMED.
-        //
-        // This includes valid RESERVE_NOW and DEPOSIT flows
-        // without requiring paymentStatus === PAID.
-
         const hasActiveDirectAppointment =
           isDirectBook &&
           purchase.appointments.some(
@@ -734,8 +731,11 @@ const getMyGroupPurchases = async (
         // BUY NOW BOOK LATER
         // -----------------------------------------------
 
-        // A voucher is usable only when paid,
-        // not expired and at least one redemption remains.
+        // ACTIVE means the voucher has remaining validity
+        // and entitlement. An in-progress refund does not
+        // automatically move it to HISTORY.
+        //
+        // Booking eligibility is calculated separately.
 
         const usableVoucher =
           !isDirectBook &&
@@ -763,8 +763,6 @@ const getMyGroupPurchases = async (
           return !active;
         }
 
-        // EXPIRED keeps its original semantic meaning:
-        // actual payment expiry or voucher validity expiry.
         if (status === "EXPIRED") {
           return paymentExpired || voucherExpired;
         }
@@ -865,6 +863,85 @@ const getMyGroupPurchases = async (
   );
 
   // =====================================================
+  // 6A. BATCH FETCH ACTIVE REFUND REQUESTS (NEW)
+  // =====================================================
+
+  // Query refund requests for all purchases on this page
+  // in a single database operation.
+  //
+  // RefundRequest -> Payment -> GroupPurchase
+  //
+  // This avoids one refund query per voucher (N+1).
+
+  const activeRefundRequests =
+    purchaseIds.length > 0
+      ? await prisma.refundRequest.findMany({
+          where: {
+            payment: {
+              groupPurchaseId: {
+                in: purchaseIds,
+              },
+            },
+
+            status: {
+              in: [
+                RefundRequestStatus.PENDING,
+                RefundRequestStatus.APPROVED,
+                RefundRequestStatus.PROCESSING,
+              ],
+            },
+          },
+
+          select: {
+            id: true,
+            status: true,
+
+            payment: {
+              select: {
+                groupPurchaseId: true,
+              },
+            },
+          },
+
+          orderBy: {
+            createdAt: "desc",
+          },
+        })
+      : [];
+
+  // Prefer the most advanced active refund state when
+  // multiple requests exist for the same purchase.
+
+  const refundStatusPriority: Record<RefundRequestStatus, number> = {
+    [RefundRequestStatus.PENDING]: 1,
+    [RefundRequestStatus.APPROVED]: 2,
+    [RefundRequestStatus.PROCESSING]: 3,
+    [RefundRequestStatus.REJECTED]: 0,
+    [RefundRequestStatus.FAILED]: 0,
+    [RefundRequestStatus.COMPLETED]: 0,
+  };
+
+  const activeRefundStatusMap = new Map<string, RefundRequestStatus>();
+
+  for (const refundRequest of activeRefundRequests) {
+    const groupPurchaseId = refundRequest.payment.groupPurchaseId;
+
+    if (!groupPurchaseId) {
+      continue;
+    }
+
+    const existingStatus = activeRefundStatusMap.get(groupPurchaseId);
+
+    if (
+      !existingStatus ||
+      refundStatusPriority[refundRequest.status] >
+        refundStatusPriority[existingStatus]
+    ) {
+      activeRefundStatusMap.set(groupPurchaseId, refundRequest.status);
+    }
+  }
+
+  // =====================================================
   // 7. GENERATE SIGNED PRIMARY IMAGE URLS
   // =====================================================
 
@@ -962,11 +1039,19 @@ const getMyGroupPurchases = async (
         purchase.refundedQuantity,
     );
 
-    // Preserve the existing voucher booking rule.
+    // ---------------------------------------------------
+    // 8.5A REFUND BOOKING RESTRICTION (NEW)
+    // ---------------------------------------------------
+
+    const refundRequestStatus = activeRefundStatusMap.get(purchase.id) ?? null;
+
+    const hasRefundInProgress = refundRequestStatus !== null;
+
     const canBookAppointment =
       purchase.paymentStatus === PaymentStatus.PAID &&
       remainingQuantity > 0 &&
-      !voucherExpired;
+      !voucherExpired &&
+      !hasRefundInProgress;
 
     // ---------------------------------------------------
     // 8.6 PRIMARY IMAGE
@@ -991,7 +1076,9 @@ const getMyGroupPurchases = async (
             item.qrVerifiedAt !== null,
         ),
       ),
+
       orderNumber: purchase.orderNumber,
+
       firstAppointment: presentInitialAppointment(
         purchase.appointments,
         purchase.bookingMethod,
@@ -1035,6 +1122,9 @@ const getMyGroupPurchases = async (
         redeemedQuantity,
         remainingQuantity,
         canBookAppointment,
+
+        // NEW: customer-facing refund state
+        refundRequestStatus,
       },
     };
   });
@@ -1058,6 +1148,7 @@ const getMyGroupPurchases = async (
     },
   };
 };
+
 const getGroupPurchaseById = async (
   purchaseId: string,
   userId: string,
@@ -1232,10 +1323,55 @@ const getGroupPurchaseById = async (
 
   const voucherExpired = validUntil !== null && validUntil <= now;
 
+  // =====================================================
+  // 5A. CHECK REFUND-IN-PROGRESS (NEW)
+  // =====================================================
+
+  // RefundRequest is linked to Payment, and Payment
+  // is linked to GroupPurchase through groupPurchaseId.
+  //
+  // Only active refund request statuses block redemption.
+
+  const activeRefundRequest = await prisma.refundRequest.findFirst({
+    where: {
+      payment: {
+        groupPurchaseId: purchase.id,
+      },
+
+      status: {
+        in: [
+          RefundRequestStatus.PENDING,
+          RefundRequestStatus.APPROVED,
+          RefundRequestStatus.PROCESSING,
+        ],
+      },
+    },
+
+    select: {
+      id: true,
+      status: true,
+    },
+
+    orderBy: [
+      {
+        createdAt: "desc",
+      },
+    ],
+  });
+
+  const refundRequestStatus = activeRefundRequest?.status ?? null;
+
+  const hasRefundInProgress = refundRequestStatus !== null;
+
+  // =====================================================
+  // 5B. BOOKING ELIGIBILITY
+  // =====================================================
+
   const canBookAppointment =
     purchase.paymentStatus === PaymentStatus.PAID &&
     remainingQuantity > 0 &&
-    !voucherExpired;
+    !voucherExpired &&
+    !hasRefundInProgress;
 
   // =====================================================
   // 6. PAYMENT DISPLAY STATUS
@@ -1392,6 +1528,9 @@ const getGroupPurchaseById = async (
       redeemedQuantity,
       remainingQuantity,
       canBookAppointment,
+
+      // NEW: active refund request status
+      refundRequestStatus,
     },
   };
 };
@@ -1537,7 +1676,13 @@ const createGroupPurchaseAppointment = async (
           // 5. REVALIDATE PURCHASE INSIDE TRANSACTION
           // ===============================================
 
-          await tx.$queryRaw`SELECT "id" FROM "GroupPurchase" WHERE "id" = ${purchaseId} FOR UPDATE`;
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "GroupPurchase"
+            WHERE "id" = ${purchaseId}
+            FOR UPDATE
+          `;
+
           const purchase = await tx.groupPurchase.findUnique({
             where: { id: purchaseId },
 
@@ -1638,6 +1783,43 @@ const createGroupPurchaseAppointment = async (
               "No remaining voucher quantity available for redemption",
               409,
             );
+          }
+
+          // ===============================================
+          // 7A. REFUND-IN-PROGRESS PROTECTION (NEW)
+          // ===============================================
+
+          // A voucher cannot be redeemed while any payment
+          // associated with the purchase has an active
+          // refund request.
+          //
+          // REJECTED, FAILED and COMPLETED are not treated
+          // as in-progress refund requests.
+          //
+          // This validation runs inside the same Serializable
+          // transaction as the appointment creation.
+
+          const activeRefundRequest = await tx.refundRequest.findFirst({
+            where: {
+              payment: {
+                groupPurchaseId: purchase.id,
+              },
+              status: {
+                in: [
+                  RefundRequestStatus.PENDING,
+                  RefundRequestStatus.APPROVED,
+                  RefundRequestStatus.PROCESSING,
+                ],
+              },
+            },
+            select: {
+              id: true,
+              status: true,
+            },
+          });
+
+          if (activeRefundRequest) {
+            throw new AppError("GROUP_PURCHASE_REFUND_IN_PROGRESS", 409);
           }
 
           // ===============================================
@@ -1827,8 +2009,9 @@ const createGroupPurchaseAppointment = async (
           // 15. PRICE AND TRANSLATION SNAPSHOT
           // ===============================================
 
-          // The purchase already records the paid voucher amount. Redemption
-          // adds no charge; counting its unit price again would duplicate sales.
+          // The purchase already records the paid voucher amount.
+          // Redemption adds no charge.
+
           const price = new Prisma.Decimal(0);
 
           assertCurrencyAmount(price, purchase.currency);
@@ -1919,7 +2102,8 @@ const createGroupPurchaseAppointment = async (
           // 18. CUSTOMER NOTIFICATION
           // ===============================================
 
-          const translations = notificationTemplates.BOOKING_CONFIRMED_SUCCESS();
+          const translations =
+            notificationTemplates.BOOKING_CONFIRMED_SUCCESS();
 
           await notificationService.createNotification(
             {

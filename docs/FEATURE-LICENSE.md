@@ -1,5 +1,13 @@
 # Single-client feature licensing
 
+## Diagnosing deployed 500 responses
+
+A disabled feature should return 403 after authentication, not a database startup error. If public discovery also fails, inspect Worker startup logs before changing feature policy. `MIGRATION_HISTORY_MISMATCH` now reports all mismatched versions and bounded schema checksums without SQL, credentials or business rows.
+
+The Salon staging v45 incident was a verified LF-to-CRLF conversion: the stored v45 checksum was `3d982cd34ada96fe64d0f53d5923b026d914f06f150c79d9d596c5541c628cbb`; the converted file produced a different checksum. Restoring the exact LF source matches the stored history without a database reset, ledger rewrite or schema change. `.gitattributes` pins applied LF migrations 42, 43 and 45. The build also verifies their known historical hashes before upload. Other applied migrations are not silently normalized, and the runtime checksum guard remains strict. New schema changes must use a new migration.
+
+When verifying a disabled feature, an unauthenticated purchase request should still return 401; use a valid customer session to test the feature's 403 response. Public `/api/v1/features` reports the deployed `GROUP_BUYING` state without creating a purchase.
+
 Edit `src/app/config/feature-license.config.ts` for this client's deployment. The configuration is compiled into the Merchant Worker; changing it requires rebuilding and redeploying. There is no public license editing endpoint, and the separate Platform database does not override these switches. This release preserves the supplied settings, including `WALLET.enabled=false` and `BRANCH_STORE.branchLimit=5`.
 
 `GET /api/v1/features` returns the current license/feature dates, availability, reason/status and branch limit with `Cache-Control: no-store`. Use this for frontend visibility. API and service checks enforce the license independently of frontend visibility.

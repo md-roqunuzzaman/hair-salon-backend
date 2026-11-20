@@ -1,0 +1,5 @@
+# These applied SQLite migrations were shipped with LF bytes. Their checksums
+# must stay stable on Windows checkouts; do not normalize other applied files.
+cloudflare/migrations/0042_branch_brand_relation.sql text eol=lf
+cloudflare/migrations/0043_brand_owner_relation.sql text eol=lf
+cloudflare/migrations/0045_subscription_addon_branch_limit.sql text eol=lf
