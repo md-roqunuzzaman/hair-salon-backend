@@ -21,6 +21,7 @@ const { jwtUtils } = await import('../src/app/utils/jwt.ts');
 const { redisClient } = await import('../src/app/lib/redis.ts');
 const { default: app } = await import('../src/app.ts');
 const { featureLicenseConfig } = await import('../src/app/config/feature-license.config.ts');
+const { getFeatureStatus } = await import('../src/app/utils/featureLicense.ts');
 
 const branchId = '11111111-1111-4111-8111-111111111111';
 const serviceId = '22222222-2222-4222-8222-222222222222';
@@ -487,6 +488,13 @@ test('consecutive AUTO RESERVE_NOW bookings recalculate counts inside existing s
 // Only storage is mocked; availability and staff assignment are not stubbed.
 async function reportedAutoBookingFixture(t) {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-28T08:00:00.000Z') });
+  // This historical booking scenario requires a licence already effective at
+  // its simulated time; retain the real licence checker and all expiry rules.
+  const hairstylist = featureLicenseConfig.features.HAIRSTYLIST;
+  const originalStartsAt = hairstylist.startsAt;
+  t.after(() => { hairstylist.startsAt = originalStartsAt; });
+  hairstylist.startsAt = '2026-10-01T00:00:00+08:00';
+  assert.equal(getFeatureStatus('HAIRSTYLIST'), 'ACTIVE');
   const state = transactionFixture(t);
   const { data } = state;
   const request = {

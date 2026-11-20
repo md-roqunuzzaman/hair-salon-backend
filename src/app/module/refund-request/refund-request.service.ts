@@ -42,6 +42,8 @@ import type {
 } from "./refund-request.interface.js";
 import { auditLogService } from "../auditLog/auditLog.service.js";
 import { notificationService } from "../notification/notification.service.js";
+import { getLocalizedContent } from "../../utils/localization.js";
+import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 
 const createHongKongDateTime = (
   date: Date,
@@ -335,11 +337,39 @@ const createRefundRequest = async (
   };
 };
 
-const getMyRefundRequests = async (customerId: string) => {
-  const requests = await prisma.refundRequest.findMany({
-    where: {
-      customerId,
+const getMyRefundRequests = async (
+  customerId: string,
+  language: Language = DEFAULT_LANGUAGE,
+) => {
+  const purchaseSelect = {
+    id: true,
+    orderNumber: true,
+    quantity: true,
+    amount: true,
+    currency: true,
+
+    package: {
+      select: {
+        name: true,
+        translations: true,
+
+        services: {
+          select: {
+            service: {
+              select: {
+                id: true,
+                name: true,
+                translations: true,
+              },
+            },
+          },
+        },
+      },
     },
+  } satisfies Prisma.GroupPurchaseSelect;
+
+  const requests = await prisma.refundRequest.findMany({
+    where: { customerId },
 
     select: {
       id: true,
@@ -353,8 +383,12 @@ const getMyRefundRequests = async (customerId: string) => {
 
       payment: {
         select: {
+          id: true,
           orderNumber: true,
+          amount: true,
           currency: true,
+          provider: true,
+          createdAt: true,
           purpose: true,
           appointmentId: true,
           groupPurchaseId: true,
@@ -362,13 +396,16 @@ const getMyRefundRequests = async (customerId: string) => {
           appointment: {
             select: {
               orderNumber: true,
+              price: true,
+              currency: true,
+              itemName: true,
+              itemNameTranslations: true,
+              groupPurchaseId: true,
             },
           },
 
           groupPurchase: {
-            select: {
-              orderNumber: true,
-            },
+            select: purchaseSelect,
           },
         },
       },
@@ -379,38 +416,121 @@ const getMyRefundRequests = async (customerId: string) => {
     },
   });
 
-  return requests.map((request) => ({
-    id: request.id,
+  // Historical payments may link to a group purchase only through
+  // their appointment. Resolve these purchases in one batch.
+  const missingPurchaseIds = [
+    ...new Set(
+      requests.flatMap(({ payment }) =>
+        payment.purpose !== PaymentPurpose.WALLET_TOP_UP &&
+        !payment.groupPurchase &&
+        payment.appointment?.groupPurchaseId
+          ? [payment.appointment.groupPurchaseId]
+          : [],
+      ),
+    ),
+  ];
 
-    paymentId: request.paymentId,
+  const linkedPurchases = missingPurchaseIds.length
+    ? await prisma.groupPurchase.findMany({
+        where: {
+          id: { in: missingPurchaseIds },
+          customerId,
+        },
+        select: purchaseSelect,
+      })
+    : [];
 
-    // Resolve order number from the linked resource
-    orderNumber:
-      request.payment.orderNumber ??
-      request.payment.appointment?.orderNumber ??
-      request.payment.groupPurchase?.orderNumber ??
-      null,
+  const linkedPurchaseMap = new Map(
+    linkedPurchases.map((purchase) => [purchase.id, purchase]),
+  );
 
-    amount: Number(request.amount),
+  return requests.map((request) => {
+    const payment = request.payment;
+    const appointment = payment.appointment;
 
-    currency: request.payment.currency,
+    const groupPurchase =
+      payment.groupPurchase ??
+      linkedPurchaseMap.get(appointment?.groupPurchaseId ?? "");
 
-    purpose: request.payment.purpose,
+    const groupPackage = groupPurchase?.package;
 
-    appointmentId: request.payment.appointmentId,
+    const isGroupPurchase =
+      payment.purpose !== PaymentPurpose.WALLET_TOP_UP &&
+      (payment.purpose === PaymentPurpose.GROUP_PURCHASE ||
+        payment.groupPurchaseId !== null ||
+        appointment?.groupPurchaseId != null);
 
-    groupPurchaseId: request.payment.groupPurchaseId,
+    const packageName = groupPackage
+      ? getLocalizedContent(groupPackage.translations, language, {
+          name: groupPackage.name,
+        }).name
+      : null;
 
-    reason: request.reason,
+    const appointmentName = appointment
+      ? getLocalizedContent(appointment.itemNameTranslations, language, {
+          name: appointment.itemName,
+        }).name
+      : null;
 
-    status: request.status,
+    const itemName =
+      packageName ??
+      appointmentName ??
+      (payment.purpose === PaymentPurpose.WALLET_TOP_UP
+        ? "Wallet Top-up"
+        : null);
 
-    reviewedAt: request.reviewedAt,
+    const services =
+      groupPackage?.services.map(({ service }) => ({
+        id: service.id,
+        name: getLocalizedContent(service.translations, language, {
+          name: service.name,
+        }).name,
+      })) ?? [];
 
-    reviewNote: request.reviewNote,
+    return {
+      // Existing refund-request fields remain unchanged.
+      id: request.id,
+      paymentId: request.paymentId,
 
-    createdAt: request.createdAt,
-  }));
+      orderNumber:
+        payment.orderNumber ??
+        appointment?.orderNumber ??
+        payment.groupPurchase?.orderNumber ??
+        null,
+
+      amount: Number(request.amount),
+      currency: payment.currency,
+      purpose: payment.purpose,
+      appointmentId: payment.appointmentId,
+      groupPurchaseId: payment.groupPurchaseId,
+      reason: request.reason,
+      status: request.status,
+      reviewedAt: request.reviewedAt,
+      reviewNote: request.reviewNote,
+      createdAt: request.createdAt,
+
+      // Original payment/order details for the refund list.
+      payment: {
+        id: payment.id,
+        amount: Number(payment.amount),
+        currency: payment.currency,
+        provider: payment.provider,
+        createdAt: payment.createdAt,
+
+        orderAmount: Number(
+          groupPurchase?.amount ?? appointment?.price ?? payment.amount,
+        ),
+        orderCurrency:
+          groupPurchase?.currency ?? appointment?.currency ?? payment.currency,
+
+        itemName,
+
+        quantity: isGroupPurchase ? (groupPurchase?.quantity ?? null) : null,
+
+        services,
+      },
+    };
+  });
 };
 
 const getRefundRequests = async (query: IGetRefundRequestsQuery) => {

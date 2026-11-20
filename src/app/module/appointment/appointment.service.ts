@@ -116,6 +116,40 @@ const expirePendingAppointments = async (appointmentId?: string) => {
     async (tx) => {
       const now = new Date();
 
+      // FAILED here closes the local initial-payment attempt after its booking
+      // expired; it is not a claim that Stripe cancelled the PaymentIntent.
+      // Late successful captures still enter the existing refund lifecycle.
+      const pendingInitialPayment: Prisma.PaymentWhereInput = {
+        status: PaymentStatus.PENDING,
+        paidAt: null,
+        groupPurchaseId: null,
+        walletTopupId: null,
+        OR: [
+          {
+            purpose: PaymentPurpose.APPOINTMENT,
+            appointment: { bookingMethod: BookingMethod.PAY_NOW },
+          },
+          {
+            purpose: PaymentPurpose.APPOINTMENT_DEPOSIT,
+            appointment: { bookingMethod: BookingMethod.DEPOSIT },
+          },
+        ],
+      };
+      const failExpiredInitialPayments = (appointment: { id: string; customerId: string }) =>
+        tx.payment.updateMany({
+          where: {
+            ...pendingInitialPayment,
+            appointmentId: appointment.id,
+            customerId: appointment.customerId,
+            appointment: {
+              groupPurchaseId: null,
+              appointmentStatus: AppointmentStatus.EXPIRED,
+              paymentStatus: PaymentStatus.FAILED,
+            },
+          },
+          data: { status: PaymentStatus.FAILED, failedAt: now },
+        });
+
       // =====================================================
       // 1. FILTER ONLY NORMAL PENDING APPOINTMENTS
       // =====================================================
@@ -184,6 +218,8 @@ const expirePendingAppointments = async (appointmentId?: string) => {
           continue;
         }
 
+        await failExpiredInitialPayments(appointment);
+
         // =================================================
         // 5. MULTILINGUAL CUSTOMER NOTIFICATION
         // =================================================
@@ -217,6 +253,25 @@ const expirePendingAppointments = async (appointmentId?: string) => {
         );
 
         expiredCount++;
+      }
+
+      // Repair historical EXPIRED/FAILED parents whose initial attempts were
+      // left PENDING by older code. No repeat expiry notifications, no provider
+      // calls, and no changes to paid/refunded/remaining or group payments.
+      const unreconciled = await tx.appointment.findMany({
+        where: {
+          ...(appointmentId && { id: appointmentId }),
+          groupPurchaseId: null,
+          appointmentStatus: AppointmentStatus.EXPIRED,
+          paymentStatus: PaymentStatus.FAILED,
+          payments: { some: pendingInitialPayment },
+        },
+        select: { id: true, customerId: true },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: 100,
+      });
+      for (const appointment of unreconciled) {
+        await failExpiredInitialPayments(appointment);
       }
 
       // =====================================================

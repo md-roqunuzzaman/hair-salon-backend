@@ -10,6 +10,7 @@ import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 
 import { notificationService } from "../notification/notification.service.js";
+import { reconcileExpiredGroupInitialStripePayments } from "../payment/group-initial-stripe-reconciliation.js";
 
 const BATCH_SIZE = 100;
 
@@ -243,6 +244,10 @@ const expirePendingGroupPurchases = async () => {
       }
     }
   }
+
+  // Network reconciliation runs only after all inventory/expiry transactions
+  // committed, and also repairs historical rows even when no new expiry ran.
+  await reconcileExpiredGroupInitialStripePayments();
 
   return {
     expiredCount,

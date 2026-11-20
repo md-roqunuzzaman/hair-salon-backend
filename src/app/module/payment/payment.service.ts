@@ -57,6 +57,10 @@ import {
 import { getLocalizedContent } from "../../utils/localization.js";
 import { DEFAULT_LANGUAGE, Language } from "../../utils/language.js";
 import { cancelRemainingStripeIntent } from "./remaining-stripe-cancellation.js";
+import {
+  markConfirmedGroupInitialCancellation,
+  prepareGroupInitialStripePayments,
+} from "./group-initial-stripe-reconciliation.js";
 
 const createStripeIntent = async (
   customerId: string,
@@ -736,7 +740,8 @@ const handleStripeWebhook = async (payload: Buffer, signature: string) => {
 
   if (
     event.type === "payment_intent.succeeded" ||
-    event.type === "payment_intent.payment_failed"
+    event.type === "payment_intent.payment_failed" ||
+    event.type === "payment_intent.canceled"
   ) {
     const paymentIntent = event.data.object as Stripe.PaymentIntent;
 
@@ -1896,6 +1901,8 @@ const createGroupPurchaseStripeIntent = async (
   // 5. FIND OR CREATE LOCAL PAYMENT ATTEMPT
   // =====================================================
 
+  const closedAttempts = await prepareGroupInitialStripePayments(customerId, purchaseId, "stripe");
+
   // Serialize local payment identity.
   // Concurrent requests reuse the same payment and
   // Stripe idempotency key.
@@ -1966,6 +1973,15 @@ const createGroupPurchaseStripeIntent = async (
           // =================================================
           // REUSE EXISTING PENDING STRIPE PAYMENT
           // =================================================
+
+          // A failure event can race the external preflight. Do not create a
+          // second intent while any unverified failed intent can still charge.
+          const unresolvedFailure = await tx.payment.findFirst({
+            where: { groupPurchaseId: purchaseId, customerId,
+              purpose: PaymentPurpose.GROUP_PURCHASE, provider: PaymentProvider.STRIPE,
+              status: PaymentStatus.FAILED, id: { notIn: closedAttempts } },
+          });
+          if (unresolvedFailure) throw new AppError("GROUP_PURCHASE_PAYMENT_RECONCILIATION_REQUIRED", 409);
 
           const pending = await tx.payment.findFirst({
             where: {
@@ -3160,6 +3176,20 @@ async function handleGroupPurchaseStripeEvent(
   // =====================================================
   // 2. HANDLE PAYMENT FAILURE
   // =====================================================
+
+  if (event.type === "payment_intent.canceled") {
+    if (await prisma.stripeWebhookEvent.findUnique({ where: { id: event.id } })) {
+      return { received: true as const };
+    }
+    const intent = await stripe.paymentIntents.retrieve(paymentIntent.id);
+    const purchase = await prisma.groupPurchase.findUniqueOrThrow({ where: { id: payment.groupPurchaseId } });
+    await prisma.$transaction(async tx => {
+      await markConfirmedGroupInitialCancellation(payment, purchase, intent, tx);
+      await tx.stripeWebhookEvent.upsert({ where: { id: event.id },
+        create: { id: event.id, type: event.type }, update: {} });
+    });
+    return { received: true as const };
+  }
 
   if (event.type === "payment_intent.payment_failed") {
     for (let attempt = 1; attempt <= 3; attempt++) {

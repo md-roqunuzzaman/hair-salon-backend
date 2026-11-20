@@ -8,15 +8,34 @@ const refunds = new Map();
 let refundMode='succeeded';
 let refundCreateCalls=0;
 let failIntentRead=false;
+let initialCancelMode = 'normal';
+let initialCancelCalls = 0;
+let initialIntentReads = 0;
+let initialCreateTimeout = false;
 
 function installProviderMocks() {
   stripe.paymentIntents.create = async (params, options) => {
     if (intentKeys.has(options.idempotencyKey)) return intents.get(intentKeys.get(options.idempotencyKey));
     const id = `pi_${crypto.randomUUID()}`;
     const intent = { id, ...params, amount_received: 0, status: 'requires_payment_method', client_secret: `${id}_secret_synthetic` };
-    intents.set(id, intent); intentKeys.set(options.idempotencyKey, id); return intent;
+    intents.set(id, intent); intentKeys.set(options.idempotencyKey, id);
+    if (initialCreateTimeout) { initialCreateTimeout = false; throw new Error('Synthetic timeout after intent creation'); }
+    return intent;
   };
-  stripe.paymentIntents.retrieve = async id => { if(failIntentRead)throw new Error('Synthetic provider unavailable before submission'); if (!intents.has(id)) throw new Error('Unknown synthetic intent'); return intents.get(id); };
+  stripe.paymentIntents.retrieve = async id => { initialIntentReads++; if(failIntentRead)throw new Error('Synthetic provider unavailable before submission'); if (!intents.has(id)) throw new Error('Unknown synthetic intent'); return intents.get(id); };
+  stripe.paymentIntents.cancel = async id => {
+    initialCancelCalls++;
+    const intent = intents.get(id);
+    if (!intent) throw new Error('Unknown synthetic intent');
+    if (initialCancelMode === 'capture') {
+      intent.status = 'succeeded'; intent.amount_received = intent.amount;
+      throw new Error('Synthetic capture won cancellation race');
+    }
+    if (intent.status === 'processing' || intent.status === 'succeeded') throw new Error('Synthetic intent cannot be cancelled');
+    intent.status = 'canceled';
+    if (initialCancelMode === 'timeout') throw new Error('Synthetic timeout after cancellation');
+    return intent;
+  };
   stripe.refunds.create = async (params, options) => {
     refundCreateCalls++;
     if (refunds.has(options.idempotencyKey)) return refunds.get(options.idempotencyKey);
@@ -27,6 +46,20 @@ function installProviderMocks() {
   };
   stripe.refunds.retrieve = async id => [...refunds.values()].find(refund => refund.id === id);
   stripe.refunds.list = async params => ({ data: [...refunds.values()].filter(refund => refund.payment_intent === params.payment_intent), has_more: false });
+}
+export function groupInitialProviderControl(input = {}) {
+  if (input.createTimeout !== undefined) initialCreateTimeout = input.createTimeout;
+  if (input.cancelMode) initialCancelMode = input.cancelMode;
+  if (input.failRead !== undefined) failIntentRead = input.failRead;
+  const intent = input.intentId ? intents.get(input.intentId) : null;
+  if (input.status) {
+    if (!intent) throw new Error('Unknown synthetic intent');
+    intent.status = input.status;
+    intent.amount_received = input.status === 'succeeded' ? intent.amount : 0;
+  }
+  return { cancelCalls: initialCancelCalls, intentReads: initialIntentReads,
+    intents: [...intents.values()].map(p => ({ id: p.id, status: p.status })),
+    ...(intent ? { event: { id: `evt_${crypto.randomUUID()}`, type: input.status === 'canceled' ? 'payment_intent.canceled' : 'payment_intent.succeeded', data: { object: intent } } } : {}) };
 }
 export async function bookNowFixture(db, customerId) {
   installProviderMocks();
@@ -47,6 +80,44 @@ export async function bookNowFixture(db, customerId) {
 }
 
 export async function policyTestControl(db,body,storage){
+  // Synthetic controls for appointment-expiry reconciliation; test bundle only.
+  if (body.appointmentExpiry) {
+    const { action, appointmentId } = body.appointmentExpiry;
+    if (action === 'legacy') {
+      await db.appointment.update({ where: { id: appointmentId }, data: { appointmentStatus: 'EXPIRED', paymentStatus: 'FAILED', holdExpiresAt: null } });
+      return { ok: true };
+    }
+    if (action === 'block' || action === 'unblock') {
+      storage.sql.exec('DROP TRIGGER IF EXISTS expiry_test_fail_payment');
+      if (action === 'block') storage.sql.exec(`CREATE TRIGGER expiry_test_fail_payment BEFORE UPDATE OF status ON Payment WHEN OLD.status = 'PENDING' AND NEW.status = 'FAILED' BEGIN SELECT RAISE(ABORT, 'Synthetic expiry failure'); END`);
+      return { ok: true };
+    }
+    if (action === 'run') {
+      const { appointmentService } = await import('../../src/app/module/appointment/appointment.service.ts');
+      try { return { ok: true, ...await appointmentService.expirePendingAppointments(appointmentId) }; }
+      catch { return { ok: false }; }
+    }
+    if (action === 'guards') {
+      const a = await db.appointment.findUniqueOrThrow({ where: { id: appointmentId } });
+      const pkg = await db.package.findFirstOrThrow();
+      const group = await db.groupPurchase.create({ data: { customerId: a.customerId, packageId: pkg.id, currency: a.currency, quantity: 1, unitPrice: 10, amount: 10 } });
+      const wallet = await db.wallet.findUniqueOrThrow({ where: { customerId: a.customerId } });
+      const topup = await db.walletTopup.create({ data: { walletId: wallet.id, amount: 10 } });
+      const other = await db.user.findFirstOrThrow({ where: { id: { not: a.customerId } } });
+      const payments = [];
+      for (const data of [
+        { status: 'PAID', paidAt: new Date() }, { status: 'REFUNDED' }, { status: 'PARTIALLY_REFUNDED' },
+        { purpose: 'APPOINTMENT_REMAINING' }, { purpose: 'APPOINTMENT' }, { paidAt: new Date() },
+        { groupPurchaseId: group.id }, { walletTopupId: topup.id }, { customerId: other.id },
+      ]) payments.push(await db.payment.create({ data: { customerId: a.customerId, appointmentId, purpose: 'APPOINTMENT_DEPOSIT', provider: 'SALON', status: 'PENDING', currency: a.currency, amount: 10, ...data } }));
+      const linked = await db.appointment.create({ data: { customerId: a.customerId, branchId: a.branchId, groupPurchaseId: group.id,
+        orderNumber: generateOrderNumber(), bookingMethod: 'DEPOSIT', appointmentStatus: 'EXPIRED', paymentStatus: 'FAILED',
+        date: a.date, startTime: '01:00', endTime: '01:30', durationMinutes: 30, itemName: 'Synthetic group redemption', price: 10, currency: a.currency } });
+      payments.push(await db.payment.create({ data: { customerId: a.customerId, appointmentId: linked.id, purpose: 'APPOINTMENT_DEPOSIT', provider: 'STRIPE', status: 'PENDING', currency: a.currency, amount: 10 } }));
+      return { payments };
+    }
+    throw new Error('Unknown synthetic expiry action');
+  }
   if (body.paymentCreatedAt) await db.payment.update({ where: { id: body.paymentCreatedAt.id }, data: { createdAt: new Date(body.paymentCreatedAt.value) } });
   // Simulate externally changed legacy settings only in the disposable test build.
   if (body.internationalSettings) {

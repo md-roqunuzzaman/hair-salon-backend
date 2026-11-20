@@ -41,6 +41,7 @@ import {
   retryOrderNumberTransaction,
 } from "../../utils/generateOrderNumber.js";
 import { cancelRemainingStripePayment } from "../payment/payment.service.js";
+import { prepareGroupInitialStripePayments } from "../payment/group-initial-stripe-reconciliation.js";
 import { assertFeatureAvailable } from "../../utils/featureLicense.js";
 
 const getMyWallet = async (customerId: string): Promise<IWalletResponse> => {
@@ -1381,6 +1382,7 @@ const payGroupPurchaseWithWallet = async (
 ) => {
   assertFeatureAvailable("GROUP_BUYING");
   assertFeatureAvailable("WALLET");
+  const closedStripeAttempts = await prepareGroupInitialStripePayments(customerId, purchaseId, "wallet");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await prisma.$transaction(
@@ -1541,10 +1543,11 @@ const payGroupPurchaseWithWallet = async (
               groupPurchaseId: purchase.id,
               purpose: PaymentPurpose.GROUP_PURCHASE,
               status: {
-                in: [PaymentStatus.PENDING, PaymentStatus.PAID],
+                in: [PaymentStatus.PENDING, PaymentStatus.PAID, PaymentStatus.FAILED],
               },
             },
             select: {
+              id: true,
               provider: true,
               status: true,
             },
@@ -1565,7 +1568,8 @@ const payGroupPurchaseWithWallet = async (
             existingPayments.some(
               (payment) =>
                 payment.provider === PaymentProvider.STRIPE &&
-                payment.status === PaymentStatus.PENDING,
+                (payment.status === PaymentStatus.PENDING ||
+                  payment.status === PaymentStatus.FAILED && !closedStripeAttempts.includes(payment.id)),
             )
           ) {
             throw new AppError("STRIPE_PAYMENT_ALREADY_PENDING", 409);

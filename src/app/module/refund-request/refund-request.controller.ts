@@ -40,26 +40,30 @@ const createRefundRequest = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
-const getMyRefundRequests = catchAsync(async (req: Request, res: Response) => {
-  // =====================================================
-  // 1. GET AUTHENTICATED CUSTOMER
-  // =====================================================
+// Add alongside the controller's existing imports.
+import type { Language } from "../../utils/language.js";
 
+const getMyRefundRequests = catchAsync(async (req: Request, res: Response) => {
   const customerId = req.user?.userId;
 
   if (!customerId) {
     throw new AppError("UNAUTHORIZED", 401);
   }
 
-  // =====================================================
-  // 2. FETCH CUSTOMER REFUND REQUESTS
-  // =====================================================
+  const acceptLanguage = req.headers["accept-language"] ?? "";
+  const requestedLanguage = acceptLanguage.split(",")[0]?.trim().toLowerCase();
 
-  const result = await RefundRequestService.getMyRefundRequests(customerId);
+  const language: Language =
+    requestedLanguage === "zh-cn"
+      ? "zh-CN"
+      : requestedLanguage === "zh-hk"
+        ? "zh-HK"
+        : "en";
 
-  // =====================================================
-  // 3. SEND RESPONSE
-  // =====================================================
+  const result = await RefundRequestService.getMyRefundRequests(
+    customerId,
+    language,
+  );
 
   sendResponse(res, {
     success: true,
